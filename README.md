@@ -1,37 +1,48 @@
-# HackiOS on Galaxy S20 Ultra (z3q)
+# HackiOS on the Galaxy S20 Ultra (z3s)
 
-Experimental iOS 16 / XNU port for **Samsung Galaxy S20 Ultra 5G SM-G988N, Snapdragon 865 / Adreno 650**. This repository contains the source and local port changes; hardware support is incomplete.
+Experimental iOS 16 / XNU port for the **Galaxy S20 Ultra 5G SM-G988B, Exynos 990
+(universal9830)**. This is the z3s tree. The Snapdragon sources that the project started from
+remain in the repository for the userspace glue and the driver layout, but they are not the
+boot chain of this board.
 
-Based on [hackios-xnu-userland](https://github.com/oosexgang/hackios-xnu-userland), the HackiOS XNU port, and [G986N-iOS](https://github.com/leh0726/G986N-iOS). See [the upstream port notes](docs/UPSTREAM-PORT-README.md) and [z3q hardware notes](docs/Z3Q.md).
+The z3s boot chain is S-Boot. `sboot` verifies and loads an Android boot image v2 from the
+`boot` partition; the port packages the XNU payload into that format. Hardware support is
+incomplete: no iOS boot has been completed on this board yet. See
+[the z3s hardware and boot notes](docs/Z3S.md).
 
-An Exynos 990 port for the **SM-G988B (z3s)** is in progress. It has no loader yet, so only the kernel and userland build; see [z3s hardware and boot notes](docs/Z3S.md).
+## Current state
 
-## Status (2026-10-30)
+- `common/build.sh z3s` targets the kernel and userland. `common/devices/z3s.conf` sets
+  `BOOT_CHAIN=none`, so the build skips a loader that does not exist yet.
+- S-Boot leaves the framebuffer at `0xE9000000`, 1440 x 3200, stride 5760.
+- Touch is the TM2 controller on HSI2C_15 (`0x108D0000`, address `0x48`, IRQ `gpa1-0`); the
+  driver is not ported yet.
+- Volume up, volume down and power are on `gpa0-3`, `gpa0-4` and `gpa2-4`; the key driver is
+  not ported yet.
 
-- iOS home screen boots using an uploaded RAM system image.
-- Samsung sec_ts touch and both volume keys work in device tests.
-- Mesa/freedreno reports **FD650** for CoreAnimation OpenGL ES; GPU rendering is confirmed. Tested display submission intervals ranged around 35–53 frames/s; these are not a controlled benchmark.
-- CPU frequency control and seven XNU cores work; a core remains with the loader.
-- BCM4375 Wi-Fi associates and passes data. Intermittent disconnects remain; the SNonce retry patch is experimental and does not establish that rekeying is fixed.
-- Speaker output is **not implemented for z3q**. The ADSP patch adds the Samsung carveout and relocatable firmware handling, with Samsung runs restricted to diagnostic steps 1–2. It has compiled but awaits physical validation.
-- USB file transfer / SSH while running iOS is **not implemented**. Loader USB is a separate capability.
+The Snapdragon reference port reached its home screen with display, touch, GPU and Wi-Fi on its
+own hardware. Those results do not transfer to the Exynos board.
 
 ## Build and private inputs
 
-Use `common/build.sh z3q` in the Linux cross-build environment described by the source scripts. A macOS host can use an ARM64 Linux Docker container. The toolchain, iPhoneOS SDK and iOS extraction must be supplied locally. `prebuilt` from older ports may lack the Samsung touch/Wi-Fi changes: build the kernel from source.
+Use `common/build.sh z3s` in the Linux cross-build environment described by the source scripts.
+A macOS host can use an ARM64 Linux Docker container. The toolchain, iPhoneOS SDK and iOS
+extraction must be supplied locally. Build the kernel from source when the prebuilt lacks the
+z3s changes.
 
-For graphics, build `AIR=1 tools/mk-mesa.sh`, then build userland with `GL=1` and compilation enabled (`PREBUILT=`). Verify that the resulting `root.apfs` contains `libOSMesa.8.dylib` and `libredwood-gl.dylib`. `gpu=1` alone does not provide the userland renderer.
+The source upload excludes Apple system images/SDKs, device-extracted firmware, private keys,
+Wi-Fi credentials/MAC files, logs, partition backups and newly extracted UEFI binaries. The
+phone has no fastboot: the boot image goes to the `boot` partition from TWRP. Do not use another
+device's BOOT backup or partition geometry.
 
-Example after uploading the system RAM image with `XL_DEVICE=z3q ./xl ramdisk`:
+## Reference sources
 
-```sh
-env XL_DEVICE=z3q XL_SECS=300 XL_CMDLINE="cpus=8 bootcpu=7 cpufreq=1 touchscreen=1 buttons=1 gpu=1 wifi=1" ./xl run
-```
-
-`XL_SECS=0` disables the kernel return timer, but the current host script may incorrectly report a timeout after about 100 seconds. An unlimited run is not a stability guarantee.
-
-This source upload excludes Apple system images/SDKs, device-extracted firmware, private keys, Wi-Fi credentials/MAC files, logs, partition backups and newly extracted UEFI binaries. The z3q DTB and UEFI vendor inputs must be supplied locally. Do not use another device's BOOT backup or partition geometry. Samsung uses the TWRP boot path; a generic `fastboot boot` command does not apply.
+The Snapdragon tree supplies the XNU userspace glue, the Wi-Fi stack and the driver layout this
+port started from. Its notes stay in the repository for reference; its firmware packages are
+not used by the Exynos boot chain.
 
 ## Licensing
 
-Preserve per-file copyright notices. `LICENSE` is APSL 2.0 for the XNU portion; `LICENSE-userland` retains the upstream MIT license for the userland portion. Other imported source files retain their own notices.
+Preserve per-file copyright notices. `LICENSE` is APSL 2.0 for the XNU portion;
+`LICENSE-userland` retains the upstream MIT license for the userland portion. Other imported
+source files retain their own notices.
