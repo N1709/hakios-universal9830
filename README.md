@@ -4,6 +4,8 @@ Experimental iOS 16 / XNU port for **Samsung Galaxy S20 Ultra 5G SM-G988N, Snapd
 
 Based on [hackios-xnu-userland](https://github.com/oosexgang/hackios-xnu-userland), the HackiOS XNU port, and [G986N-iOS](https://github.com/leh0726/G986N-iOS). See [the upstream port notes](docs/UPSTREAM-PORT-README.md) and [z3q hardware notes](docs/Z3Q.md).
 
+An Exynos 990 port for the **SM-G988B (z3s)** is in progress. It has no loader yet, so only the kernel and userland build; see [z3s hardware and boot notes](docs/Z3S.md).
+
 ## Status (2026-10-30)
 
 - iOS home screen boots using an uploaded RAM system image.
