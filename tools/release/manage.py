@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPERIMENTAL_KERNEL_TARGETS = ('x1s', 'c1s', 'c2s', 'r8s', 'y2s', 'z3s')
+BRINGUP_KERNEL_TARGETS = ('x1s', 'c1s', 'c2s', 'r8s', 'y2s', 'z3s')
 UNIFIED_ORDER = ('z3s', 'x1slte', 'y2s', 'x1s', 'c1s', 'c2s', 'r8s')
 
 
@@ -92,10 +92,10 @@ def touchid_inputs():
                          'copy it in and regenerate the private-inputs lock, or JESVI_TOUCHID=0')
 
 
-def doctor(device, images=False, experimental_kernel=False):
+def doctor(device, images=False, bringup_kernel=False):
     d = profile(device)
     problems = []
-    if d['status'] == 'unmaintained' and not experimental_kernel:
+    if d['status'] == 'unmaintained' and not bringup_kernel:
         problems.append('target has no qualified board profile or build adapter')
     if platform.system() != 'Darwin':
         problems.append('the release build adapter currently requires macOS')
@@ -140,11 +140,11 @@ def unified(jobs, build):
         return 0
     if not 1 <= jobs <= 64:
         raise ValueError('jobs must be 1..64')
-    # z3s is the anchor: its experimental output is the family kernel artifact.
+    # z3s is the anchor: its bring-up output is the family kernel artifact.
     run('bash', 'ci/build-kernel.sh', str(jobs), 'z3s')
-    src = ROOT / 'out/experimental/z3s/mach.z3s'
+    src = ROOT / 'out/bring-up/z3s/mach.z3s'
     if not src.is_file():
-        raise ValueError('the shared kernel build produced no out/experimental/z3s/mach.z3s')
+        raise ValueError('the shared kernel build produced no out/bring-up/z3s/mach.z3s')
     out = ROOT / 'out/unified'
     out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, out / 'mach.exynos990')
@@ -199,8 +199,10 @@ def main():
         if cmd == 'doctor':
             p.add_argument('--images', action='store_true')
         elif cmd == 'kernel':
-            p.add_argument('--experimental', action='store_true',
-                           help='build a shared Exynos 990 kernel artifact for a bring-up target')
+            p.add_argument('--bring-up', dest='bring_up', action='store_true',
+                           help='build the shared Exynos 990 kernel for a board that is not hardware-tested yet')
+            # Compatibility: older scripts used the same flag as the write paths.
+            p.add_argument('--experimental', dest='bring_up', action='store_true', help=argparse.SUPPRESS)
             p.add_argument('--jobs', type=int, default=4)
         elif cmd == 'images':
             p.add_argument('--development', action='store_true',
@@ -248,16 +250,16 @@ def main():
         return 0
     if a.command == 'unified':
         return unified(a.jobs, a.build)
-    experimental_kernel = a.command == 'kernel' and a.experimental
+    bringup_kernel = a.command == 'kernel' and getattr(a, 'bring_up', False)
     if a.command == 'kernel':
         if not 1 <= a.jobs <= 64:
             raise ValueError('jobs must be 1..64')
-        if experimental_kernel and a.device not in EXPERIMENTAL_KERNEL_TARGETS:
-            raise ValueError('--experimental requires --device ' + ', '.join(EXPERIMENTAL_KERNEL_TARGETS))
-        if not experimental_kernel and a.device != 'x1slte':
-            raise ValueError('use --experimental for a bring-up target')
+        if bringup_kernel and a.device not in BRINGUP_KERNEL_TARGETS:
+            raise ValueError('--bring-up requires --device ' + ', '.join(BRINGUP_KERNEL_TARGETS))
+        if not bringup_kernel and a.device != 'x1slte':
+            raise ValueError('use --bring-up for a board that is not hardware-tested yet')
     problems = doctor(a.device, images=a.command == 'images' or getattr(a, 'images', False),
-                      experimental_kernel=experimental_kernel)
+                      bringup_kernel=bringup_kernel)
     if problems:
         for problem in problems:
             print('BLOCKED: ' + problem, file=sys.stderr)
@@ -266,8 +268,8 @@ def main():
         print('Host prerequisites found. Run kernel to verify the actual compiler/toolchain.')
         return 0
     if a.command == 'kernel':
-        if a.experimental:
-            print(f'{a.device}: building a shared kernel for experimental bring-up', flush=True)
+        if a.bring_up:
+            print(f'{a.device}: building a shared kernel for hardware bring-up', flush=True)
         run('bash', 'ci/build-kernel.sh', str(a.jobs), a.device)
     elif a.command == 'images':
         if a.device != 'x1slte' or not a.development:

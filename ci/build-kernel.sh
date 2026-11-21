@@ -8,7 +8,7 @@ case "$jobs" in ''|*[!0-9]*) exit 2 ;; esac
 device=${2:-x1slte}
 case "$device" in
     x1slte) out=out/kernel ;;
-    x1s|c1s|c2s|r8s|y2s|z3s) out=out/experimental/"$device" ;;
+    x1s|c1s|c2s|r8s|y2s|z3s) out=out/bring-up/"$device" ;;
     *) echo "unsupported kernel target: $device" >&2; exit 2 ;;
 esac
 mkdir -p "$out"

@@ -69,7 +69,7 @@ state which carriers/features were tested; update known issues for each release.
 A maintainer without current hardware access should mark the profile unmaintained.
 Source contributors can still improve common code without claiming device support.
 
-## Experimental Exynos 990 kernel builds and the unified target
+## Exynos 990 kernel builds and the unified target
 
 Every Exynos 990 alias (`z3s`, `x1slte`, `y2s`, `x1s`, `c1s`, `c2s`, `r8s`)
 uses the same GICv2 kernel and the same `xnuloader`. On macOS:
@@ -81,12 +81,12 @@ make unified                # plan every alias and its boot line
 make unified-build          # build the kernel once -> out/unified/
 ```
 
-The output under `out/experimental/<board>/` is the shared kernel plus its
-build manifest and checksum. `out/unified/mach.exynos990` is the same kernel
-under one family name, with `manifest.json` and a `bootargs.txt` per alias.
-No board-specific settings are applied by the kernel build. Boot is unverified
-on every target except the hardware-qualified `x1slte`, and there is no
-installer for the others.
+The output under `out/bring-up/<board>/` is the shared kernel plus its build
+manifest and checksum. `out/unified/mach.exynos990` is the same kernel under
+one family name, with `manifest.json` and a `bootargs.txt` per alias. No
+board-specific settings are applied by the kernel build. Hardware boot has not
+been tested on any target except the hardware-qualified `x1slte`, and there is
+no installer for the others.
 
 For first boot, bring up a board-specific UEFI and loader configuration from
 the model's own boot header, DTB/DTBO, RAM reservations and framebuffer handoff.

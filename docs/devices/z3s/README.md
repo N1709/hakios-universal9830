@@ -2,8 +2,8 @@
 
 Exynos 990, 12 or 16 GB RAM, 1440x3200 60/120 Hz, 5G, ultrasonic fingerprint.
 This profile is the first target of the unified Exynos 990 tree. It is a
-bring-up profile: the kernel and loader build, but **nothing has booted on
-this phone yet**, and its partition table has not been measured.
+bring-up profile: the kernel and loader build, but **nothing has been tested
+on hardware yet**, and its partition table has not been measured.
 
 ## Status
 
@@ -19,8 +19,8 @@ this phone yet**, and its partition table has not been measured.
 
 `TARGET_STATUS=unmaintained` is deliberate: the identity and board facts are
 measured, but the partition map is not, and nothing has booted. The kernel is
-still buildable through the experimental path. The release tools skip the
-target for installers because `installer_validated` is false.
+still buildable through the bring-up path. The release tools skip the target
+for installers because `installer_validated` is false.
 
 ## Identity
 
@@ -126,7 +126,7 @@ status, board config and boot line of every alias.
 
 ## Known gaps
 
-- No z3s UEFI binary, no boot log, no display/touch test.
+- No z3s UEFI binary, no hardware test log, no display/touch test.
 - Camera profile not written: the Ultra's sensors differ from the S20's.
 - Fingerprint (ultrasonic) and 5G modem are not brought up.
 - 16 GB RAM variant needs its own high-bank and EL2 reservation.

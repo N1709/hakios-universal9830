@@ -41,7 +41,7 @@ doctor:
 	./build.sh doctor --device $(RELEASE_DEVICE) --images
 
 kernel:
-	./build.sh kernel --device $(DEVICE) --jobs $(JOBS) $(if $(filter-out x1slte,$(DEVICE)),--experimental)
+	./build.sh kernel --device $(DEVICE) --jobs $(JOBS) $(if $(filter-out x1slte,$(DEVICE)),--bring-up)
 
 images:
 	bash userland/build-gpu-y2s.sh
