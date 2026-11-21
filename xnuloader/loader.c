@@ -706,17 +706,18 @@ static const struct platform platform_redwood = {
 };
 
 /*
- * Exynos 990 (Galaxy S20+ 5G): 4 Cortex-A55 in one cluster, 2 Cortex-A76 in the next, and 2
- * Mongoose M5 in the third -- the MPIDRs are not core << 8, so they are given outright.
+ * Exynos 990 (Galaxy S20 family: x1slte, y2s, z3s): 4 Cortex-A55 in one cluster, 2 Cortex-A76
+ * in the next, and 2 Mongoose M5 in the third -- the MPIDRs are not core << 8, so they are
+ * given outright.
  */
-static const uint64_t platform_y2s_mpidrs[8] = { 0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x100, 0x101 };
+static const uint64_t platform_exynos990_mpidrs[8] = { 0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x100, 0x101 };
 
-static const struct platform platform_y2s = {
+static const struct platform platform_exynos990 = {
 	/* peripherals span 0x02000000 (IRAM) .. 0x1B000000 (DECON/clock); io_base must be non-zero. */
-	.name = "y2s", .io_base = 0x02000000, .io_size = 0x19000000,
+	.name = "exynos990", .io_base = 0x02000000, .io_size = 0x19000000,
 	/* GICv2 (GIC-400): distributor and CPU interface (see osfmk/arm64/gic_v2_irq.c). */
 	.gic_dist = 0x10101000, .gic_redist = 0x10102000, .gic_v2 = 1, .uart = 0, .log_other_cpu = 1,
-	.cores = 8, .mpidrs = platform_y2s_mpidrs,
+	.cores = 8, .mpidrs = platform_exynos990_mpidrs,
 	/* cores 0-3 are the Cortex-A55s (the little cluster). */
 	.small_cores = 0x0f,
 	/* the UEFI's Display Reserved window (see the x1s MemoryMapLib). VERIFY: the runtime "display ... at" line. */
@@ -736,7 +737,7 @@ static const struct platform platform_y2s = {
  */
 static const struct platform *const platforms[] = {
 	&platform_redwood,
-	&platform_y2s,
+	&platform_exynos990,
 };
 
 /* ------------------------------------------------------------------------ */
@@ -1892,8 +1893,8 @@ device_path_print(uint64_t unit, const efi_device_path *dp)
  * controller is at 0x13100000 (Samsung's ufs-exynos.c, Silicium's PlatformUfsLib), where offsets
  * and lengths in a request descriptor are in bytes and a slot is cleared by writing a one.
  */
-#define HC_PA              (PLAT == &platform_y2s ? 0x13100000ULL : 0x1d84000ULL)
-#define HC_EXYNOS          (PLAT == &platform_y2s)
+#define HC_PA              (PLAT == &platform_exynos990 ? 0x13100000ULL : 0x1d84000ULL)
+#define HC_EXYNOS          (PLAT == &platform_exynos990)
 #define HC_CAP             0x00
 #define HC_VER             0x08
 #define HC_IS              0x20
@@ -2788,7 +2789,7 @@ exception_handler(int64_t type, uint64_t *ctx)
 	print("loader image base %x (elr offset %x)\n", (uint64_t)(uintptr_t)&__ImageBase,
 	    ctx[EXC_CTX_ELR] - (uint64_t)(uintptr_t)&__ImageBase);
 	flush_log();
-	if (PLAT == &platform_y2s) {
+	if (PLAT == &platform_exynos990) {
 		/*
 		 * Nobody resets this phone unattended, and a reset wipes the message before anyone can
 		 * read it (the log write may fail in this state too). Keep it on the screen: Vol-Down +
@@ -3095,7 +3096,7 @@ static int
 reserve_download_buffer(void)
 {
 	if (download_base) return 1;
-	if (PLAT == &platform_y2s) {
+	if (PLAT == &platform_exynos990) {
 		if (!allocate_low_dma(DOWNLOAD_MAX_SIZE, 0x10000, &download_base)) return 0;
 	} else if (!allocate_loader_memory(DOWNLOAD_MAX_SIZE, 0x1000, 0x1000, ~0ULL, &download_base)) return 0;
 	print("download buffer: %x size %x\n", download_base, (uint64_t)DOWNLOAD_MAX_SIZE);
@@ -3143,7 +3144,7 @@ report_cellular_memory(void)
 	uint64_t map_size = sizeof(map_buf), key, stride;
 	uint32_t version, reserved = 0, normal_nc = 0;
 	cellular_memory_ready = 0;
-	if (PLAT != &platform_y2s) return;
+	if (PLAT != &platform_exynos990) return;
 	if (EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &key, &stride, &version)) ||
 	    stride < sizeof(efi_memory_descriptor) || map_size > sizeof(map_buf)) {
 		print("cellular memory: reserved 0/3 (memory map unavailable)\n");
@@ -3165,7 +3166,7 @@ reserve_wifi_dma(void)
 {
 	uint64_t at;
 
-	if (wifi_dma_size != 0 || PLAT != &platform_y2s) {
+	if (wifi_dma_size != 0 || PLAT != &platform_exynos990) {
 		if (wifi_dma_size) print("wifi dma: %x size %x (reused)\n", wifi_dma_base, wifi_dma_size);
 		return;
 	}
@@ -3202,7 +3203,7 @@ reserve_display_pool(void)
 {
 	static const uint64_t sizes[] = { 192ULL << 20, 128ULL << 20, 64ULL << 20 };
 
-	if (display_pool_size != 0 || PLAT != &platform_y2s) {
+	if (display_pool_size != 0 || PLAT != &platform_exynos990) {
 		if (display_pool_size) print("display pool: %x size %x (reused)\n", display_pool_base, display_pool_size);
 		return;
 	}
@@ -4021,7 +4022,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		 * is in .text, which the firmware maps read-only: not written from here, it is 0 in the image) */
 		flush_dcache((uint64_t)(uintptr_t)&kernel_cpu_trampoline,
 		    (uint64_t)(uintptr_t)kernel_cpu_resume_data + sizeof(uint64_t) * 17);
-		console_suspect = PLAT == &platform_y2s;
+		console_suspect = PLAT == &platform_exynos990;
 		if (checkpoint == CHECKPOINT_SELFTEST) {
 			/* Do not enter the kernel at all: exercise only the return path. */
 			jump_to_kernel((uint64_t)(uintptr_t)&loader_return_stub, 0);
@@ -5250,7 +5251,8 @@ stage_last_log(void)
 /*
  * Where super's free tail begins: past the last logical partition in super's LP metadata, which differs per phone
  * and firmware. y2s (SM-G986B): 0x184B00000. x1slte (SM-G980F, G980FXXSNHYB7): 0x1E8B04000 -- 0x184B00000 is
- * inside its vendor partition. Set with -DSUPER_TAIL_START=... (xnuloader/build.sh, from the device's .conf).
+ * inside its vendor partition. Set with -DSUPER_TAIL_START=... (xnuloader/build.sh, from the device's .conf);
+ * 0 means the layout is not measured yet and every write inside super is refused.
  */
 #ifndef SUPER_TAIL_START
 #define SUPER_TAIL_START 0x1E8B04000ULL
@@ -5288,7 +5290,8 @@ stage_write(const char *part, uint64_t off)
 		if (off != 0 || stage_len < 512 || memcmp(stage_buf + 257, "ustar", 5) != 0) {
 			return "refused: up_param takes only a tar of pictures, from offset 0";
 		}
-	} else if (!(str_eq(part, "recovery") || str_eq(part, "boot") || (str_eq(part, "super") && off >= SUPER_TAIL_START))) {
+	} else if (!(str_eq(part, "recovery") || str_eq(part, "boot") ||
+	             (str_eq(part, "super") && SUPER_TAIL_START != 0 && off >= SUPER_TAIL_START))) {
 		return "refused: only recovery, boot, up_param, super's free tail (SUPER_TAIL_START) and the userdata window";
 	}
 	if (bio == NULL || bio->media == NULL || src == NULL || len == 0) {
@@ -5632,7 +5635,7 @@ reserve_cellular_memory(void)
 	static uint8_t map[65536];
 	uint64_t bytes = sizeof(map), key, stride;
 	uint32_t version;
-	if (PLAT != &platform_y2s) return 0;
+	if (PLAT != &platform_exynos990) return 0;
 	cp_dxe = cellular_dxe_services();
 	if (!cp_dxe) return 0;
 	if (EFI_ERROR(BS->get_memory_map(&bytes, map, &key, &stride, &version)) ||
@@ -6218,14 +6221,14 @@ efi_main(efi_handle image, efi_system_table *st)
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
-	if (PLAT == &platform_y2s && SCREEN.base != 0) {
+	if (PLAT == &platform_exynos990 && SCREEN.base != 0) {
 		boot_logo();
 	}
 #ifdef CELLULAR_PREFLIGHT_ONLY
 	return cellular_memory_preflight();
 #endif
 #ifdef CELLULAR_RESERVE_CP
-	if (PLAT == &platform_y2s) {
+	if (PLAT == &platform_exynos990) {
 		if (reserve_cellular_memory()) {
 			print("cellular reservation: retained for iOS; modem stays off\n");
 		} else {
@@ -6234,7 +6237,7 @@ efi_main(efi_handle image, efi_system_table *st)
 		}
 	}
 #endif
-	if (PLAT == &platform_y2s) {
+	if (PLAT == &platform_exynos990) {
 		y2s_calliope_stop();
 	}
 
@@ -6257,7 +6260,7 @@ efi_main(efi_handle image, efi_system_table *st)
 		bootui = 0;             /* dev mode (x1slte.sh DEVMODE=1): the HackiOS menu with its countdown, and the text */
 		screen_quiet = 0;
 	}
-	if (PLAT != &platform_y2s) {
+	if (PLAT != &platform_exynos990) {
 		screen_quiet = 0;       /* (QEMU and the rest: as before) */
 	}
 	if (have_payload && pi.usb_mode && usb_start()) {
@@ -6266,7 +6269,7 @@ efi_main(efi_handle image, efi_system_table *st)
 	}
 
 	/* y2s: the boot menu (Boot iOS by itself after 3 s, Log access over USB, Download Mode) */
-	if (have_payload && PLAT == &platform_y2s && SCREEN.base != 0 && !pi.usb_mode) {
+	if (have_payload && PLAT == &platform_exynos990 && SCREEN.base != 0 && !pi.usb_mode) {
 		y2s_menu_loop();
 	}
 	/* One-shot mode: run the kernel that came with the image, then reset. */
