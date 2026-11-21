@@ -56,13 +56,16 @@ class SettingsManager (UpdateSettingsManager, SetupSettingsManager, PrEvalSettin
         return CommonPlatform.TargetsSupported
 
     def GetRequiredSubmodules (self):
+        # The build only needs the top-level submodule contents. Their nested
+        # test/SPDM submodules (wycheproof, cmocka, a second OpenSSL) are not
+        # used by the z3s platform, so do not make setup recurse into them.
         return [
-            RequiredSubmodule ("Binaries", True),
-            RequiredSubmodule ("Common/Mu", True),
-            RequiredSubmodule ("Common/Mu_OEM_Sample", True),
-            RequiredSubmodule ("Mu_Basecore", True),
-            RequiredSubmodule ("Silicium-ACPI", True),
-            RequiredSubmodule ("Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl", True)
+            RequiredSubmodule ("Binaries", False),
+            RequiredSubmodule ("Common/Mu", False),
+            RequiredSubmodule ("Common/Mu_OEM_Sample", False),
+            RequiredSubmodule ("Mu_Basecore", False),
+            RequiredSubmodule ("Silicium-ACPI", False),
+            RequiredSubmodule ("Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl", False)
         ]
 
     def SetArchitectures (self, list_of_requested_architectures):
