@@ -1,15 +1,21 @@
 {
   "schema": 1,
   "id": "z3s",
-  "name": "Galaxy S20 Ultra (Exynos)",
+  "name": "Galaxy S20 Ultra 5G (Exynos)",
   "platform": "exynos990",
   "status": "unmaintained",
   "maintainers": [],
-  "models": [],
-  "recovery_products": [],
-  "bootloaders": [],
+  "models": [
+    "SM-G988B"
+  ],
+  "recovery_products": [
+    "z3s"
+  ],
+  "bootloaders": [
+    "G988BXXUBDUI5"
+  ],
   "installer_validated": false,
   "partitions": {},
   "layout": {},
-  "evidence": null
+  "evidence": "docs/devices/z3s/README.md"
 }
