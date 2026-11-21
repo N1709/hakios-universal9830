@@ -70,11 +70,23 @@ BootShim copies the UEFI FD to `0xE8000000` and jumps to it, the UEFI starts
 still needs its own recovery partition size and AVB footer, measured from the
 phone's GPT, before an image can be flashed.
 
+## Payload slot
+
+The FD artifact is 2 MiB and its `0x100000..0x200000` tail is erased. Both
+`XnuLoader.h` and `xnuloader/loader.c` read the `XNUP` payload at `0xE8100000`
+(FD + `0x100000`), so this FD alone cannot start `loader.efi`. Splice the
+payload into the FD tail the way `x1slte.sh payload` does. The generic
+`xnu/mkxnuimg.py` path appends the payload after the FD and the BootShim copies
+it to `PAYLOAD_BASE` (`0xF0000000` for z3s), which does not satisfy either
+loader; fix that path before building a z3s boot image.
+
 ## Status
 
 The FD builds with `build.sh` and in the `build-z3s-uefi` GitHub Actions
 workflow: 2 MiB, SHA-256
 `e749b56787c003856ef33646416ac733b9760fc0d82f94455d86bd1aa7065fa7`.
-It has not been booted on a z3s, and the phone's partition map is not measured.
-Treat every address above as a starting point to verify on hardware, not as a
-working configuration.
+REA's `inspect-uefi-firmware` maps it with complete coverage (2 volumes, 60 FFS
+files) and the `[XNU]` hook is present in `BdsDxe`, but the payload slot is
+empty. It has not been booted on a z3s, and the phone's partition map is not
+measured. Treat every address above as a starting point to verify on hardware,
+not as a working configuration.

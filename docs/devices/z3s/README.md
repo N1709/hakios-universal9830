@@ -115,6 +115,11 @@ skipped. The kernel build is the same Exynos 990 kernel used by x1slte and y2s:
 one kernel, one loader, per-device profiles. `out/unified/manifest.json` records
 the status, board config and boot line of every alias.
 
+The z3s payload slot is at FD + `0x100000` (`0xE8100000`). The generic
+`xnu/mkxnuimg.py` path copies the payload to `PAYLOAD_BASE` (`0xF0000000`), so
+do not use it for z3s until that path is fixed; splice the payload into the FD
+tail like `x1slte.sh payload` does. The current FD artifact has no payload.
+
 ## Before flashing
 
 1. Dump the GPT (`sgdisk --backup`) and record `recovery`, `super`, `userdata`,
