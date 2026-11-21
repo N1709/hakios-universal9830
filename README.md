@@ -14,15 +14,15 @@ profile.
 | board | model | state |
 |---|---|---|
 | `x1slte` | Galaxy S20 LTE, SM-G980F | boots; the only hardware-validated target |
-| `z3s` | Galaxy S20 Ultra 5G, SM-G988B | bring-up; kernel/loader sources and UEFI package in tree, **not booted**, GPT not measured |
-| `y2s` | Galaxy S20+ 5G | experimental kernel only; not booted |
-| `x1s` | Galaxy S20 5G | experimental kernel only; not booted |
-| `c1s` | Galaxy Note20 | experimental kernel only; not booted |
-| `c2s` | Galaxy Note20 Ultra | experimental kernel only; not booted |
-| `r8s` | Galaxy S20 FE | experimental kernel only; not booted |
+| `z3s` | Galaxy S20 Ultra 5G, SM-G988B | sources and UEFI package in tree; **not tested on hardware yet**, GPT not measured |
+| `y2s` | Galaxy S20+ 5G | profile and kernel build path available; **not tested on hardware yet** |
+| `x1s` | Galaxy S20 5G | profile and kernel build path available; **not tested on hardware yet** |
+| `c1s` | Galaxy Note20 | profile and kernel build path available; **not tested on hardware yet** |
+| `c2s` | Galaxy Note20 Ultra | profile and kernel build path available; **not tested on hardware yet** |
+| `r8s` | Galaxy S20 FE | profile and kernel build path available; **not tested on hardware yet** |
 
-Nothing here is a promise that a phone will boot. Only `x1slte` has boot
-evidence. `z3s` has no boot log, no measured partition map and no installer.
+Nothing here is a promise that a phone will boot. Only `x1slte` has hardware
+test evidence. `z3s` has no test log, no measured partition map and no installer.
 
 ## Quick start
 
