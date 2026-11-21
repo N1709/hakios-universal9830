@@ -11,6 +11,7 @@
 #   3. images   userland/build.sh (REST=1 and the profile's USERLAND_VARS)
 #                                                               -- needs ios165/fetch.sh to have run
 #   4. boot     xnu/mkxnuimg.py -> out/<device>-boot.img             -- phones: the UEFI image for `fastboot boot`
+#                                                                  (BOOT_CHAIN=none in the profile skips this step)
 #
 #   SKIP="kernel loader images boot"   leave steps out
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
@@ -39,7 +40,7 @@ fi
 
 if ! skip loader; then
 	if command -v clang >/dev/null && command -v lld-link >/dev/null; then
-		xnuloader/build.sh && echo "build: loader xnuloader/loader.efi"
+		LOG_IN_RECOVERY=$LOG_IN_RECOVERY xnuloader/build.sh && echo "build: loader xnuloader/loader.efi"
 	else
 		echo "build: no clang/lld-link: using prebuilt/loader.efi"
 	fi
@@ -52,10 +53,14 @@ if ! skip images; then
 fi
 
 if ! skip boot && [ "$KIND" = phone ]; then
-	# the UEFI with the loader inside, the way `xl enter` makes it: the loader then brings up its USB link
-	L=xnuloader/loader.efi; [ -f $L ] || L=prebuilt/loader.efi
-	python3 xnuloader/mkpayload.py -o out/usb-payload.bin loader.efi=$L --usb > /dev/null
-	FD_BASE=$FD_BASE FD_SIZE=$FD_SIZE PAYLOAD_BASE=$PAYLOAD_BASE UEFI_FD=$UEFI_FD DTB=$DTB UEFI_TARGET=$UEFI_TARGET \
-		python3 xnu/mkxnuimg.py -p out/usb-payload.bin -o out/$DEVICE-boot.img
-	echo "build: out/$DEVICE-boot.img -- boot it with: fastboot boot out/$DEVICE-boot.img (or common/run.sh $DEVICE)"
+	if [ "${BOOT_CHAIN:-uefi}" = none ]; then
+		echo "build: BOOT_CHAIN=none: no boot image for $DEVICE (see common/devices/$DEVICE.conf)"
+	else
+		# the UEFI with the loader inside, the way `xl enter` makes it: the loader then brings up its USB link
+		L=xnuloader/loader.efi; [ -f $L ] || L=prebuilt/loader.efi
+		python3 xnuloader/mkpayload.py -o out/usb-payload.bin loader.efi=$L --usb > /dev/null
+		FD_BASE=$FD_BASE FD_SIZE=$FD_SIZE PAYLOAD_BASE=$PAYLOAD_BASE UEFI_FD=$UEFI_FD DTB=$DTB UEFI_TARGET=$UEFI_TARGET \
+			python3 xnu/mkxnuimg.py -p out/usb-payload.bin -o out/$DEVICE-boot.img
+		echo "build: out/$DEVICE-boot.img -- boot it with: fastboot boot out/$DEVICE-boot.img (or common/run.sh $DEVICE)"
+	fi
 fi
