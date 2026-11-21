@@ -69,26 +69,31 @@ state which carriers/features were tested; update known issues for each release.
 A maintainer without current hardware access should mark the profile unmaintained.
 Source contributors can still improve common code without claiming device support.
 
-## Experimental S20+ and S20 Ultra kernel builds
+## Experimental Exynos 990 kernel builds and the unified target
 
-The Exynos Galaxy S20+ (SM-G985F and SM-G986B) and S20 Ultra (SM-G988B)
-have a manual source-build entry point for port contributors. On macOS:
+Every Exynos 990 alias (`z3s`, `x1slte`, `y2s`, `x1s`, `c1s`, `c2s`, `r8s`)
+uses the same GICv2 kernel and the same `xnuloader`. On macOS:
 
 ```sh
-./build.sh kernel --device y2s --experimental
-./build.sh kernel --device z3s --experimental
+make kernel                 # z3s, the default bring-up target
+make kernel DEVICE=y2s
+make unified                # plan every alias and its boot line
+make unified-build          # build the kernel once -> out/unified/
 ```
 
-The output under `out/experimental/<board>/` is the shared GICv2 Exynos 990
-kernel plus its build manifest and checksum. The target name records which
-bring-up it was built for. No board-specific settings are applied by this
-kernel build. Boot on either model is unverified, and there is no installer
-or GitHub Actions build for these models.
+The output under `out/experimental/<board>/` is the shared kernel plus its
+build manifest and checksum. `out/unified/mach.exynos990` is the same kernel
+under one family name, with `manifest.json` and a `bootargs.txt` per alias.
+No board-specific settings are applied by the kernel build. Boot is unverified
+on every target except the hardware-qualified `x1slte`, and there is no
+installer for the others.
 
 For first boot, bring up a board-specific UEFI and loader configuration from
 the model's own boot header, DTB/DTBO, RAM reservations and framebuffer handoff.
-The S20+ has a [legacy UEFI starting point](../../devices/exynos990/y2s/legacy/uefi-y2s/).
-Its historical flashing script encodes fixed storage offsets. Measure the
-target's own partition map before assembling any images. Bring up early logs
-first, then the display and touch. Camera support can follow after boot;
-modules and calibration need separate hardware validation.
+The S20+ has a [legacy UEFI starting point](../../devices/exynos990/y2s/legacy/uefi-y2s/);
+the S20 Ultra has the [z3s UEFI package](../../devices/exynos990/z3s/uefi-z3s/),
+derived from the same S5E9830 platform. Its historical flashing script encodes
+fixed storage offsets. Measure the target's own partition map before assembling
+any images. Bring up early logs first, then the display and touch. Camera
+support can follow after boot; modules and calibration need separate hardware
+validation.

@@ -2,7 +2,7 @@
 
 Exynos 990, 12 or 16 GB RAM, 1440x3200 60/120 Hz, 5G, ultrasonic fingerprint.
 This profile is the first target of the unified Exynos 990 tree. It is a
-development profile: the kernel and loader build, but **nothing has booted on
+bring-up profile: the kernel and loader build, but **nothing has booted on
 this phone yet**, and its partition table has not been measured.
 
 ## Status
@@ -11,15 +11,16 @@ this phone yet**, and its partition table has not been measured.
 |---|---|
 | device tree facts | read from the stock `G988BXXUBDUI5` boot image |
 | XNU kernel | builds from the shared Exynos 990 sources (GICv2) |
-| xnuloader | builds; selects the Exynos 990 platform by framebuffer base |
+| xnuloader | builds; selects `platform_exynos990` by the `0xF1000000` display window (verify on z3s) |
 | z3s UEFI | source package in `uefi-z3s/`; no binary built or run |
 | boot image | not built: no z3s UEFI FD, no recovery size |
 | iOS userland | not built: needs the private Apple inputs |
 | installer | none: the GPT is not measured |
 
-`TARGET_STATUS=development` means "buildable source profile", not "supported".
-The release tools still skip it for installers because `installer_validated`
-is false and there is no hardware qualification.
+`TARGET_STATUS=unmaintained` is deliberate: the identity and board facts are
+measured, but the partition map is not, and nothing has booted. The kernel is
+still buildable through the experimental path. The release tools skip the
+target for installers because `installer_validated` is false.
 
 ## Identity
 
@@ -58,8 +59,9 @@ The stock boot header of this phone:
 | page size | 2048 |
 | header version | 2 |
 
-The z3s UEFI package is a copy of the y2s S5E9830 package with the z3s DTB and
-SMBIOS strings. It has not been compiled in this tree. See
+The z3s UEFI package is a copy of the y2s S5E9830 package with the z3s DTB,
+SMBIOS strings, BootManager hook and BootShim. It has not been compiled in
+this tree. See
 [`devices/exynos990/z3s/uefi-z3s/README.md`](../../../devices/exynos990/z3s/uefi-z3s/README.md).
 
 ## Measured hardware facts
@@ -96,8 +98,12 @@ KeypadDeviceLib uses the same pins, which is why the z3s package derives from it
 
 ```sh
 # shared kernel + loader (no Apple SDK: prebuilt kernel)
-./build.sh kernel --device z3s --experimental
+make kernel                 # z3s is the default kernel target
 SKIP="images boot" common/build.sh z3s
+
+# one kernel and one boot line per alias
+make unified                # plan only
+make unified-build          # macOS + theos; -> out/unified/
 
 # full boot image, once a z3s UEFI FD exists
 UEFI_FD=/path/to/SILICIUM_UEFI.fd common/build.sh z3s
@@ -105,7 +111,8 @@ UEFI_FD=/path/to/SILICIUM_UEFI.fd common/build.sh z3s
 
 Without a z3s UEFI FD the boot-image step is skipped (`BOOT_CHAIN=none`). The
 kernel build is the same Exynos 990 kernel used by x1slte and y2s: one kernel,
-one loader, per-device profiles.
+one loader, per-device profiles. `out/unified/manifest.json` records the
+status, board config and boot line of every alias.
 
 ## Before flashing
 
