@@ -3,11 +3,13 @@
 # Building (nothing here touches a phone)
 #   make check           source checks: scripts parse, tests pass, no Apple/vendor files, no secrets (CI runs this)
 #   make doctor          what this Mac still needs for a full build (toolchain, IPSW, firmware, UEFI)
-#   make kernel          the XNU kernel for $(DEVICE)          -> out/kernel/mach.$(DEVICE)
+#   make kernel          the XNU kernel for $(DEVICE)          -> out/.../mach.$(DEVICE)
 #   make images          root.apfs + system.apfs from your own IPSW (userland/build-gpu-y2s.sh)
 #   make release         every output release.conf asks for   -> dist/release/ (TWRP install ZIP, restore ZIP)
 #   make restore         only the Jesvi-iOS-Restore ZIP (back to stock Android; no Apple inputs)
 #   make devices         the devices this tree knows of, and how far each one works
+#   make unified         plan one Exynos 990 kernel and a boot line for every alias (z3s first)
+#   make unified-build   build that kernel once (macOS + theos) -> out/unified/
 #
 # Developing on the phone (the device's own loop, see docs/release/building.md)
 #   make dev-loop        rebuild the boot payload with the working boot line and pack it (./x1slte.sh loop)
@@ -15,41 +17,49 @@
 # Without Apple's software at all
 #   make qemu-open       the open kernel + a placeholder loader + the `hello` RAM disk, in QEMU
 #
-#   DEVICE=x1slte        the target under devices/exynos990/ (default x1slte)
+#   DEVICE=z3s           the kernel bring-up target under devices/exynos990/ (default z3s)
+#   RELEASE_DEVICE=x1slte  the target make doctor/release use (the only installer-qualified board)
 #   JOBS=4               parallel kernel jobs
 #   SECS=600             QEMU session length
 
-DEVICE ?= x1slte
+DEVICE ?= z3s
+RELEASE_DEVICE ?= x1slte
 JOBS ?= 4
 SECS ?= 600
 ARGS_OPEN ?= cpus=1
 
-.PHONY: help check doctor kernel images release restore devices dev-loop loader-open hello qemu-open clean
+.PHONY: help check doctor kernel images release restore devices unified unified-build dev-loop loader-open hello qemu-open clean
 
 help:
-	@sed -n '2,21p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,23p' Makefile | sed 's/^# \{0,1\}//'
 
 check:
 	bash ci/check.sh
 	python3 tools/release/audit.py --output out/publication-audit.json
 
 doctor:
-	./build.sh doctor --device $(DEVICE) --images
+	./build.sh doctor --device $(RELEASE_DEVICE) --images
 
 kernel:
-	./build.sh kernel --device $(DEVICE) --jobs $(JOBS)
+	./build.sh kernel --device $(DEVICE) --jobs $(JOBS) $(if $(filter-out x1slte,$(DEVICE)),--experimental)
 
 images:
 	bash userland/build-gpu-y2s.sh
 
 release:
-	./build.sh release --set TARGETS=$(DEVICE)
+	./build.sh release --set TARGETS=$(RELEASE_DEVICE)
 
 restore:
-	./build.sh release --set TARGETS=$(DEVICE) --set OUTPUTS=restore
+	./build.sh release --set TARGETS=$(RELEASE_DEVICE) --set OUTPUTS=restore
 
 devices:
 	./build.sh devices
+
+unified:
+	./build.sh unified
+
+unified-build:
+	./build.sh unified --build --jobs $(JOBS)
 
 dev-loop:
 	./x1slte.sh loop

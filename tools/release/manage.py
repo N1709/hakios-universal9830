@@ -11,7 +11,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPERIMENTAL_KERNEL_TARGETS = ('y2s', 'z3s')
+EXPERIMENTAL_KERNEL_TARGETS = ('x1s', 'c1s', 'c2s', 'r8s', 'y2s', 'z3s')
+UNIFIED_ORDER = ('z3s', 'x1slte', 'y2s', 'x1s', 'c1s', 'c2s', 'r8s')
 
 
 def profile(name):
@@ -117,6 +118,48 @@ def doctor(device, images=False, experimental_kernel=False):
     return problems
 
 
+def unified(jobs, build):
+    """One Exynos 990 kernel for every alias: plan, then optionally build it once.
+
+    The kernel and the loader are shared by the whole family; a target only adds
+    its board profile and boot line. This command never builds an installer: the
+    release path still refuses targets without a measured partition map.
+    """
+    import targets
+    rows = []
+    for name in UNIFIED_ORDER:
+        d = profile(name)
+        t = targets.load(name)
+        rows.append((name, d['status'], t['TARGET_BOARD_CONF'] or '-', targets.bootline(t)))
+    width = max(len(r[0]) for r in rows)
+    for name, status, board, line in rows:
+        print(f'{name:^{width}}  {status:13}  {board}')
+        print(f'{"":{width}}  boot: {line}')
+    if not build:
+        print('unified: plan only; pass --build to compile the shared Exynos 990 kernel')
+        return 0
+    if not 1 <= jobs <= 64:
+        raise ValueError('jobs must be 1..64')
+    # z3s is the anchor: its experimental output is the family kernel artifact.
+    run('bash', 'ci/build-kernel.sh', str(jobs), 'z3s')
+    src = ROOT / 'out/experimental/z3s/mach.z3s'
+    if not src.is_file():
+        raise ValueError('the shared kernel build produced no out/experimental/z3s/mach.z3s')
+    out = ROOT / 'out/unified'
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, out / 'mach.exynos990')
+    manifest = {'platform': 'exynos990', 'kernel': 'mach.exynos990',
+                'source': str(src.relative_to(ROOT)), 'targets': {}}
+    for name, status, board, line in rows:
+        d = out / name
+        d.mkdir(exist_ok=True)
+        (d / 'bootargs.txt').write_text(line + '\n')
+        manifest['targets'][name] = {'status': status, 'board_conf': board, 'bootargs': line}
+    (out / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+    print(f'unified: {out / "mach.exynos990"} for {len(rows)} targets; manifest in {out / "manifest.json"}')
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -147,6 +190,9 @@ def main():
     p = sub.add_parser('package')
     p.add_argument('--device', default='x1slte')
     p.add_argument('--output', required=True, type=Path)
+    p = sub.add_parser('unified', help='one Exynos 990 kernel and boot lines for every alias')
+    p.add_argument('--jobs', type=int, default=4)
+    p.add_argument('--build', action='store_true', help='compile the shared kernel (requires macOS + theos)')
     for cmd in ('doctor', 'kernel', 'images'):
         p = sub.add_parser(cmd)
         p.add_argument('--device', default='x1slte')
@@ -154,7 +200,7 @@ def main():
             p.add_argument('--images', action='store_true')
         elif cmd == 'kernel':
             p.add_argument('--experimental', action='store_true',
-                           help='build a shared Exynos 990 kernel artifact for y2s or z3s bring-up')
+                           help='build a shared Exynos 990 kernel artifact for a bring-up target')
             p.add_argument('--jobs', type=int, default=4)
         elif cmd == 'images':
             p.add_argument('--development', action='store_true',
@@ -200,14 +246,16 @@ def main():
             d = profile(p.parent.name)
             print(f'{d["id"]:8} {d["status"]:13} {d["name"]}; installer: unqualified')
         return 0
+    if a.command == 'unified':
+        return unified(a.jobs, a.build)
     experimental_kernel = a.command == 'kernel' and a.experimental
     if a.command == 'kernel':
         if not 1 <= a.jobs <= 64:
             raise ValueError('jobs must be 1..64')
         if experimental_kernel and a.device not in EXPERIMENTAL_KERNEL_TARGETS:
-            raise ValueError('--experimental requires --device y2s or z3s')
+            raise ValueError('--experimental requires --device ' + ', '.join(EXPERIMENTAL_KERNEL_TARGETS))
         if not experimental_kernel and a.device != 'x1slte':
-            raise ValueError('use --experimental for y2s or z3s kernel bring-up')
+            raise ValueError('use --experimental for a bring-up target')
     problems = doctor(a.device, images=a.command == 'images' or getattr(a, 'images', False),
                       experimental_kernel=experimental_kernel)
     if problems:
