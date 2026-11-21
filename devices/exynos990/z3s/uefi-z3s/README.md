@@ -53,6 +53,9 @@ python3 build_uefi.py -d z3s -r RELEASE
 # -> Build/z3sPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd
 ```
 
+The same build runs in `.github/workflows/build-z3s-uefi.yml`. Download the
+`z3s-uefi` artifact from that workflow instead of building on the phone.
+
 The overlay already contains the applied BootManager/BootShim files, so
 `z3s.patch` is only a review record of the shared changes; do not apply it on
 top of the copied files. `common/build.sh z3s` consumes the FD through
@@ -69,6 +72,9 @@ phone's GPT, before an image can be flashed.
 
 ## Status
 
-Source package only. No z3s UEFI binary has been built or booted in this tree,
-and the phone's partition map is not measured. Treat every address above as a
-starting point to verify on hardware, not as a working configuration.
+The FD builds with `build.sh` and in the `build-z3s-uefi` GitHub Actions
+workflow: 2 MiB, SHA-256
+`e749b56787c003856ef33646416ac733b9760fc0d82f94455d86bd1aa7065fa7`.
+It has not been booted on a z3s, and the phone's partition map is not measured.
+Treat every address above as a starting point to verify on hardware, not as a
+working configuration.

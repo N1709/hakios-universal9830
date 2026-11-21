@@ -12,8 +12,8 @@ on hardware yet**, and its partition table has not been measured.
 | device tree facts | read from the stock `G988BXXUBDUI5` boot image |
 | XNU kernel | builds from the shared Exynos 990 sources (GICv2) |
 | xnuloader | builds; selects `platform_exynos990` by the `0xF1000000` display window (verify on z3s) |
-| z3s UEFI | source package in `uefi-z3s/`; no binary built or run |
-| boot image | not built: no z3s UEFI FD, no recovery size |
+| z3s UEFI | FD builds from `uefi-z3s/` (2 MiB, SHA-256 `e749b567…65fa7`); not run |
+| boot image | not built: no recovery size, GPT not measured |
 | iOS userland | not built: needs the private Apple inputs |
 | installer | none: the GPT is not measured |
 
@@ -60,8 +60,9 @@ The stock boot header of this phone:
 | header version | 2 |
 
 The z3s UEFI package is a copy of the y2s S5E9830 package with the z3s DTB,
-SMBIOS strings, BootManager hook and BootShim. It has not been compiled in
-this tree. See
+SMBIOS strings, BootManager hook and BootShim. It builds with
+`uefi-z3s/build.sh`; the `build-z3s-uefi` GitHub Actions workflow produces the
+FD. It has not been booted. See
 [`devices/exynos990/z3s/uefi-z3s/README.md`](../../../devices/exynos990/z3s/uefi-z3s/README.md).
 
 ## Measured hardware facts
@@ -105,14 +106,14 @@ SKIP="images boot" common/build.sh z3s
 make unified                # plan only
 make unified-build          # macOS + theos; -> out/unified/
 
-# full boot image, once a z3s UEFI FD exists
+# full boot image, once the GPT is measured
 UEFI_FD=/path/to/SILICIUM_UEFI.fd common/build.sh z3s
 ```
 
-Without a z3s UEFI FD the boot-image step is skipped (`BOOT_CHAIN=none`). The
-kernel build is the same Exynos 990 kernel used by x1slte and y2s: one kernel,
-one loader, per-device profiles. `out/unified/manifest.json` records the
-status, board config and boot line of every alias.
+Without `UEFI_FD` set (and with `BOOT_CHAIN=none`), the boot-image step is
+skipped. The kernel build is the same Exynos 990 kernel used by x1slte and y2s:
+one kernel, one loader, per-device profiles. `out/unified/manifest.json` records
+the status, board config and boot line of every alias.
 
 ## Before flashing
 
@@ -126,7 +127,7 @@ status, board config and boot line of every alias.
 
 ## Known gaps
 
-- No z3s UEFI binary, no hardware test log, no display/touch test.
+- The UEFI FD builds, but there is no hardware test log and no display/touch test.
 - Camera profile not written: the Ultra's sensors differ from the S20's.
 - Fingerprint (ultrasonic) and 5G modem are not brought up.
 - 16 GB RAM variant needs its own high-bank and EL2 reservation.
