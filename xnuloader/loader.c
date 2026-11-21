@@ -4687,7 +4687,16 @@ usb_command_loop(void)
 /* y2s: the boot menu, USB through EFI_USBFN_IO_PROTOCOL, Download Mode       */
 /* (PLANS/09-standalone.md)                                                  */
 
-#include "menu_font.h"
+#if defined(__has_include)
+# if __has_include("menu_font.h")
+#  include "menu_font.h"
+# else
+/* make loader-open: no pinned XNU source, so the menu text is blank. */
+static const unsigned char menu_font[256 * 16];
+# endif
+#else
+# include "menu_font.h"
+#endif
 
 #define STAGE_SIZE      (96ULL << 20)   /* stage_buf: where downloads land on y2s (a whole recovery image) */
 
