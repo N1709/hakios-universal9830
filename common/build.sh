@@ -15,6 +15,11 @@
 #   SKIP="kernel loader images boot"   leave steps out
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 load_device "$1"; shift
+BOOT_CHAIN=${BOOT_CHAIN:-uefi}
+if [ "$BOOT_CHAIN" = none ]; then
+	echo "build: $DEVICE has no boot chain yet: kernel and images only (no loader, no boot image)"
+	SKIP="loader boot ${SKIP:-}"
+fi
 skip() { [[ " $SKIP " == *" $1 "* ]]; }
 mkdir -p out
 
