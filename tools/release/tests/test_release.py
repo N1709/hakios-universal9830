@@ -248,11 +248,18 @@ class SafetyTests(unittest.TestCase):
             profile('../x1slte')
 
     def test_roadmap_targets_are_not_marked_supported(self):
-        for name in ('y2s', 'z3s', 'c1s', 'c2s', 'r8s'):
+        # Identity is not support: z3s has one measured model, but no measured
+        # partition map, no installer and no boot evidence, so it stays out of
+        # the supported set with every other bring-up alias.
+        for name in ('x1s', 'y2s', 'z3s', 'c1s', 'c2s', 'r8s'):
             d = profile(name)
             self.assertEqual(d['status'], 'unmaintained')
             self.assertFalse(d['installer_validated'])
-            self.assertEqual(d['models'], [])
+            self.assertEqual(d['partitions'], {})
+            self.assertEqual(d['layout'], {})
+        self.assertEqual(profile('z3s')['models'], ['SM-G988B'])
+        for name in ('x1s', 'y2s', 'c1s', 'c2s', 'r8s'):
+            self.assertEqual(profile(name)['models'], [])
 
     def test_manifest_with_protected_target_rejected(self):
         from cache import digest
