@@ -9,9 +9,12 @@ display class and the same key GPIOs. Nothing here has run on a z3s yet.
 | path | purpose |
 |---|---|
 | `Platforms/Samsung/z3sPkg/` | Mu-Silicium platform: DSC/FDF, memory map, keypad |
+| `BootManagerLib/` | `XnuLoader.c`/`.h` and the BootManager hook that starts it |
+| `BootShim.S` | the shim that copies the FD to `0xE8000000` and jumps to it |
 | `Resources/Configs/z3s.toml` | BootShim / Android boot image v2 settings |
 | `Resources/DTBs/z3s.dtb` | stock z3s device tree from the phone's own `boot.img` |
-| `z3s.patch` | BootShim + XnuLoader changes, the same board-neutral patch as y2s |
+| `z3s.patch` | review diff of the shared BootShim/BootManager changes |
+| `LICENSE.Mu-Silicium` | licence of the Mu-Silicium pieces |
 
 The DTB is the FDT inside the Samsung DT table of the reference boot image
 `G988BXXUBDUI5` (kernel `0x10008000`, ramdisk `0x11000000`, tags
@@ -40,15 +43,21 @@ The package is built inside a Mu-Silicium tree that carries `S5E9830Pkg` and
 the Samsung silicon support, the same tree the y2s port uses:
 
 ```sh
-# copy Platforms/Samsung/z3sPkg and Resources/ into that tree, apply z3s.patch,
-# then:
+MU=/path/to/Mu-Silicium
+cp -a Platforms/Samsung/z3sPkg "$MU/Platforms/Samsung/"
+cp -a BootManagerLib/. "$MU/Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/"
+cp -a BootShim.S "$MU/BootShim/BootShim.S"
+cp -a Resources/. "$MU/Resources/"
+cd "$MU"
 python3 build_uefi.py -d z3s -r RELEASE
 # -> Build/z3sPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd
 ```
 
-`common/build.sh z3s` consumes that FD through `UEFI_FD`, or the release build
-finds it under `Mu-Silicium/Build/z3sPkg/`. The XNU loader payload is the same
-`xnuloader/loader.efi` used by x1slte.
+The overlay already contains the applied BootManager/BootShim files, so
+`z3s.patch` is only a review record of the shared changes; do not apply it on
+top of the copied files. `common/build.sh z3s` consumes the FD through
+`UEFI_FD`, or the release build finds it under `Mu-Silicium/Build/z3sPkg/`.
+The XNU loader payload is the same `xnuloader/loader.efi` used by x1slte.
 
 ## Boot chain
 
