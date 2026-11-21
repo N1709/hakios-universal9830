@@ -261,6 +261,18 @@ class SafetyTests(unittest.TestCase):
         for name in ('x1s', 'y2s', 'c1s', 'c2s', 'r8s'):
             self.assertEqual(profile(name)['models'], [])
 
+    def test_unified_plan_covers_every_alias(self):
+        import targets
+        from manage import BRINGUP_KERNEL_TARGETS, UNIFIED_ORDER
+        self.assertEqual(UNIFIED_ORDER[0], 'z3s')
+        self.assertEqual(set(UNIFIED_ORDER),
+                         {'z3s', 'x1slte', 'y2s', 'x1s', 'c1s', 'c2s', 'r8s'})
+        self.assertEqual(set(BRINGUP_KERNEL_TARGETS), set(UNIFIED_ORDER) - {'x1slte'})
+        for name in UNIFIED_ORDER:
+            line = targets.bootline(targets.load(name))
+            self.assertIn('ufs=2', line)
+            self.assertIn('ufs_native=1', line)
+
     def test_manifest_with_protected_target_rejected(self):
         from cache import digest
         from manage import ROOT
