@@ -1,5 +1,5 @@
 ; A constant on a phi edge, shared with a use after the branch: the shape that
-; lost MetalFaceMask_AddSeedPoint's `-1` (docs/air.md section 5d).
+; lost MetalFaceMask_AddSeedPoint's `-1` (docs/dev/air.md section 5d).
 ;
 ; Hand-written, not Apple's. Assemble and translate:
 ;

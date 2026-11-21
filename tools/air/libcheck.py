@@ -72,7 +72,7 @@ LIBS = ["ios165/rootfs/System/Library/CoreImage/PortraitFilters.cifilter/"
 # The air.* operations whose result is exactly defined, by the family name in
 # the declaration. The split matters: a function calling an approximate one
 # cannot be compared bit-exactly against anything, here or anywhere, and saying
-# so is not the same as saying it is wrong (docs/air.md section 4).
+# so is not the same as saying it is wrong (docs/dev/air.md section 4).
 APPROX = {"fast_pow", "fast_powr", "fast_exp", "fast_exp2", "fast_exp10", "fast_log",
           "fast_log2", "fast_log10", "fast_sin", "fast_cos", "fast_tan", "fast_atan2",
           "fast_rsqrt", "fast_divide", "fast_asin", "fast_acos", "fast_atan",

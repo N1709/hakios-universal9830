@@ -6,10 +6,10 @@
 # git does not: ath11k's text is BSD-3-Clause-Clear and is not kept in the repository.
 # Without that header redwood_wlfw.c compiles to a line that says so.
 #
-# usage: tools/mk-wlfw.sh          then build the kernel (./xnu-build.sh); again after a clean build
+# usage: tools/mk-wlfw.sh          then build the kernel (./xnu/xnu-build.sh); again after a clean build
 set -e
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
-source "$ROOT/xnu-env.sh"
+source "$ROOT/xnu/xnu-env.sh"
 ATH=$ROOT/xnu-deps/build/ath11k/src/ath11k
 [ -f "$ATH/qmi.c" ] || "$ROOT/tools/mk-ath11k.sh"
 OUT=$XNU_SRC/BUILD/obj/DEVELOPMENT_ARM64_${MACHINE:-BCM2837}/bsd/DEVELOPMENT

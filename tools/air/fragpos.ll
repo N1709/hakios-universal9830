@@ -22,7 +22,7 @@
 ;                    the flag is load-bearing, not decoration.
 ;
 ; Written here rather than generated because it is one function of one
-; instruction; the metadata keys are the AIR interface (docs/air.md section 3)
+; instruction; the metadata keys are the AIR interface (docs/dev/air.md section 3)
 ; and nothing in this file comes out of Apple's libraries.
 ;
 ;   llvm-as -o fragpos.bc tools/air/fragpos.ll

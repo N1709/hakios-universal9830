@@ -28,6 +28,7 @@
  *       com.redwood.unlock      what the lock screen does after "swipe up to open"
  *       com.redwood.layers      write down the layers SpringBoard has on the screen: see layers()
  *       com.redwood.switcher    open the switcher of running applications: see switcher()
+ *       com.redwood.open        open a web page in Safari (mali2metal's tour): see open_page()
  *     In any other program given this library (INJECT in build.sh) only the last of them is
  *     answered, with that program's layers.
  */
@@ -154,6 +155,408 @@ replace_method_of_kind(char kind, const char *class_name, const char *selector, 
 	}
 	method_setImplementation(method, replacement);
 	return original;
+}
+
+/*
+ * x1slte (2026-11-06): a method replaced by name only, its address said so it can be pinned (the S20's Wi-Fi bars, whose
+ * methods were not looked up in the cache yet). Only for selectors whose shape is known: no arguments, an int back.
+ */
+static IMP
+replace_method_by_name(const char *class_name, const char *selector, IMP replacement)
+{
+	Class cls = objc_getClass(class_name);
+	Method method = cls == NULL ? NULL : class_getInstanceMethod(cls, sel_registerName(selector));
+	IMP original = method ? method_getImplementation(method) : NULL;
+
+	say("redwood: -[%s %s] %s at %#lx (unslid)\n", class_name, selector, original ? "replaced by name" : "not found",
+	    original ? (uintptr_t)original - slide : 0);
+	if (original != NULL) {
+		method_setImplementation(method, replacement);
+	}
+	return original;
+}
+
+/*
+ * SpringBoard's own frame rate caps (A, 2026-11-14, from Scion's inject_sb.c e3c8ac7; boot-arg sb_fps=0 leaves them).
+ * Some SpringBoard animations ask CoreAnimation for fewer frames than the panel has through their settings' frame rate
+ * range: the crossfade of the page dots and the search pill after every home-screen page slide is
+ * CAFrameRateRangeMake(20, 30, 0) (-[SBFolderScrollAccessoryView _setUpAnimation], 16.5 20F66), so for ~600 ms after
+ * each swipe SpringBoard's display link runs at 30 a second. On an iPhone that saves power; here it is a visible stutter
+ * (Scion measured missed refreshes 5.4-6.5/s -> 0.6-1.6/s). A range whose most is under 60 gets 60 as most and preferred.
+ */
+#define SB_FPS_FLOOR    60.0f
+typedef struct {
+	float minimum, maximum, preferred;
+} sb_frame_rate_range;
+static unsigned sb_fps_raised;
+
+static sb_frame_rate_range
+sb_fps_raise(sb_frame_rate_range range)
+{
+	if (range.maximum > 0.0f && range.maximum < SB_FPS_FLOOR) {
+		range.maximum = SB_FPS_FLOOR;
+		range.preferred = SB_FPS_FLOOR;
+		__atomic_fetch_add(&sb_fps_raised, 1, __ATOMIC_RELAXED);
+	}
+	return range;
+}
+
+/* -[SBFFluidBehaviorSettings setFrameRateRange:highFrameRateReason:], -[SBFAnimationSettings ...]: "v32@0:8{CAFrameRateRange=fff}16I28" */
+static void (*original_fluid_set_range)(id self, SEL selector, sb_frame_rate_range range, unsigned reason);
+static void (*original_animation_set_range)(id self, SEL selector, sb_frame_rate_range range, unsigned reason);
+
+static void
+fluid_set_range(id self, SEL selector, sb_frame_rate_range range, unsigned reason)
+{
+	original_fluid_set_range(self, selector, sb_fps_raise(range), reason);
+}
+
+static void
+animation_set_range(id self, SEL selector, sb_frame_rate_range range, unsigned reason)
+{
+	original_animation_set_range(self, selector, sb_fps_raise(range), reason);
+}
+
+/*
+ * Icons kept built (A, 2026-11-14; boot-arg sb_keepicons=0 leaves Apple's). The sampler (kern.redwood.ksample=1) on
+ * SpringBoard's main thread during home-page swipes: ~19 % in -[SBIconListView _updateVisibleIconViewsWith...],
+ * ~15 % -[SBIconListView _addIconViewsForIcons:metrics:], ~12 % configureIconView / -[SBIconView setIcon:], labels and
+ * their legibility images ~14 %: each page's icon views made as it slides in and dropped when it leaves -- on these
+ * cores 40-90 ms turns of the main thread, the hitches (Scion found the same). Every page is told its visible range is
+ * SpringBoard's own "all icons visible" range, so the views are made once and a swipe only moves them.
+ */
+typedef struct {
+	unsigned long location, length;
+} sb_range;
+static void (*original_set_visible)(id, SEL, sb_range, unsigned long, sb_range, unsigned long);
+static unsigned sb_keepicons_on = 0;   /* off: with it on, the home screen came up empty (2026-11-14); sb_keepicons=1 */
+
+static void
+sb_set_visible(id self, SEL cmd, sb_range columns, unsigned long predicted_column, sb_range rows, unsigned long predicted_row)
+{
+	static SEL all_sel;
+
+	if (all_sel == NULL) {
+		all_sel = sel_registerName("_allIconsVisibleColumnOrRowRange");
+	}
+	if (sb_keepicons_on && class_respondsToSelector(object_getClass(self), all_sel)) {
+		sb_range all = ((sb_range (*)(id, SEL))objc_msgSend)(self, all_sel);
+
+		columns = all;
+		rows = all;
+	}
+	original_set_visible(self, cmd, columns, predicted_column, rows, predicted_row);
+}
+
+static void
+sb_keepicons_hook(void)
+{
+	char args[1024] = "";
+	size_t size = sizeof(args) - 1;
+	const char *arg;
+
+	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0 || (arg = strstr(args, "sb_keepicons=1")) == NULL ||
+	    (arg != args && arg[-1] != ' ')) {
+		return;                 /* Apple's: icons made as pages come into view */
+	}
+	sb_keepicons_on = 1;
+	original_set_visible = (void (*)(id, SEL, sb_range, unsigned long, sb_range, unsigned long))replace_method_by_name(
+	    "SBIconListView", "setVisibleColumnRange:predictedVisibleColumn:visibleRowRange:predictedVisibleRow:",
+	    (IMP)sb_set_visible);
+	say("redwood: home-screen icons kept built on every page (sb_keepicons=1, experimental): %s\n",
+	    original_set_visible ? "yes" : "NO");
+}
+
+static void
+sb_fps_hooks(void)
+{
+	char args[1024] = "";
+	size_t size = sizeof(args) - 1;
+	const char *arg;
+
+	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && (arg = strstr(args, "sb_fps=0")) != NULL &&
+	    (arg == args || arg[-1] == ' ')) {
+		say("redwood: SpringBoard's own frame rate caps left as they are (sb_fps=0)\n");
+		return;
+	}
+	original_fluid_set_range = (void (*)(id, SEL, sb_frame_rate_range, unsigned))replace_method_by_name(
+	    "SBFFluidBehaviorSettings", "setFrameRateRange:highFrameRateReason:", (IMP)fluid_set_range);
+	original_animation_set_range = (void (*)(id, SEL, sb_frame_rate_range, unsigned))replace_method_by_name(
+	    "SBFAnimationSettings", "setFrameRateRange:highFrameRateReason:", (IMP)animation_set_range);
+	say("redwood: SpringBoard's frame rate caps raised to %.0f a second: fluid %s, animation %s (sb_fps=0: Apple's)\n",
+	    SB_FPS_FLOOR, original_fluid_set_range ? "yes" : "NO", original_animation_set_range ? "yes" : "NO");
+}
+
+/* the selectors of a class whose names hold one of the words, with their addresses: to pin hooks later */
+static void
+say_methods(const char *class_name, const char *const *words, unsigned nwords)
+{
+	Class cls = objc_getClass(class_name);
+	unsigned count = 0;
+	Method *list = cls ? class_copyMethodList(cls, &count) : NULL;
+
+	for (unsigned i = 0; i < count; i++) {
+		const char *name = sel_getName(method_getName(list[i]));
+
+		for (unsigned w = 0; w < nwords; w++) {
+			if (strcasestr(name, words[w]) != NULL) {
+				say("redwood: -[%s %s] at %#lx\n", class_name, name, (uintptr_t)method_getImplementation(list[i]) - slide);
+				break;
+			}
+		}
+	}
+	free(list);
+}
+
+static int sysctl_int(const char *name);
+
+/* the status bar's Wi-Fi strength from the kernel's live RSSI (kern.redwood.wifi_rssi, redwood_bcm4375.c) */
+static int (*original_wifi_bars)(id, SEL);
+static int (*original_wifi_rssi)(id, SEL);
+
+static int
+wifi_bars_for(int rssi)
+{
+	return rssi >= -60 ? 3 : rssi >= -70 ? 2 : 1;
+}
+
+static int
+wifi_bars(id self, SEL cmd)
+{
+	int rssi = sysctl_int("kern.redwood.wifi_rssi");
+
+	if (rssi < 0) {
+		return wifi_bars_for(rssi);
+	}
+	return original_wifi_bars ? original_wifi_bars(self, cmd) : 0;
+}
+
+static int
+wifi_rssi(id self, SEL cmd)
+{
+	int rssi = sysctl_int("kern.redwood.wifi_rssi");
+
+	if (rssi < 0) {
+		return rssi;
+	}
+	return original_wifi_rssi ? original_wifi_rssi(self, cmd) : 0;
+}
+
+/*
+ * The cover sheet's flashlight and camera buttons (x1slte, 2026-11-06: "the shortcut is missing as a whole"). They are
+ * shown on a phone without a home button, which the cover sheet decides by itself before it asks about a flashlight:
+ * +[CSQuickActionsViewController deviceSupportsButtons] (and the instance's _quickActionsSupported). What they answer
+ * is said, and YES is given -- an iPhone X, which this image is, has the buttons.
+ */
+static BOOL (*original_supports_buttons_class)(id, SEL);
+static BOOL (*original_quick_supported)(id, SEL);
+
+static BOOL
+yes_supports_buttons(id self, SEL cmd)
+{
+	static int said;
+
+	if (!said++ && original_supports_buttons_class) {
+		say("redwood: +[CSQuickActionsViewController deviceSupportsButtons] would have said %d; YES\n",
+		    original_supports_buttons_class(self, cmd));
+	}
+	return YES;
+}
+
+static BOOL
+yes_quick_supported(id self, SEL cmd)
+{
+	static int said;
+
+	if (!said++ && original_quick_supported) {
+		say("redwood: -[CSQuickActionsViewController _quickActionsSupported] would have said %d; YES\n",
+		    original_quick_supported(self, cmd));
+	}
+	return YES;
+}
+
+static BOOL (*original_has_flashlight)(id, SEL), (*original_allows_flashlight)(id, SEL), (*original_supports_camera)(id, SEL);
+
+static BOOL
+has_flashlight(id self, SEL cmd)
+{
+	static int said;
+	struct stat st;
+	BOOL was = original_has_flashlight ? original_has_flashlight(self, cmd) : NO, now = was || stat("/dev/redwood-torch", &st) == 0;
+
+	if (said++ < 3) {
+		say("redwood: -[CSQuickActionsViewController hasFlashlight]: iOS says %d, the kernel's light makes it %d\n", was, now);
+	}
+	return now;
+}
+
+static BOOL
+allows_flashlight(id self, SEL cmd)
+{
+	static int said;
+	BOOL v = original_allows_flashlight ? original_allows_flashlight(self, cmd) : NO;
+
+	if (said++ < 3) {
+		say("redwood: -[CSQuickActionsViewController allowsFlashlight]: %d\n", v);
+	}
+	return v;
+}
+
+static BOOL
+supports_camera(id self, SEL cmd)
+{
+	static int said;
+	BOOL v = original_supports_camera ? original_supports_camera(self, cmd) : NO;
+
+	if (said++ < 3) {
+		say("redwood: -[CSQuickActionsViewController _supportsCamera]: %d\n", v);
+	}
+	return v;
+}
+
+/* the volume buttons (x1slte, 2026-11-06: "on the lock screen they do nothing"): what SpringBoard does with them, logged */
+static void (*original_vol_up)(id, SEL), (*original_vol_down)(id, SEL);
+
+static void
+vol_up(id self, SEL cmd)
+{
+	say("redwood: -[SBVolumeControl increaseVolume] (the volume now %d)\n", sysctl_int("kern.redwood.audio_volume"));
+	if (original_vol_up) {
+		original_vol_up(self, cmd);
+	}
+}
+
+static void
+vol_down(id self, SEL cmd)
+{
+	say("redwood: -[SBVolumeControl decreaseVolume] (the volume now %d)\n", sysctl_int("kern.redwood.audio_volume"));
+	if (original_vol_down) {
+		original_vol_down(self, cmd);
+	}
+}
+
+/* what a press does on the lock screen (2026-11-06: "on the home screen it works, locked it does not"): logged only */
+static void (*original_handle_button)(id, SEL, long, BOOL);
+static BOOL (*original_hud_displayable)(id, SEL, id, id *);
+
+static void
+cf_text(id object, char *out, size_t size)
+{
+	out[0] = 0;
+	if (object != nil && CFGetTypeID((CFTypeRef)object) == CFStringGetTypeID()) {
+		CFStringGetCString((CFStringRef)object, out, (CFIndex)size, kCFStringEncodingUTF8);
+	} else if (object != nil) {
+		snprintf(out, size, "(%s)", object_getClassName(object));
+	}
+}
+
+static void
+handle_button(id self, SEL cmd, long type, BOOL down)
+{
+	static unsigned said;
+
+	if (said++ < 40) {
+		say("redwood: -[SBVolumeControl handleVolumeButtonWithType:%ld down:%d]\n", type, down);
+	}
+	if (original_handle_button) {
+		original_handle_button(self, cmd, type, down);
+	}
+}
+
+static BOOL
+hud_displayable(id self, SEL cmd, id category, id *reason)
+{
+	static unsigned said;
+	BOOL v = original_hud_displayable ? original_hud_displayable(self, cmd, category, reason) : NO;
+
+	if (said++ < 40) {
+		char c[64], r[96];
+
+		cf_text(category, c, sizeof(c));
+		cf_text(reason ? *reason : nil, r, sizeof(r));
+		say("redwood: -[SBVolumeControl _isHUDDisplayableForCategory:%s] -> %d (%s)\n", c, v, r);
+	}
+	return v;
+}
+
+static void
+volume_watch_start(void)
+{
+	static const char *const words[] = { "volume", "hud", "press", "button", "ringer", "category" };
+
+	say_methods("SBVolumeControl", words, 6);
+	say_methods("SBVolumeHardwareButton", words, 6);
+	say_methods("SBVolumeHardwareButtonActions", words, 6);
+	original_vol_up = (void (*)(id, SEL))replace_method_by_name("SBVolumeControl", "increaseVolume", (IMP)vol_up);
+	original_handle_button = (void (*)(id, SEL, long, BOOL))replace_method_by_name("SBVolumeControl",
+	    "handleVolumeButtonWithType:down:", (IMP)handle_button);
+	original_hud_displayable = (BOOL (*)(id, SEL, id, id *))replace_method_by_name("SBVolumeControl",
+	    "_isHUDDisplayableForCategory:outReason:", (IMP)hud_displayable);
+	original_vol_down = (void (*)(id, SEL))replace_method_by_name("SBVolumeControl", "decreaseVolume", (IMP)vol_down);
+}
+
+static void
+quick_actions_start(void)
+{
+	static const char *const words[] = { "support", "flashlight", "button", "allowed" };
+	Class cls = objc_getClass("CSQuickActionsViewController");
+	Method m;
+
+	say_methods("CSQuickActionsViewController", words, 4);
+	if (cls != nil && (m = class_getClassMethod(cls, sel_registerName("deviceSupportsButtons"))) != NULL) {
+		say("redwood: +[CSQuickActionsViewController deviceSupportsButtons] at %#lx, replaced by name\n",
+		    (uintptr_t)method_getImplementation(m) - slide);
+		original_supports_buttons_class = (BOOL (*)(id, SEL))method_getImplementation(m);
+		method_setImplementation(m, (IMP)yes_supports_buttons);
+	} else {
+		say("redwood: +[CSQuickActionsViewController deviceSupportsButtons] not found\n");
+	}
+	original_quick_supported = (BOOL (*)(id, SEL))replace_method_by_name("CSQuickActionsViewController",
+	    "_quickActionsSupported", (IMP)yes_quick_supported);
+	original_has_flashlight = (BOOL (*)(id, SEL))replace_method_by_name("CSQuickActionsViewController", "hasFlashlight",
+	    (IMP)has_flashlight);
+	original_allows_flashlight = (BOOL (*)(id, SEL))replace_method_by_name("CSQuickActionsViewController", "allowsFlashlight",
+	    (IMP)allows_flashlight);
+	original_supports_camera = (BOOL (*)(id, SEL))replace_method_by_name("CSQuickActionsViewController", "_supportsCamera",
+	    (IMP)supports_camera);
+}
+
+static void
+wifi_bars_start(void)
+{
+	static const char *const words[] = { "signal", "rssi", "strength", "updateData", "wifi", "network" };
+	__block int shown = -1;
+
+	say_methods("SBWiFiManager", words, 6);
+	say_methods("SBStatusBarStateAggregator", words, 6);
+	original_wifi_bars = (int (*)(id, SEL))replace_method_by_name("SBWiFiManager", "signalStrengthBars", (IMP)wifi_bars);
+	original_wifi_rssi = (int (*)(id, SEL))replace_method_by_name("SBWiFiManager", "signalStrengthRSSI", (IMP)wifi_rssi);
+	/* every 3 s: when the bars would change, the status bar's network item made again */
+	dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+	dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), 3 * NSEC_PER_SEC, NSEC_PER_SEC / 2);
+	dispatch_source_set_event_handler(timer, ^{
+		static int why_said;
+		int rssi = sysctl_int("kern.redwood.wifi_rssi"), bars = rssi < 0 ? wifi_bars_for(rssi) : 0;
+		Class mgr = objc_getClass("SBWiFiManager");
+		SEL shared = sel_registerName("sharedInstance"), update = sel_registerName("_updateSignalStrength");
+		id m;
+
+		if (bars == shown) {
+			return;
+		}
+		/* SpringBoard's own refresh: it reads the strength again (wifi_bars above) and tells the status bar */
+		if (mgr == nil || !class_respondsToSelector(object_getClass((id)mgr), shared) || !class_respondsToSelector(mgr, update) ||
+		    (m = ((id (*)(Class, SEL))objc_msgSend)(mgr, shared)) == nil) {
+			if (!why_said++) {
+				say("redwood: Wi-Fi bars: no +[SBWiFiManager sharedInstance] / -_updateSignalStrength to refresh with\n");
+			}
+			return;
+		}
+		((void (*)(id, SEL))objc_msgSend)(m, update);
+		say("redwood: Wi-Fi bars %d (%d dBm), the status bar told\n", bars, rssi);
+		shown = bars;
+	});
+	dispatch_resume(timer);
 }
 
 static IMP
@@ -403,6 +806,9 @@ gpu_draws(void)
 		}
 	}
 	gpu = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodGPU"));
+	if (gpu == 0) {
+		gpu = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodMali"));        /* (the Exynos phone's Mali-G77) */
+	}
 	if (gpu != 0) {
 		IOObjectRelease(gpu);
 	}
@@ -492,9 +898,25 @@ lock_long_press(id self, SEL selector, id recognizer)
 
 #define UNLOCK_SOURCE_COVER_SHEET       24      /* what the lock screen itself passes */
 
-static void
+static BOOL
 unlock(void)
 {
+	/* The bring-up/remote helper must never dismiss a passcode-protected UI.
+	 * Native authentication handles those unlocks. Unknown state fails closed. */
+	static int (*keybag_state)(CFDictionaryRef);
+	static bool keybag_looked_up;
+	if (!keybag_looked_up) {
+		keybag_state = dlsym(RTLD_DEFAULT, "MKBGetDeviceLockState");
+		if (!keybag_state) {
+			void *mkb = dlopen("/System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag", RTLD_LAZY);
+			if (mkb) keybag_state = dlsym(mkb, "MKBGetDeviceLockState");
+		}
+		keybag_looked_up = true;
+	}
+	if (!keybag_state || keybag_state(NULL) != 3) {
+		say("redwood: unlock helper: passcode set or keybag state unavailable; native authentication required\n");
+		return YES;
+	}
 	Class cls = objc_getClass("SBLockScreenManager");
 	SEL shared = sel_registerName("sharedInstance"), locked = sel_registerName("isUILocked");
 	SEL unlock_ui = sel_registerName("unlockUIFromSource:withOptions:");
@@ -503,17 +925,20 @@ unlock(void)
 	if (cls == NULL || class_getClassMethod(cls, shared) == NULL || class_getInstanceMethod(cls, locked) == NULL ||
 	    class_getInstanceMethod(cls, unlock_ui) == NULL) {
 		say("redwood: unlock: SBLockScreenManager is not what it was\n");
-		return;
+		return YES;                      /* nothing to wait for */
 	}
 	manager = ((id (*)(Class, SEL))objc_msgSend)(cls, shared);
 	if (manager == NULL) {
 		say("redwood: unlock: no lock screen manager yet\n");
+		return NO;
 	} else if (!((BOOL (*)(id, SEL))objc_msgSend)(manager, locked)) {
 		say("redwood: unlock: not locked\n");
+		return YES;
 	} else {
 		BOOL done = ((BOOL (*)(id, SEL, long, id))objc_msgSend)(manager, unlock_ui, UNLOCK_SOURCE_COVER_SHEET, NULL);
 
 		say("redwood: unlock: asked, answer %d\n", done);
+		return YES;
 	}
 }
 
@@ -884,6 +1309,63 @@ web_views(id view, int depth)
 	}
 }
 
+
+/*
+ * The front camera's flash (2026-11-12): the iPhone's camera driver lights the screen itself for a front
+ * photograph with the flash on (H10ISPDisplayStrobe); ours (libredwood-media's camera_device.c) asks for it
+ * here. com.redwood.screenflash.on: a white window over everything and the backlight at its most;
+ * com.redwood.screenflash.off (or 3 s later at the latest): both as they were.
+ */
+typedef struct { double x, y, w, h; } sb_rect;
+static id flash_window;
+static double flash_brightness = -1;
+static unsigned flash_serial;
+
+static void
+screen_flash(bool on)
+{
+	id screen = SEND(id, objc_getClass("UIScreen"), "mainScreen");
+
+	if (on) {
+		if (flash_window == nil) {
+			id application = SEND(id, objc_getClass("UIApplication"), "sharedApplication");
+			id key = application ? SEND(id, application, "keyWindow") : nil;
+			id scene = key && class_respondsToSelector(object_getClass(key), sel_registerName("windowScene")) ? SEND(id, key, "windowScene") : nil;
+			id w = SEND(id, objc_getClass("UIWindow"), "alloc");
+			sb_rect bounds = ((sb_rect (*)(id, SEL))objc_msgSend)(screen, sel_registerName("bounds"));
+
+			w = scene ? SEND1(id, w, "initWithWindowScene:", id, scene) : SEND(id, w, "init");
+			((void (*)(id, SEL, sb_rect))objc_msgSend)(w, sel_registerName("setFrame:"), bounds);
+			SEND1(void, w, "setBackgroundColor:", id, SEND(id, objc_getClass("UIColor"), "whiteColor"));
+			((void (*)(id, SEL, double))objc_msgSend)(w, sel_registerName("setWindowLevel:"), 1e7);
+			SEND1(void, w, "setUserInteractionEnabled:", BOOL, NO);
+			flash_window = w;
+		}
+		if (flash_brightness < 0) {
+			flash_brightness = ((double (*)(id, SEL))objc_msgSend)(screen, sel_registerName("brightness"));
+		}
+		((void (*)(id, SEL, double))objc_msgSend)(screen, sel_registerName("setBrightness:"), 1.0);
+		SEND1(void, flash_window, "setHidden:", BOOL, NO);
+		unsigned serial = ++flash_serial;
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			if (serial == flash_serial) {
+				screen_flash(false);
+			}
+		});
+		say("redwood: screen flash on\n");
+	} else {
+		if (flash_window != nil) {
+			SEND1(void, flash_window, "setHidden:", BOOL, YES);
+		}
+		if (flash_brightness >= 0) {
+			((void (*)(id, SEL, double))objc_msgSend)(screen, sel_registerName("setBrightness:"), flash_brightness);
+			flash_brightness = -1;
+		}
+		flash_serial++;
+		say("redwood: screen flash off\n");
+	}
+}
+
 static void
 layers(void)
 {
@@ -938,6 +1420,57 @@ layers(void)
  * (_activateSwitcherValidatorWithEventLabel:animated:windowScene:), which is what its own
  * gestures use.
  */
+/*
+ * A web page in Safari, on the notification com.redwood.open: the tour's way into WebKit (its JIT and its
+ * GPU process), which a tap could reach only through wherever the user has put Safari's icon. SpringBoard
+ * opens it as any link it is handed: -[LSApplicationWorkspace openURL:]. Each notification opens the next
+ * page of /redwood/etc/m2m.url (one a line), or of the list below: a single page left WebKit's JIT faults
+ * unseen that three pages a minute later showed (PLANS/10-mali2metal.md, runs 23-24).
+ */
+static void
+open_page(void)
+{
+	static const char *const builtin[] = {
+		"https://www.apple.com/iphone/",
+		"https://en.wikipedia.org/wiki/IPhone",
+		"https://www.bbc.co.uk/news",
+	};
+	static unsigned next;
+	char url[512], lines[8][512];
+	unsigned count = 0;
+	FILE *f = fopen("/redwood/etc/m2m.url", "r");
+	Class workspace_class = objc_getClass("LSApplicationWorkspace");
+	Class url_class = objc_getClass("NSURL"), string_class = objc_getClass("NSString");
+	id workspace, string, link;
+	BOOL opened;
+
+	if (f != NULL) {
+		while (count < 8 && fgets(lines[count], sizeof(lines[count]), f) != NULL) {
+			lines[count][strcspn(lines[count], "\r\n")] = '\0';
+			if (lines[count][0] != '\0' && lines[count][0] != '#') {
+				count++;
+			}
+		}
+		fclose(f);
+	}
+	if (count > 0) {
+		strlcpy(url, lines[next % count], sizeof(url));
+	} else {
+		strlcpy(url, builtin[next % (sizeof(builtin) / sizeof(builtin[0]))], sizeof(url));
+	}
+	next++;
+	if (workspace_class == NULL || url_class == NULL || string_class == NULL) {
+		say("redwood: open: LSApplicationWorkspace is not here\n");
+		return;
+	}
+	workspace = ((id (*)(Class, SEL))objc_msgSend)(workspace_class, sel_registerName("defaultWorkspace"));
+	string = ((id (*)(Class, SEL, const char *))objc_msgSend)(string_class, sel_registerName("stringWithUTF8String:"), url);
+	link = ((id (*)(Class, SEL, id))objc_msgSend)(url_class, sel_registerName("URLWithString:"), string);
+	opened = workspace != NULL && link != NULL &&
+	    ((BOOL (*)(id, SEL, id))objc_msgSend)(workspace, sel_registerName("openURL:"), link);
+	say("redwood: open %s: %s\n", url, opened ? "handed to Safari" : "NOT opened");
+}
+
 static void
 switcher(void)
 {
@@ -1050,6 +1583,15 @@ control_center_fades(const char *arguments)
 	method_setImplementation(add, (IMP)add_animation_cc);
 }
 
+/* The Dynamic Island's pill over the S20's camera hole (island=1): src/island_sb.h */
+#include "island_sb.h"
+#include "wallpaper_motion.h"
+/* The status bar's cellular icon from the S20's modem (src/cell_sb.h) */
+#include "cell_sb.h"
+#include "statusbar_shift.h"
+#include "phone_dial.h"
+#include "hotspot_sb.h"
+
 /*
  * Open the tweak loader of the package manager's prefix, when there is one. Nothing here depends on
  * it: without a prefix (or without ElleKit in it) the file is not there and this does nothing.
@@ -1072,80 +1614,28 @@ load_tweaks(void)
 }
 
 /*
- * Boot-arg touch_trace=1: what SpringBoard makes of the touches -- every touch of every event it is
- * sent (its phase, its own time stamp, and how late it is handled), and every gesture recognizer
- * that begins or ends, by class. For the quick tap that was taken for a long press: whether the
- * lift reaches SpringBoard in time, and what recognizes what.
+ * Metal Performance Shaders does not know our GPU: -[MPSKernel initWithDevice:] finds no MPSDevice for it and,
+ * while MTLReportFailureTypeEnabled(0) holds, calls MTLReportFailure(), which aborts. SpringBoard creates MPS
+ * kernels for Siri's UI (SiriUIActivation -> SiriUICore -> MPSImage) once there is a network, and so died every
+ * 6 s from the boot on. Metal's error mode 4 for failure type 0 turns the check off: MPS returns nil instead
+ * (MTLReportFailureTypeEnabled(t) is MTLFailureTypeGetErrorModeType(t) != 4).
  */
-static void (*original_send_event)(id self, SEL selector, id event);
-static void (*original_set_state)(id self, SEL selector, long state);
-static unsigned traced;
-#define TRACE_LINES     600
-
-static double
-uptime_seconds(void)
-{
-	static mach_timebase_info_data_t base;
-
-	if (base.denom == 0) {
-		mach_timebase_info(&base);
-	}
-	return (double)mach_absolute_time() * base.numer / base.denom / 1e9;
-}
-
 static void
-traced_send_event(id self, SEL selector, id event)
+mps_unsupported_returns_nil(void)
 {
-	if (traced < TRACE_LINES && ((long (*)(id, SEL))objc_msgSend)(event, sel_registerName("type")) == 0) {
-		id touches = ((id (*)(id, SEL))objc_msgSend)(event, sel_registerName("allTouches"));
-		id all = touches ? ((id (*)(id, SEL))objc_msgSend)(touches, sel_registerName("allObjects")) : nil;
-		unsigned long count = all ? ((unsigned long (*)(id, SEL))objc_msgSend)(all, sel_registerName("count")) : 0;
-		double now = uptime_seconds();
+	void *metal = dlopen("/System/Library/Frameworks/Metal.framework/Metal", RTLD_NOW | RTLD_GLOBAL);
+	void (*set_mode)(uint64_t type, uint32_t mode) = metal == NULL ? NULL :
+	    (void (*)(uint64_t, uint32_t))dlsym(metal, "MTLFailureTypeSetErrorModeType");
 
-		for (unsigned long i = 0; i < count && traced < TRACE_LINES; i++) {
-			id touch = ((id (*)(id, SEL, unsigned long))objc_msgSend)(all, sel_registerName("objectAtIndex:"), i);
-			long phase = ((long (*)(id, SEL))objc_msgSend)(touch, sel_registerName("phase"));
-			double stamp = ((double (*)(id, SEL))objc_msgSend)(touch, sel_registerName("timestamp"));
-
-			traced++;
-			say("redwood: touch trace: %p phase %ld (0 began, 1 moved, 2 still, 3 ended, 4 cancelled) stamped %.3f, "
-			    "handled %.3f (%.0f ms late)\n", (void *)touch, phase, stamp, now, (now - stamp) * 1000);
-		}
-	}
-	original_send_event(self, selector, event);
-}
-
-static void
-traced_set_state(id self, SEL selector, long state)
-{
-	if (traced < TRACE_LINES && (state == 1 || state == 3 || state == 4)) {
-		traced++;
-		say("redwood: touch trace: %s %p -> %s at %.3f\n", object_getClassName(self), (void *)self,
-		    state == 1 ? "BEGAN" : state == 3 ? "ENDED/RECOGNIZED" : "CANCELLED", uptime_seconds());
-	}
-	original_set_state(self, selector, state);
-}
-
-static void
-trace_touches(void)
-{
-	char args[1024] = "";
-	size_t size = sizeof(args) - 1;
-	Method send, set;
-
-	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0 || strstr(args, "touch_trace=1") == NULL) {
+	if (set_mode == NULL) {
+		say("redwood: SpringBoard: no MTLFailureTypeSetErrorModeType: an unsupported MPS kernel still aborts\n");
 		return;
 	}
-	send = class_getInstanceMethod(objc_getClass("UIApplication"), sel_registerName("sendEvent:"));
-	set = class_getInstanceMethod(objc_getClass("UIGestureRecognizer"), sel_registerName("setState:"));
-	if (send != NULL) {
-		original_send_event = (void (*)(id, SEL, id))method_setImplementation(send, (IMP)traced_send_event);
-	}
-	if (set != NULL) {
-		original_set_state = (void (*)(id, SEL, long))method_setImplementation(set, (IMP)traced_set_state);
-	}
-	say("redwood: touch trace: events %s, gesture recognizers %s\n", send ? "traced" : "NOT", set ? "traced" : "NOT");
+	set_mode(0, 4);
+	say("redwood: SpringBoard: Metal's failure reports of type 0 ignored: MPS kernels it cannot make are nil\n");
 }
+
+#include "software_passcode_lock.h"
 
 __attribute__((constructor))
 static void
@@ -1158,6 +1648,14 @@ redwood_springboard_init(void)
 
 	if (name == NULL) {
 		return;
+	}
+	/* Wallpaper/UI motion uses CoreMotion in this process too. SpringBoard
+	 * loads this library instead of libredwood.dylib, so the app fix must
+	 * run here before UIKit caches the iPhone X's SPU capabilities. */
+	extern void redwood_coremotion_fixes(void);
+	redwood_coremotion_fixes();
+	if (strcmp(name, "SpringBoard") == 0) {
+		phone_system_hook();        /* RedwoodPhone's calls get the full call screen (phone_dial.h) */
 	}
 	if (strcmp(name, "SpringBoard") != 0) {
 		static char who[64];
@@ -1180,6 +1678,14 @@ redwood_springboard_init(void)
 	 * only one inserted library per program is reliable here, and SpringBoard's is this one; so
 	 * this one opens it, the way a jailbreak's own hook does.
 	 */
+	mps_unsupported_returns_nil();
+	island_start();
+	software_passcode_lock_start();
+	wallpaper_motion_start();
+	cell_start();
+	sb_fps_hooks();
+	sb_keepicons_hook();
+	statusbar_shift_start();
 	load_tweaks();
 	/*
 	 * Everything the Metal driver says, it says with printf, and SpringBoard's standard output
@@ -1235,13 +1741,15 @@ redwood_springboard_init(void)
 	    0x1c48c2cf4UL, (IMP)ring_charging_level);
 	battery_lvl = (IMP)original_battery_level;
 	battery_st  = (IMP)original_battery_state;
-	trace_touches();
 	say("redwood: SpringBoard: activation %s, setup assistant %s, application snapshots %s, the side button's long press %s, "
 	    "battery level %s, battery state %s, poster switcher %s\n",
 	    activation ? "answered here" : "NOT replaced", original_set_setup_required_reason ? "refused" : "NOT replaced",
 	    snapshot_format ? "as JPEG" : "NOT changed", original_lock_long_press ? "checked" : "NOT checked",
 	    battery_lvl ? "from QG" : "NOT replaced", battery_st ? "from QG" : "NOT replaced",
 	    poster_switcher ? "not offered" : "NOT withheld");
+	wifi_bars_start();
+	quick_actions_start();
+	volume_watch_start();
 	say("redwood: battery UI: shows%% %s, set-shows%% %s, bolt %s, chargePercent %s, setChargePercent %s, lockscreen ring %s\n",
 	    original_battery_view_shows_percentage ? "ok" : "NO",
 	    original_battery_view_set_shows_percentage ? "ok" : "NO",
@@ -1287,6 +1795,9 @@ redwood_springboard_init(void)
 		    sysctl_int("kern.redwood.battery_charger_present"), sysctl_int("kern.redwood.battery_charging"));
 		battery_post_notifications();
 	});
+	notify_register_dispatch("com.redwood.hotspot", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		hotspot_tell();
+	});
 	notify_register_dispatch("com.redwood.unlock", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		unlock();
 	});
@@ -1295,6 +1806,15 @@ redwood_springboard_init(void)
 	});
 	notify_register_dispatch("com.redwood.switcher", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		switcher();
+	});
+	notify_register_dispatch("com.redwood.open", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		open_page();
+	});
+	notify_register_dispatch("com.redwood.screenflash.on", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		screen_flash(true);
+	});
+	notify_register_dispatch("com.redwood.screenflash.off", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		screen_flash(false);
 	});
 	/*
 	 * Belt-and-suspenders unlock. The user can always swipe up to open the home screen -- that
@@ -1318,7 +1838,22 @@ redwood_springboard_init(void)
 			return;
 		}
 	}
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-		unlock();
+	/*
+	 * Straight to the home screen: ask as soon as the lock screen exists rather than after a
+	 * fixed ten seconds. unlock() says whether there was anything to unlock (no manager yet,
+	 * or already unlocked), so this retries quickly until it takes and then stops.
+	 */
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 700 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+		__block int tries = 0;
+		void (^attempt)(void);
+
+		attempt = ^{
+			if (unlock() || ++tries >= 30) {
+				return;
+			}
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 400 * NSEC_PER_MSEC),
+			    dispatch_get_main_queue(), attempt);
+		};
+		attempt();
 	});
 }

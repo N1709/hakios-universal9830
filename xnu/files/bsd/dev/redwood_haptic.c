@@ -731,10 +731,21 @@ haptic_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
  * a write of this loudness (of 32767) had just come, or silence for 0. The service plays it with all its
  * own limits, as it plays iOS's.
  */
+/* x1slte: the Galaxy S20's motor is a CS40L25 (redwood_cs40l25.c, haptic_chip=cs40l25); nothing of the chip below is touched */
+void redwood_cs40l25_init(uint32_t lvl);
+void redwood_cs40l25_quiesce(void);
+void redwood_cs40l25_pretend(uint32_t peak);
+static bool cs40l25;
+
 void
 redwood_haptic_pretend(uint32_t peak)
 {
 	uint64_t now = now_us();
+
+	if (cs40l25) {
+		redwood_cs40l25_pretend(peak);
+		return;
+	}
 
 	if (peak <= SILENT_BELOW) {
 		quiet_us = now;
@@ -985,6 +996,15 @@ redwood_haptic_init(void)
 	if (level > 5) {
 		level = 5;
 	}
+	{
+		char chip[16] = "";
+
+		if (PE_parse_boot_argn("haptic_chip", chip, sizeof(chip)) && strcmp(chip, "cs40l25") == 0) {
+			cs40l25 = true;
+			redwood_cs40l25_init(level);
+			return;
+		}
+	}
 	if (kernel_thread_start(haptic_thread, NULL, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}
@@ -994,6 +1014,10 @@ redwood_haptic_init(void)
 void
 redwood_haptic_quiesce(void)
 {
+	if (cs40l25) {
+		redwood_cs40l25_quiesce();
+		return;
+	}
 	if (released && tlmm != 0) {
 		leaving = true;
 		reset_pin(false);

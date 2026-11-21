@@ -10,7 +10,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SRC=${1:-${XNU_SRC:-$HERE/../xnu-src/xnu-8796.121.2}}
 BASE=c54f35ca767986246321eb901baf8f5ff7923f6a           # tag xnu-8796.121.2
 # never part of the work: build output and what editors, patch and python leave behind
-JUNK='^BUILD/|(^|/)__pycache__/|\.(orig|rej|pyc|o|swp)$|\.bak[0-9]*$|~$|(^|/)\.DS_Store$'
+JUNK='^BUILD/|^\.(C|LD)FLAGS$|^[a-z]+\.d$|^link\.filelist$|(^|/)__pycache__/|\.(orig|rej|pyc|o|swp)$|\.bak[0-9]*$|~$|(^|/)\.DS_Store$'
 
 cd "$SRC"
 git cat-file -e "$BASE^{commit}" 2>/dev/null || { echo "export.sh: $SRC is not a clone of xnu at $BASE" >&2; exit 1; }
@@ -22,13 +22,13 @@ mv "$HERE/redwood.patch.new" "$HERE/redwood.patch"
 rm -rf "$HERE/files.new"
 mkdir "$HERE/files.new"
 { git diff --no-renames --name-only --diff-filter=A "$BASE" -- .; git ls-files --others --exclude-standard; } |
-	sort -u | grep -Ev "$JUNK" > "$HERE/files.list"
+	LC_ALL=C sort -u | grep -Ev "$JUNK" > "$HERE/files.list"
 while IFS= read -r f; do
 	[ -f "$f" ] || [ -L "$f" ] || continue      # added in a commit, deleted since
 	mkdir -p "$HERE/files.new/$(dirname "$f")"
-	cp -P --preserve=mode "$f" "$HERE/files.new/$f"
+	cp -pP "$f" "$HERE/files.new/$f"
 done < "$HERE/files.list"
-rm -rf "$HERE/files" "$HERE/files.list"
+rm -rf "$HERE/files"
 mv "$HERE/files.new" "$HERE/files"
 
 echo "xnu/redwood.patch: $(grep -c '^diff --git' "$HERE/redwood.patch") files changed, $(wc -c < "$HERE/redwood.patch") bytes"

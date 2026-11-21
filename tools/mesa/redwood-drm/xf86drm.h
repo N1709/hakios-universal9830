@@ -52,6 +52,14 @@ int drmSyncobjFDToHandle(int fd, int obj_fd, uint32_t *handle);
 int drmSyncobjHandleToFD(int fd, uint32_t handle, int *obj_fd);
 int drmSyncobjImportSyncFile(int fd, uint32_t handle, int sync_file_fd);
 int drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd);
+int drmSyncobjSignal(int fd, const uint32_t *handles, uint32_t count);
+int drmSyncobjWait(int fd, uint32_t *handles, unsigned num_handles, int64_t timeout_nsec, unsigned flags,
+    uint32_t *first_signaled);
+int drmSyncobjTimelineWait(int fd, uint32_t *handles, uint64_t *points, unsigned num_handles, int64_t timeout_nsec,
+    unsigned flags, uint32_t *first_signaled);
+int drmSyncobjTransfer(int fd, uint32_t dst_handle, uint64_t dst_point, uint32_t src_handle, uint64_t src_point,
+    uint32_t flags);
+int drmCloseBufferHandle(int fd, uint32_t handle);
 
 /* Not libdrm's: a buffer's memory in this process, in place of mmap() on the device (freedreno_bo.c is patched to call these). */
 void *redwood_drm_map(int fd, uint32_t handle, uint64_t size);
@@ -72,5 +80,9 @@ struct redwood_drm_surface {
 	uint32_t width, height, pixel_format, planes;   /* and what they are */
 };
 int redwood_drm_surface(int fd, struct redwood_drm_surface *surface);
+
+/* Not libdrm's: RedwoodMali's counters (jobs, faulted jobs, GPU resets, last job), for a test to say
+ * whether the GPU faulted under it -- a faulted job still completes its fence. 0, or -1 with errno. */
+int redwood_drm_counts(uint64_t counts[4]);
 
 #endif

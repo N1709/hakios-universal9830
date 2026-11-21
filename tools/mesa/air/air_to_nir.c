@@ -5,7 +5,7 @@
 
 /*
  * One AIR module -> one nir_shader. The mapping from AIR's named metadata to
- * NIR's variables, bindings and system values is the table in docs/air.md
+ * NIR's variables, bindings and system values is the table in docs/dev/air.md
  * section 3.1; this file is that table in code, and nothing here decides
  * anything the table does not state.
  */
@@ -229,7 +229,7 @@ air_get(struct air_ctx *c, const struct air_value *v)
        * [ -1, %22 ]` in MetalFaceMask_AddSeedPoint became `phi b3: %92,
        * b4: %0 (undefined)`: the -1 was the same constant as the one the
        * compare after the branch uses, so the store on the entry edge pointed
-       * at a def inside the branch (docs/air.md section 5).
+       * at a def inside the branch (docs/dev/air.md section 5).
        */
       bool outer = !c->in_const;
       nir_cursor use = c->b.cursor;
@@ -471,7 +471,7 @@ air_ptr_add(struct air_ctx *c, struct air_ptr ptr, nir_def *bytes)
     * Folding the pair removes the reference: a global's offset is always a
     * constant here, so the whole chain is one immediate built in the const
     * region with no operand at all. The latent ordering hazard it stands on is
-    * written down in docs/air.md rather than left to be rediscovered.
+    * written down in docs/dev/air.md rather than left to be rediscovered.
     */
    if (nir_src_is_const(nir_src_for_ssa(ptr.offset)) &&
        nir_src_is_const(nir_src_for_ssa(bytes)) &&
@@ -772,7 +772,12 @@ air_module_function_constants(void *mem_ctx, const void *bitcode, size_t size,
          for (unsigned k = 1; k < (node ? node->num_ops : 0); k++) {
             uint64_t idx;
             if (md_int(node, k, &idx)) {
-               (*out)[num++].index = idx;
+               /* !{global, !"type", !"name", i32 index, i1 required}: the name is
+                * the string just before the index */
+               const char *nm = k >= 1 ? md_str(node, k - 1) : NULL;
+               (*out)[num].index = idx;
+               (*out)[num].name = nm ? ralloc_strdup(mem_ctx, nm) : NULL;
+               num++;
                break;
             }
          }
@@ -950,7 +955,7 @@ make_io_var(struct air_ctx *c, nir_variable_mode mode, const struct air_type *t,
 }
 
 /* fragment inputs and vertex outputs take the slots in the order they appear;
- * the runtime links the two sides by name (docs/air.md section 7.5)
+ * the runtime links the two sides by name (docs/dev/air.md section 7.5)
  */
 static void
 add_varying(struct air_ctx *c, const char *name, unsigned slot, unsigned comps,
@@ -1404,7 +1409,7 @@ argbuf_members(struct air_ctx *c, const struct air_md *sti, const struct air_typ
  * Metal through SPIRV-Cross and how an MSL `[[id(n)]]` struct reaches it from
  * Metal itself. 7 620 of Resident Evil 4's 7 879 modules have one and 0 of
  * iOS 16.5's 671 do, so this is the one interface word that is invisible from
- * Apple's own libraries and is 97% of a game (docs/air.md section 8.2).
+ * Apple's own libraries and is 97% of a game (docs/dev/air.md section 8.2).
  *
  * The parameter does not become a buffer to read: it becomes a pointer of its
  * own class, and the member table built here is what a load through it
@@ -1486,7 +1491,8 @@ translate_argument_buffer(struct air_ctx *c, const struct air_md *node, unsigned
  * resource keep the Metal name the application uses -- the runtime binds by
  * the first and the application names by the second.
  *
- * The counters start above the highest index a DIRECT argument of that kind
+ * Buffer members occupy unused slots, preserving direct Metal buffer indices.
+ * Texture/sampler counters start above the highest DIRECT argument of that kind
  * already took, so a member and an argument cannot land in one Gallium slot.
  * None of Resident Evil 4's 7 620 modules mixes the two -- those shaders have
  * no direct resources at all -- so this is the part of the allocation nothing
@@ -1500,13 +1506,14 @@ translate_argument_buffer(struct air_ctx *c, const struct air_md *node, unsigned
 static void
 allocate_argbuf_indices(struct air_ctx *c)
 {
-   unsigned next_buffer = 0, next_texture = 0, next_sampler = 0;
+   uint64_t used_buffer = 0;
+   unsigned next_texture = 0, next_sampler = 0;
    for (unsigned i = 0; i < c->info->num_resources; i++) {
       const struct air_resource *r = &c->info->resources[i];
       switch (r->kind) {
       case AIR_RESOURCE_CONSTANT_BUFFER:
       case AIR_RESOURCE_DEVICE_BUFFER:
-         next_buffer = MAX2(next_buffer, r->index + 1);
+         if (r->index < 64) used_buffer |= UINT64_C(1) << r->index;
          break;
       case AIR_RESOURCE_TEXTURE:
       case AIR_RESOURCE_IMAGE:
@@ -1527,7 +1534,15 @@ allocate_argbuf_indices(struct air_ctx *c)
          switch (m->kind) {
          case AIR_RESOURCE_CONSTANT_BUFFER:
          case AIR_RESOURCE_DEVICE_BUFFER:
-            m->index = next_buffer++;
+            /* Direct Metal indices may be sparse/high (e.g.31). Reuse holes
+             * for flattened argument members rather than exceeding Gallium's
+             * binding limit despite having only a few resources. */
+            if (used_buffer == UINT64_MAX) {
+               air_error(c, "argument buffer has too many flattened buffer bindings");
+               return;
+            }
+            m->index = (unsigned)__builtin_ctzll(~used_buffer);
+            used_buffer |= UINT64_C(1) << m->index;
             break;
          case AIR_RESOURCE_TEXTURE:
          case AIR_RESOURCE_IMAGE:
@@ -1641,7 +1656,14 @@ translate_input(struct air_ctx *c, const struct air_md *node, unsigned *next_var
    /* resources */
    if (md_key(node, "air.buffer") >= 0) {
       uint64_t as = 0, index = 0, size = 0;
-      md_key_int(node, "air.address_space", &as);
+      /* Some Apple libraries omit the redundant address-space metadata. The
+       * LLVM pointer type still carries the real space; absence must not turn
+       * a constant/device buffer into a generic address-space-zero pointer. */
+      if (!md_key_int(node, "air.address_space", &as)) {
+         if (t->kind != AIR_TYPE_POINTER)
+            return air_error(c, "interface: a buffer parameter is not a pointer");
+         as = t->addrspace;
+      }
       md_key_int(node, "air.location_index", &index);
       md_key_int(node, "air.buffer_size", &size);
       bool read = md_key(node, "air.read") >= 0 || md_key(node, "air.read_write") >= 0;
@@ -1920,8 +1942,13 @@ translate_input(struct air_ctx *c, const struct air_md *node, unsigned *next_var
          var->data.interpolation = INTERP_MODE_SMOOTH;
       var->data.centroid = md_key(node, "air.centroid") >= 0;
       var->data.sample = md_key(node, "air.sample") >= 0;
-      if (c->nir->info.stage == MESA_SHADER_FRAGMENT)
-         add_varying(c, name, slot, air_nir_components(t), node);
+      /* recorded under the name that LINKS it (`generated(5colorDv4_Dh)`, `user(locn0)`),
+       * which is the string the vertex stage's air.vertex_output carries, and not under its
+       * parameter name: the runtime matches the two lists on it */
+      if (c->nir->info.stage == MESA_SHADER_FRAGMENT) {
+         const char *link = md_key_str(node, "air.fragment_input");
+         add_varying(c, link ? link : name, slot, air_nir_components(t), node);
+      }
       c->params[param] = air_val_ssa(c, nir_load_var(&c->b, var));
       return true;
    }
@@ -2287,6 +2314,11 @@ translate_cast(struct air_ctx *c, const struct air_inst *in)
          res = nir_unpack_32_2x16(&c->b, x);
       else if (sn == 2 && sb == 16 && dn == 1 && db == 32)
          res = nir_pack_32_2x16(&c->b, x);
+      else if (sn * sb == dn * db && (db == 8 || db == 16 || db == 32 || db == 64) &&
+               (sb == 8 || sb == 16 || sb == 32 || sb == 64))
+         /* any other same-size repacking (VideoToolbox's i32 -> <4 x i8>):
+          * little-endian, element 0 in the low bits, as LLVM lays it out */
+         res = nir_extract_bits(&c->b, &x, 1, 0, dn, db);
       else
          return air_error(c, "instruction: a bitcast from %u x %u bits to %u x %u bits, "
                              "which is a repacking this frontend does not do",
@@ -2495,8 +2527,14 @@ translate_instruction(struct air_ctx *c, const struct air_inst *in)
       nir_def *i = air_get_ssa(c, in->operands[2]);
       if (!v || !x || !i)
          return false;
-      if (!nir_src_is_const(nir_src_for_ssa(i)))
-         return air_error(c, "instruction: insertelement at a run-time index");
+      if (!nir_src_is_const(nir_src_for_ssa(i))) {
+         /* a run-time index: one select per component (CoreAnimation's
+          * PBGRAXm_TimgA2Xhf_IxrgN3Oc3c4nlXq has one, and a refused pipeline aborts the
+          * window server) */
+         air_set(c, &in->base,
+                 air_val_ssa(c, nir_vector_insert(&c->b, v, x, nir_u2u32(&c->b, i))));
+         return true;
+      }
       air_set(c, &in->base,
               air_val_ssa(c, nir_vector_insert_imm(&c->b, v, x,
                                                    nir_src_as_uint(nir_src_for_ssa(i)))));
@@ -2654,7 +2692,7 @@ translate_instruction(struct air_ctx *c, const struct air_inst *in)
        * while translating -- and not an address, so it has no bytes. Naming
        * that here rather than letting air_get_ssa say "a pointer where a
        * number belongs" is the difference between a wall with a reason and a
-       * wall with a symptom; the reason is in docs/air.md section 3.
+       * wall with a symptom; the reason is in docs/dev/air.md section 3.
        */
       struct air_val *sv = air_get(c, in->operands[0]);
       if (!sv)
@@ -2853,7 +2891,7 @@ val_holds_ptr(const struct air_val *v)
  */
 static nir_function *
 translate_callee(struct air_ctx *c, const struct air_function *f,
-                 struct air_val **argv, bool *is_param)
+                 struct air_val **argv, bool *is_param, bool *offset_param)
 {
    /* A texture, sampler or buffer argument is not a value in this frontend: it
     * is resolved at translation time into a binding, and tex_handle wants an
@@ -2862,10 +2900,16 @@ translate_callee(struct air_ctx *c, const struct air_function *f,
     * callee to its call site -- so it is not cached. Each of the four modules
     * that needs this has exactly one call site, counted beforehand.
     *
-    * A pointer carrying a byte offset is refused instead: that offset is an
-    * nir_def of the CALLER's impl, and using it here would be the same
-    * cross-function def/use that the globals used to cause.
+    * A pointer carrying a byte offset (`f(&buf[i])`) is specialised the same way,
+    * but its offset is an nir_def of the CALLER's impl, which the callee may not
+    * use -- the cross-function def/use the globals used to cause. So the offset
+    * alone is passed as a parameter of its own (`offset_param`, which a caller
+    * that passes no pointers may leave NULL), and the callee rebuilds the pointer
+    * from its load_param: kernelHomographySolver in mediaserverd's AppleCVA
+    * kernels was refused for want of this (PLANS/10-mali2metal.md).
     */
+   if (!offset_param)
+      offset_param = rzalloc_array(c->mem_ctx, bool, MAX2(f->num_args, 1));
    bool specialised = false;
    for (unsigned i = 0; i < f->num_args; i++) {
       /* A struct holding a pointer counts as one too: CoreImage passes a
@@ -2877,11 +2921,7 @@ translate_callee(struct air_ctx *c, const struct air_function *f,
        */
       bool ptr = argv && argv[i] && (argv[i]->kind == AIR_VAL_PTR ||
                                      val_holds_ptr(argv[i]));
-      if (ptr && argv[i]->kind == AIR_VAL_PTR && argv[i]->ptr.offset) {
-         air_error(c, "intrinsic: a call passing a pointer at a computed offset as "
-                      "argument %u, which would use the caller's own value here", i);
-         return NULL;
-      }
+      offset_param[i] = ptr && argv[i]->kind == AIR_VAL_PTR && argv[i]->ptr.offset;
       /* The same reason, for the two pointers that are values: a chosen
        * pointer's condition is a def of the CALLER's impl, and a slot's
        * soundness rests on every use being in one block of one function.
@@ -2951,6 +2991,10 @@ translate_callee(struct air_ctx *c, const struct air_function *f,
       };
    }
    for (unsigned i = 0; i < f->num_args; i++) {
+      if (offset_param[i]) {
+         fn->params[idx++] = (nir_parameter){ .num_components = 1, .bit_size = 32 };
+         continue;
+      }
       if (!is_param[i])
          continue;
       const struct air_type *at = f->args[i].type;
@@ -2959,7 +3003,7 @@ translate_callee(struct air_ctx *c, const struct air_function *f,
          .bit_size = (uint8_t)air_nir_bit_size(c, at),
       };
    }
-   fn->num_params = idx;   /* the pointers took no parameter */
+   fn->num_params = idx;   /* the pointers took no parameter, their offsets one each */
 
    /* cached before the body is translated, so that a callee which calls itself
     * meets its own declaration rather than being translated for ever */
@@ -3023,6 +3067,15 @@ translate_callee(struct air_ctx *c, const struct air_function *f,
    }
    unsigned pidx = nret;
    for (unsigned i = 0; i < f->num_args && ok; i++) {
+      if (offset_param[i]) {
+         /* the caller's resolution, at this function's own copy of the offset */
+         struct air_val *p = ralloc(c->mem_ctx, struct air_val);
+
+         *p = *argv[i];
+         p->ptr.offset = nir_load_param(&c->b, pidx++);
+         air_set(c, &f->args[i], p);
+         continue;
+      }
       if (!is_param[i]) {
          air_set(c, &f->args[i], argv[i]);   /* the caller's own resolution */
          continue;
@@ -3078,13 +3131,14 @@ air_call_in_module(struct air_ctx *c, const struct air_inst *in, const char *nam
    struct air_val **argv = rzalloc_array(c->mem_ctx, struct air_val *,
                                          MAX2(f->num_args, 1));
    bool *is_param = rzalloc_array(c->mem_ctx, bool, MAX2(f->num_args, 1));
+   bool *offset_param = rzalloc_array(c->mem_ctx, bool, MAX2(f->num_args, 1));
    for (unsigned i = 0; i < f->num_args; i++) {
       argv[i] = air_get(c, in->operands[i + 1]);
       if (!argv[i])
          return false;
    }
 
-   nir_function *fn = translate_callee(c, f, argv, is_param);
+   nir_function *fn = translate_callee(c, f, argv, is_param, offset_param);
    if (!fn)
       return false;   /* translate_callee has said why */
 
@@ -3118,6 +3172,10 @@ air_call_in_module(struct air_ctx *c, const struct air_inst *in, const char *nam
    }
    /* operand 0 is the callee; the arguments follow it */
    for (unsigned i = 0; i < f->num_args; i++) {
+      if (offset_param[i]) {
+         call->params[idx++] = nir_src_for_ssa(argv[i]->ptr.offset);
+         continue;
+      }
       if (!is_param[i])
          continue;
       nir_def *a = air_get_ssa(c, in->operands[i + 1]);
@@ -3289,7 +3347,7 @@ wrap_library_function(struct air_ctx *c, const struct air_md *out_md,
                re->kind != AIR_TYPE_INT))
       return air_error(c, "library: the return value is neither a scalar nor a vector");
 
-   nir_function *fn = translate_callee(c, f, argv, is_param);
+   nir_function *fn = translate_callee(c, f, argv, is_param, NULL);
    if (!fn)
       return false;   /* translate_callee has said why */
 
@@ -3387,7 +3445,7 @@ translate_body(struct air_ctx *c)
    const struct air_function *f = c->fn;
 
    /* phis first: each becomes a register, loaded where the phi is and stored
-    * at the end of every predecessor (docs/air.md: NIR's own
+    * at the end of every predecessor (docs/dev/air.md: NIR's own
     * nir_lower_goto_ifs does the same to make an unstructured CFG safe) --
     * except a phi of POINTERS, which has no bits and is resolved where it
     * stands (resolve_pointer_phi). It gets no register, and the store loop at
@@ -3674,7 +3732,7 @@ plan_globals(struct air_ctx *c)
           * sentinel: the Adreno's texture instruction holds the sampler in a
           * four-bit field, and ~0u there asserts in ir3's encoder. The index
           * goes after the API's samplers, and the runtime creates the sampler
-          * from the state word (docs/air.md section 7.7).
+          * from the state word (docs/dev/air.md section 7.7).
           */
          unsigned next = 0;
          for (unsigned k = 0; k < c->info->num_resources; k++)
@@ -3779,7 +3837,7 @@ run_static_initializers(struct air_ctx *c)
           * also why this could not be reached before the reader learnt to read
           * one.
           */
-         nir_function *fn = translate_callee(c, f, NULL, NULL);
+         nir_function *fn = translate_callee(c, f, NULL, NULL, NULL);
          if (!fn)
             return;   /* translate_callee has said why */
          nir_builder_instr_insert(&c->b, &nir_call_instr_create(c->nir, fn)->instr);
@@ -3832,7 +3890,7 @@ air_to_nir(void *mem_ctx, const void *bitcode, size_t size, const char *entry_po
       return NULL;
    }
    /* air.visible: a library function, linked into its caller at pipeline time
-    * (docs/air.md section 7.5). Not an entry point, so not a shader -- unless
+    * (docs/dev/air.md section 7.5). Not an entry point, so not a shader -- unless
     * the caller asks for the generated wrapper, which makes one compute shader
     * whose only job is to call it (wrap_library_function).
     */
@@ -3944,6 +4002,24 @@ air_to_nir(void *mem_ctx, const void *bitcode, size_t size, const char *entry_po
 
    if (!c.error[0])
       plan_globals(&c);
+   /* A threadgroup ARGUMENT is sized by the dispatch (-setThreadgroupMemoryLength:
+    * atIndex:) and placed after the shader's own threadgroup arrays: its base is the
+    * static size, rounded to 16, and the runtime asks the GPU for that much more
+    * (pipe_grid_info.variable_shared_mem).
+    */
+   if (!c.error[0]) {
+      bool dynamic_tg = false;
+      for (unsigned i = 0; i < c.num_params; i++)
+         dynamic_tg |= c.params[i] && c.params[i]->kind == AIR_VAL_PTR &&
+                       c.params[i]->ptr.class == AIR_PTR_SHARED;
+      if (dynamic_tg) {
+         c.shared_size = ALIGN_POT(c.shared_size, 16);
+         for (unsigned i = 0; i < c.num_params; i++)
+            if (c.params[i] && c.params[i]->kind == AIR_VAL_PTR &&
+                c.params[i]->ptr.class == AIR_PTR_SHARED)
+               c.params[i]->ptr.offset = nir_imm_int(&c.b, (int)c.shared_size);
+      }
+   }
    if (!c.error[0])
       materialise_globals(&c);
    if (!c.error[0])
@@ -3995,6 +4071,9 @@ air_to_nir(void *mem_ctx, const void *bitcode, size_t size, const char *entry_po
          break;
       }
    }
+
+   if (c.info->null_query_ubo)
+      c.nir->info.num_ubos = MAX2(c.nir->info.num_ubos, c.info->null_query_ubo);
 
    c.nir->scratch_size = c.scratch_size;
    c.nir->info.shared_size = c.shared_size;

@@ -17,6 +17,8 @@ struct ufshc_loader {
 	volatile uint32_t *list_in;             /* this kernel's: its list is in */
 	uint32_t *switched_in, *switched_out;
 	volatile uint32_t *cnr_at_switch;       /* this kernel's: UTRLCNR when its list went in */
+	uint64_t data_pa;                       /* the loader's memory for the slots' data, 0: this kernel's own */
+	uint32_t data_size;
 };
 
 bool ufshc_probe(const struct ufshc_loader *loader, bool only);
@@ -26,6 +28,11 @@ int ufshc_switch_in(bool prove);
 int ufshc_switch_out(const char *why);
 bool ufshc_list_in(void);
 int ufshc_read(uint8_t lun, uint64_t offset, uint8_t *dst, uint64_t len);
+bool ufshc_set_write_window(uint8_t lun, uint64_t first, uint64_t blocks);
+int ufshc_write(uint8_t lun, uint64_t offset, const uint8_t *src, uint64_t len);
+int ufshc_security(bool out, uint8_t *buf, uint32_t len);   /* RPMB unit, for the secure world only */
+int ufshc_sync(uint8_t lun);
+int ufshc_turbo_write(void);            /* ufs_tw=1: the SLC write cache on (B, 2026-11-06) */
 void ufshc_report(const char *when);
 void redwood_ufs_quiesce(void);
 

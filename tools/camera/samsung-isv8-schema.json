@@ -1,0 +1,334 @@
+{
+  "ddk_sha256": "e047faff00230a58dd547c6fe0503d91223f3a888730dd550b2dedbedf7d99b5",
+  "key_table_offset": "0x35f030",
+  "size_dispatch_offset": "0x1523cc",
+  "payload_magic": "0x3e671996",
+  "serialized_bytes": 322097,
+  "blocks": [
+    {
+      "key": "SdkVersion",
+      "size": 320,
+      "offset": 8
+    },
+    {
+      "key": "PlatformDataTuning",
+      "size": 588,
+      "offset": 328
+    },
+    {
+      "key": "AFC",
+      "size": 120,
+      "offset": 916
+    },
+    {
+      "key": "af",
+      "size": 13200,
+      "offset": 1036
+    },
+    {
+      "key": "afstat",
+      "size": 2984,
+      "offset": 14236
+    },
+    {
+      "key": "scd",
+      "size": 240,
+      "offset": 17220
+    },
+    {
+      "key": "afit",
+      "size": 45848,
+      "offset": 17460
+    },
+    {
+      "key": "afit3d",
+      "size": 37692,
+      "offset": 63308
+    },
+    {
+      "key": "ae",
+      "size": 31412,
+      "offset": 101000
+    },
+    {
+      "key": "cac",
+      "size": 532,
+      "offset": 132412
+    },
+    {
+      "key": "bincrct",
+      "size": 112,
+      "offset": 132944
+    },
+    {
+      "key": "drcclct",
+      "size": 336,
+      "offset": 133056
+    },
+    {
+      "key": "drcdstr",
+      "size": 976,
+      "offset": 133392
+    },
+    {
+      "key": "prc",
+      "size": 2428,
+      "offset": 134368
+    },
+    {
+      "key": "bds",
+      "size": 1,
+      "offset": 136796
+    },
+    {
+      "key": "drcTmc",
+      "size": 340,
+      "offset": 136797
+    },
+    {
+      "key": "dspclTuning",
+      "size": 26,
+      "offset": 137137
+    },
+    {
+      "key": "edgedet",
+      "size": 1,
+      "offset": 137163
+    },
+    {
+      "key": "awbb",
+      "size": 17096,
+      "offset": 137164
+    },
+    {
+      "key": "thumb",
+      "size": 152,
+      "offset": 154260
+    },
+    {
+      "key": "stk",
+      "size": 638,
+      "offset": 154412
+    },
+    {
+      "key": "fls",
+      "size": 2,
+      "offset": 155050
+    },
+    {
+      "key": "tuneLT",
+      "size": 2312,
+      "offset": 155052
+    },
+    {
+      "key": "gos",
+      "size": 56,
+      "offset": 157364
+    },
+    {
+      "key": "rgbGammaTuningParams",
+      "size": 7664,
+      "offset": 157420
+    },
+    {
+      "key": "preGammaTuning",
+      "size": 416,
+      "offset": 165084
+    },
+    {
+      "key": "postGammaTuning",
+      "size": 416,
+      "offset": 165500
+    },
+    {
+      "key": "isp_postGammaTuning",
+      "size": 416,
+      "offset": 165916
+    },
+    {
+      "key": "preMsmGammaTuning",
+      "size": 416,
+      "offset": 166332
+    },
+    {
+      "key": "msmTuningParams",
+      "size": 384,
+      "offset": 166748
+    },
+    {
+      "key": "blcStrp",
+      "size": 384,
+      "offset": 167132
+    },
+    {
+      "key": "blcDns",
+      "size": 384,
+      "offset": 167516
+    },
+    {
+      "key": "postMsmGammaTuning",
+      "size": 416,
+      "offset": 167900
+    },
+    {
+      "key": "tnr_preGammaTuning",
+      "size": 416,
+      "offset": 168316
+    },
+    {
+      "key": "dns_preGammaTuning",
+      "size": 416,
+      "offset": 168732
+    },
+    {
+      "key": "skl",
+      "size": 24,
+      "offset": 169148
+    },
+    {
+      "key": "aaIF",
+      "size": 372,
+      "offset": 169172
+    },
+    {
+      "key": "ccmTuning",
+      "size": 8436,
+      "offset": 169544
+    },
+    {
+      "key": "grasTuning",
+      "size": 41940,
+      "offset": 177980
+    },
+    {
+      "key": "grasLutTuning",
+      "size": 26532,
+      "offset": 219920
+    },
+    {
+      "key": "effectsTuning",
+      "size": 1644,
+      "offset": 246452
+    },
+    {
+      "key": "rgb2yuvTuningParams",
+      "size": 522,
+      "offset": 248096
+    },
+    {
+      "key": "yuv2rgbTuningParams",
+      "size": 76,
+      "offset": 248618
+    },
+    {
+      "key": "thumbnailStatisticsTuning",
+      "size": 160,
+      "offset": 248694
+    },
+    {
+      "key": "isp_ditherTuning",
+      "size": 2,
+      "offset": 248854
+    },
+    {
+      "key": "tuneDRCToneMap",
+      "size": 62696,
+      "offset": 248856
+    },
+    {
+      "key": "rgbyHistTuning",
+      "size": 784,
+      "offset": 311552
+    },
+    {
+      "key": "wbg",
+      "size": 16,
+      "offset": 312336
+    },
+    {
+      "key": "dns_wbg",
+      "size": 16,
+      "offset": 312352
+    },
+    {
+      "key": "afident",
+      "size": 284,
+      "offset": 312368
+    },
+    {
+      "key": "ysum",
+      "size": 3,
+      "offset": 312652
+    },
+    {
+      "key": "exposureMngrTuning",
+      "size": 8,
+      "offset": 312655
+    },
+    {
+      "key": "bpcdns",
+      "size": 70,
+      "offset": 312663
+    },
+    {
+      "key": "reconstructionTuning",
+      "size": 16,
+      "offset": 312733
+    },
+    {
+      "key": "motdet",
+      "size": 76,
+      "offset": 312749
+    },
+    {
+      "key": "hqdns",
+      "size": 400,
+      "offset": 312825
+    },
+    {
+      "key": "sharpnoise",
+      "size": 60,
+      "offset": 313225
+    },
+    {
+      "key": "orbds",
+      "size": 404,
+      "offset": 313285
+    },
+    {
+      "key": "orbmch",
+      "size": 180,
+      "offset": 313689
+    },
+    {
+      "key": "TnrTuning",
+      "size": 1128,
+      "offset": 313869
+    },
+    {
+      "key": "dmsc",
+      "size": 12,
+      "offset": 314997
+    },
+    {
+      "key": "rtaCommon",
+      "size": 5744,
+      "offset": 315009
+    },
+    {
+      "key": "clahe",
+      "size": 660,
+      "offset": 320753
+    },
+    {
+      "key": "oetfRgbGammaTuning",
+      "size": 276,
+      "offset": 321413
+    },
+    {
+      "key": "fdpig_postGammaTuning",
+      "size": 416,
+      "offset": 321689
+    }
+  ]
+}

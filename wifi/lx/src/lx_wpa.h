@@ -46,4 +46,29 @@ enum {
 int lx_wpa_message(struct lx_wpa *wpa, const unsigned char *message, unsigned length, unsigned char *reply,
     unsigned *reply_length, const char **why);
 
+/*
+ * The access point's side (the S20's Personal Hotspot: the firmware has no authenticator of its own). The
+ * caller fills the first block; lx_wpa_ap_first() makes message 1, lx_wpa_ap_message() takes the station's
+ * message 2 (reply: message 3, LX_WPA_ANSWER) and message 4 (LX_WPA_KEYS: `pairwise` is the station's key
+ * from now on). lx_wpa_ap_again() makes the last message again (a new counter) when no answer came.
+ */
+struct lx_wpa_ap {
+	unsigned char pmk[32];
+	unsigned char own[6], peer[6];		/* the access point's address and the station's */
+	unsigned char own_nonce[32];		/* ANonce: fresh for every handshake */
+	const unsigned char *rsn;		/* our RSN element, exactly as the beacon carries it ... */
+	unsigned rsn_length;			/* ... (it goes into message 3, and the station compares) */
+	const unsigned char *group;		/* the group key (GTK) ... */
+	unsigned group_length, group_index;	/* ... its length and its number (1 to 3) */
+	/* from here on: lx_wpa.c's */
+	unsigned long long replay;
+	int stage;				/* 1 message 1 out, 3 message 3 out, 4 done */
+	unsigned char peer_nonce[32], kck[16], kek[16];
+	unsigned char pairwise[16];		/* the station's key once LX_WPA_KEYS came */
+};
+int lx_wpa_ap_first(struct lx_wpa_ap *ap, unsigned char *message, unsigned *length);
+int lx_wpa_ap_again(struct lx_wpa_ap *ap, unsigned char *message, unsigned *length);
+int lx_wpa_ap_message(struct lx_wpa_ap *ap, const unsigned char *message, unsigned length, unsigned char *reply,
+    unsigned *reply_length, const char **why);
+
 #endif

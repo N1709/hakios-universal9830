@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "soc": "exynos990",
+  "architecture": "arm64",
+  "gic_version": 2,
+  "ios_build": "20F66",
+  "xnu_tag": "xnu-8796.121.2",
+  "storage_layout": "ios-only-v1",
+  "protected_partitions": [
+    "efs",
+    "sec_efs",
+    "radio",
+    "modem",
+    "bootloader",
+    "sboot",
+    "param",
+    "up_param",
+    "dtbo",
+    "vbmeta",
+    "vbmeta_samsung"
+  ],
+  "notes": "Shared SoC is not evidence of compatible panel, memory, firmware or partitions."
+}

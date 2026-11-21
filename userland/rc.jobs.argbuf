@@ -3,12 +3,12 @@
 # WHAT THIS BOOT IS FOR: MTLArgumentEncoder, and the buffer OFFSET that goes with it.
 #
 # The frontend's half of argument buffers landed first and took Resident Evil 4 from 258
-# translated shader libraries to 2 990 (docs/air.md 8.2.1). Those shaders still could not
+# translated shader libraries to 2 990 (docs/dev/air.md 8.2.1). Those shaders still could not
 # be USED, because an application binds their resources through an MTLArgumentEncoder and
 # this driver answered none of its sixteen selectors. It answers them now, as a RECORDER
 # rather than a writer -- the frontend resolved every member of every set to a binding
 # while translating, and Metal's 8-byte handles are an Apple GPU's descriptors, which a
-# Gallium driver cannot read -- and docs/air.md 8.2.2 is the whole of why.
+# Gallium driver cannot read -- and docs/dev/air.md 8.2.2 is the whole of why.
 #
 # Everything here has run on this machine already, on softpipe, through the same contract
 # (tools/air/argbufruncheck.sh: 20 checks, every one passing). What the phone adds is what

@@ -14,6 +14,7 @@
  * commands.
  */
 #include "mini.h"
+#include "data_volume_policy.h"
 
 #define PATTERN_SIZE    300000
 #define RB_HALT         0x08
@@ -89,6 +90,39 @@ boot_arg(const char *name)
 	return NULL;
 }
 
+/*
+ * Touch ID (touchid=1): publish the persona now, before launchd, with "not ready" answers until redwood-fpd connects.
+ * SpringBoard asks BiometricKit synchronously at start-up (FBSystemShellInitialize); redwood-fpd only got to publish it
+ * ~16 s later, after which biometrickitd never answered: on a fresh data volume (no catacomb to answer from) SpringBoard
+ * waited for ever on the Apple logo (2026-11-20). redwood-fpd sets the same values again later: nothing changes then.
+ */
+static void
+touchid_early(void)
+{
+	const char *t = boot_arg("touchid");
+	int one = 1, two = 2, three = 3;
+
+	if (t == NULL || strcmp(t, "1") != 0) {
+		return;
+	}
+	/* biometrickitd's Touch ID module (libBKDM1) lives in the iPhone 8's shared cache (push-iphone8-cache.sh; cut out alone it
+	 * crashes: SIGSEGV, needs a relinker -- tools/touchid/fetch-bkdm1.sh, 2026-11-20); without
+	 * it biometrickitd runs on the iPhone X cache, takes SpringBoard's start-up request and never answers once the
+	 * persona exists. No cache: no persona, Touch ID unavailable, the phone starts (2026-11-20). */
+	struct stat cache;
+
+	if (stat("/usr/lib/libBKDM1.dylib", &cache) != 0 &&
+	    stat("/private/var/redwood/iphone8-dsc/dyld_shared_cache_arm64", &cache) != 0) {
+		printf("  Touch ID: no ported libBKDM1 (/usr/lib) nor iPhone 8 cache: not published\n");
+		return;
+	}
+	sysctlbyname("kern.sweet_mesa_offline", NULL, NULL, &one, sizeof(one));
+	sysctlbyname("kern.sweet_mesa_match", NULL, NULL, &two, sizeof(two));
+	sysctlbyname("kern.sweet_mesa_catacomb", NULL, NULL, &one, sizeof(one));
+	check(sysctlbyname("kern.sweet_mesa", NULL, NULL, &three, sizeof(three)) == 0,
+	    "publish Touch ID before launchd (not ready until redwood-fpd connects)");
+}
+
 /* A directory of this image (or anything else) shown in place of one of the volume's: bindfs. */
 static int
 bind_dir(const char *from, const char *to)
@@ -138,6 +172,9 @@ synthetic_dir(const char *path)
  */
 #ifndef EINVAL
 #define EINVAL 22
+#ifndef EEXIST
+#define EEXIST 17
+#endif
 #endif
 /*
  * Mount a cryptex on /private/preboot/Cryptexes/NAME: container C (",c=N") of md0, or, when md0 has
@@ -194,8 +231,7 @@ flash_root(const char *dev)
 	check(synthetic_dir("/flash/redwood"), "a synthetic /redwood on it, for this image");
 	check(bind_dir(in_image("/LaunchDaemons"), "/flash/System/Library/LaunchDaemons") &&
 	    bind_dir(in_image("/empty"), "/flash/System/Library/NanoLaunchDaemons") &&
-	    /* the angels SpringBoard looks up (PosterBoard, AccessibilityUIServer: userland/build.sh), not iOS's twelve */
-	    bind_dir(in_image("/angels"), "/flash/System/Library/LaunchAngels") &&
+	    bind_dir(in_image("/empty"), "/flash/System/Library/LaunchAngels") &&
 	    bind_dir(in_image("/xpc"), "/flash/System/Library/xpc"), "our launchd jobs, not iOS's");
 	check(bind_dir(in_image("/hal"), "/flash/System/Library/Audio/Plug-Ins/HAL"),
 	    "our audio device, not Apple's plug-ins");
@@ -668,7 +704,9 @@ copy_tree(const char *from, const char *to, int *files)
 		return 0;
 	}
 	mode = st.st_mode & 07777;
-	if (mkdir(to, mode) != 0 || chown(to, 0, 0) != 0) {
+	/* existing (data volume on the flash): merge, and keep what is there -- the package manager's state */
+	if ((mkdir(to, mode) != 0 && (errno != EEXIST || lstat(to, &st) != 0 || (st.st_mode & S_IFMT) != S_IFDIR)) ||
+	    chown(to, 0, 0) != 0) {
 		return 0;
 	}
 	if ((fd = open(from, O_RDONLY | O_DIRECTORY, 0)) < 0) {
@@ -677,6 +715,7 @@ copy_tree(const char *from, const char *to, int *files)
 	while (ok && (n = getdirentries(fd, buf, sizeof(buf), &position)) > 0) {
 		for (ssize_t at = 0; ok && at < n; at += ((struct dirent *)(buf + at))->d_reclen) {
 			const char *name = ((struct dirent *)(buf + at))->d_name;
+			struct stat there;
 
 			if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
 				continue;
@@ -696,6 +735,8 @@ copy_tree(const char *from, const char *to, int *files)
 				ok = 0;
 			} else if ((st.st_mode & S_IFMT) == S_IFDIR) {
 				ok = copy_tree(f, t, files);
+			} else if (lstat(t, &there) == 0) {
+				/* kept: an earlier boot (or the package manager) made it */
 			} else if ((st.st_mode & S_IFMT) == S_IFLNK) {
 				ssize_t length = readlink(f, target, sizeof(target) - 1);
 
@@ -732,10 +773,17 @@ graft_tree(const char *from, const char *to, int top, int *made, int *linked)
 		return 0;
 	}
 	mode = st.st_mode & 07777;
-	if (mkdir(to, mode) != 0 || chown(to, 0, 0) != 0) {
+	/* an existing directory is merged into, not given up on: on a data volume on the flash /private/var/jb outlives
+	 * the boot, and the phone pieces (build.sh) make it before the first graft -- a fresh install grafted nothing,
+	 * ever: no sshd, no prefix (2026-11-20) */
+	if (mkdir(to, mode) == 0) {
+		(*made)++;
+	} else if (errno != EEXIST || lstat(to, &st) != 0 || (st.st_mode & S_IFMT) != S_IFDIR) {
 		return 0;
 	}
-	(*made)++;
+	if (chown(to, 0, 0) != 0) {
+		return 0;
+	}
 	if ((fd = open(from, O_RDONLY | O_DIRECTORY, 0)) < 0) {
 		return 0;
 	}
@@ -768,7 +816,13 @@ graft_tree(const char *from, const char *to, int top, int *made, int *linked)
 			} else if ((st.st_mode & S_IFMT) == S_IFDIR) {
 				ok = graft_tree(f, t, 0, made, linked);
 			} else {
-				ok = symlink(f, t) == 0;
+				struct stat old;
+
+				/* a link from an earlier boot is renewed; a real file there (a phone piece) is kept */
+				if (lstat(t, &old) == 0 && (old.st_mode & S_IFMT) == S_IFLNK) {
+					unlink(t);
+				}
+				ok = symlink(f, t) == 0 || (errno == EEXIST && lstat(t, &old) == 0);
 				(*linked)++;
 			}
 			if (!ok) {
@@ -821,6 +875,250 @@ read_whole(const char *path, char *buf, size_t size)
 	return (ssize_t)got;
 }
 
+/*
+ * ---- the S20+'s data volume: HFS+ on userdata (var_hfs=1; PLANS/09-standalone.md, P6) ----
+ *
+ * /private/var on the flash, as a phone has it: Apple's HFS+ in the kernel (bsd/hfs), a case-sensitive
+ * journaled one filling the userdata partition (/dev/ufs_userdata, the only partition the kernel lets be
+ * written). Installation must initialize this volume explicitly before boot. Normal boot never
+ * formats userdata, including after a read error, damaged header or failed mount. A requested
+ * persistent volume that cannot mount stops startup instead of hiding the failure behind RAM data.
+ */
+#ifndef EEXIST
+#define EEXIST 17
+#endif
+/*
+ * x1slte (SM-G980F): userdata is Android's, so the kernel offers only a window of it (ufs_win=, the pinned
+ * /data/darwin/var.img) as a disk of its own, /dev/ufs_var and /dev/rufs_var. Those when they exist; the S20+'s
+ * whole userdata otherwise.
+ */
+static const char *HFS_DEVICE = "/dev/ufs_userdata";
+static const char *HFS_RAW = "/dev/rufs_userdata";
+
+static void
+hfs_pick_device(void)
+{
+	int fd = open("/dev/rufs_var", O_RDONLY, 0);
+
+	if (fd >= 0) {
+		close(fd);
+		HFS_DEVICE = "/dev/ufs_var";
+		HFS_RAW = "/dev/rufs_var";
+	}
+}
+
+struct hfs_args {                       /* struct hfs_mount_args (bsd/hfs/hfs_mount.h), as mount_hfs passes it */
+	const char *fspec;
+	unsigned hfs_uid, hfs_gid;
+	unsigned short hfs_mask;
+	unsigned hfs_encoding;
+	int tz_minuteswest, tz_dsttime;
+	int flags;
+	int journal_tbuffer_size, journal_flags, journal_disable;
+};
+
+/* the volume header at 1024: "HX", version 5 (HFSX, case-sensitive) */
+static int
+hfs_is_there(void)
+{
+	static unsigned char block[4096] __attribute__((aligned(4096)));
+	int fd = open(HFS_RAW, O_RDONLY, 0), ok;
+	ssize_t got;
+
+	if (fd < 0) {
+		return -1;
+	}
+	got = pread(fd, block, sizeof(block), 0);
+	if (got != (ssize_t)sizeof(block)) {
+		close(fd);
+		return -1;
+	}
+	ok = block[1024] == 'H' && block[1025] == 'X' &&
+	    block[1026] == 0 && block[1027] == 5;
+	close(fd);
+	return ok;
+}
+
+/* /private/var/run of the boot before: its pid files and sockets mean nothing now */
+static void
+empty_dir(const char *path)
+{
+	static char buf[8192];
+	char child[1024];
+	off_t pos = 0;
+	ssize_t n;
+	int fd = open(path, O_RDONLY | O_DIRECTORY, 0);
+
+	while (fd >= 0 && (n = getdirentries(fd, buf, sizeof(buf), &pos)) > 0) {
+		for (char *p = buf; p < buf + n;) {
+			struct dirent *de = (struct dirent *)(void *)p;
+			struct stat st;
+
+			if (de->d_reclen == 0) {
+				break;
+			}
+			p += de->d_reclen;
+			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0 ||
+			    strlen(path) + strlen(de->d_name) + 2 > sizeof(child)) {
+				continue;
+			}
+			strcpy(child, join(path, "/", de->d_name));
+			if (lstat(child, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR) {
+				empty_dir(child);
+				rmdir(child);
+			} else {
+				unlink(child);
+			}
+		}
+	}
+	if (fd >= 0) {
+		close(fd);
+	}
+}
+
+/* Only mount an existing filesystem. Formatting belongs to the offline installer. */
+static int
+hfs_mount_existing(void)
+{
+	struct hfs_args args = {
+		.fspec = HFS_DEVICE, .hfs_uid = ~0u, .hfs_gid = ~0u, .hfs_mask = 0xffff, .hfs_encoding = ~0u,
+	};
+	return mount("hfs", "/private/var", 0, &args);
+}
+
+/* 1: mounted existing data; 0: explicitly volatile mode; -1: persistent-data failure. */
+static int
+mount_data_volume(void)
+{
+	const char *wanted = boot_arg("var_hfs");
+	int status;
+
+	if (wanted == NULL || strcmp(wanted, "1") != 0) {
+		return 0;
+	}
+	hfs_pick_device();
+	status = redwood_mount_persistent_data(1, hfs_is_there, hfs_mount_existing);
+	if (status != REDWOOD_DATA_MOUNTED) {
+		const char *reason = status == REDWOOD_DATA_UNREADABLE ? "device read failed" :
+		    status == REDWOOD_DATA_UNINITIALIZED ? "HFSX header absent or damaged" : "HFS mount failed";
+		printf("  persistent userdata unavailable: %s; no formatting attempted\n", reason);
+		check(0, "mount existing iOS data volume; recover or explicitly initialize it offline");
+		return -1;
+	}
+	check(1, "mount iOS data volume (existing HFS+, retained)");
+	empty_dir("/private/var/run");
+	return 1;
+}
+
+/*
+ * island=1 (xnuloader/loader.c) changes what the device tree says about the screen and the home button, and
+ * MobileGestalt keeps its answers in a cache it does not rebuild when the tree changes: switched one way or
+ * the other, iOS would go on with the old answers (a 14 Pro with a home button, or no island). So when the
+ * flag differs from the last boot's, the cache goes, and MobileGestalt makes a new one from the tree.
+ */
+#define MG_CACHE "/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist"
+#define ISLAND_MARK "/private/var/db/redwood-island"
+
+static void
+island_cache_sync(void)
+{
+	const char *arg = boot_arg("island");
+	/* Version the hardware capability cache too: old builds cached ALS=false
+	 * because their light sensor existed only in virtual HID, not IORegistry.
+	 * Invalidate once before launchd (and when the ALS boot configuration changes),
+	 * so Settings and CoreBrightness both obtain the real kernel capability. */
+	char now[4] = { arg != NULL && strcmp(arg, "1") == 0 ? '1' : '0', '0', '2', '0' }, last[5];
+	int fd;
+	arg = boot_arg("shub");
+	if (arg != NULL && strcmp(arg, "6") == 0) now[1] = '1';
+	arg = boot_arg("sens_als");
+	if (arg != NULL && strcmp(arg, "0") == 0) now[1] = '0';
+	/* touchid=1: the loader's /arm-io/mesa node makes this a Touch ID iPhone for MobileGestalt */
+	arg = boot_arg("touchid");
+	if (arg != NULL && strcmp(arg, "1") == 0) now[3] = '1';
+
+	if (read_whole(ISLAND_MARK, last, sizeof(last)) == sizeof(now) && !memcmp(last, now, sizeof(now))) {
+		return;
+	}
+	if (unlink(MG_CACHE) == 0) {
+		printf("  hardware capabilities changed (island=%c ALS=%c touchid=%c): rebuilding MobileGestalt cache\n", now[0], now[1], now[3]);
+	}
+	fd = open(ISLAND_MARK, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd >= 0) {
+		write(fd, now, sizeof(now));
+		close(fd);
+	}
+}
+
+/*
+ * The draw scale (A, 2026-11-14). The kernel draws 375 x 812 points at 2 pixels a point when the panel runs at
+ * 720 x 1600 (fb_scaler=1, fb_mode=3/4: MiniIOMobileFramebuffer, 750 x 1624), at 3 otherwise; fbscale= wins.
+ * MobileGestalt takes main-screen-scale and -pitch from its iPhone X table (3, 458) and caches them: with the
+ * 750 x 1624 display that is a 250-point-wide screen. Its cache keeps both as raw bytes (pitch as 8, scale as a
+ * float, 4 of padding) in CacheData; patched in place, same length, every app reads the kernel's scale. A cache
+ * iOS rebuilds (missing, new build) comes back at 3 and is put right on the next boot.
+ */
+static void
+mg_scale_sync(void)
+{
+	static char buf[65536];
+	const char *a = boot_arg("fbscale"), *sc = boot_arg("fb_scaler"), *mode = boot_arg("fb_mode");
+	unsigned want = a != NULL ? (unsigned)(a[0] - '0') : (sc != NULL && sc[0] != '0' && mode != NULL &&
+	    (mode[0] == '3' || mode[0] == '4') && mode[1] == 0) ? 2 : 3;
+	static const unsigned char s3[16] = { 0xca, 0x01, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x40, 0x40, 0, 0, 0, 0 };
+	static const unsigned char s2[16] = { 0x31, 0x01, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x40, 0, 0, 0, 0 };
+	const unsigned char *from = want == 2 ? s3 : s2, *to = want == 2 ? s2 : s3;
+	ssize_t n = read_whole(MG_CACHE, buf, sizeof(buf));
+	int fd;
+
+	if (n < 16 || (want != 2 && want != 3)) {
+		return;
+	}
+	for (ssize_t i = 0; i + 16 <= n; i++) {
+		if (memcmp(buf + i, from, 16) == 0) {
+			fd = open(MG_CACHE, O_WRONLY, 0);
+			if (fd >= 0) {
+				lseek(fd, i, SEEK_SET);
+				write(fd, to, 16);
+				close(fd);
+				printf("  MobileGestalt: screen scale %u (as the kernel draws)\n", want);
+			}
+			return;
+		}
+	}
+}
+
+/*
+ * The clock. The S20 starts every boot at 1970 (no RTC is read) until the network sets it, and iOS's daemons
+ * write what happens in between with 1970 dates. powerlog's daily archiver (inside aggregated) then made one
+ * archive per day since 1970: 12,691 files, 596 MB, a core at 92 % for good (2026-11-13: "it feels laggy").
+ * rwlogd saves the time every minute once it is real; here, before launchd starts iOS, a clock still in 1970
+ * is set to that saved time (minutes old at worst; the network corrects it).
+ */
+#define TIME_MARK "/private/var/db/redwood-time"
+static void
+clock_restore(void)
+{
+	char b[24];
+	long saved = 0;
+	int n = read_whole(TIME_MARK, b, sizeof(b) - 1);
+	struct timeval tv;
+
+	if (n <= 0 || gettimeofday(&tv, NULL) != 0 || tv.tv_sec > 1700000000) {
+		return;
+	}
+	b[n] = 0;
+	for (int i = 0; b[i] >= '0' && b[i] <= '9'; i++) {
+		saved = saved * 10 + (b[i] - '0');
+	}
+	if (saved < 1700000000) {
+		return;
+	}
+	tv.tv_sec = saved;
+	tv.tv_usec = 0;
+	printf("  clock: %s from the saved time %ld\n", settimeofday(&tv, NULL) == 0 ? "set" : "NOT set", saved);
+}
+
 static void
 mount_writable(void)
 {
@@ -832,11 +1130,26 @@ mount_writable(void)
 	struct stat st;
 
 	printf("\n-- writable filesystem --\n");
-	ok = mount("ramfs", "/private/var", 0, NULL) == 0;
-	if (!ok) {
-		printf("  mount: %s\n", strerror(errno));
+	ok = mount_data_volume();
+	if (ok < 0) {
+		printf("  STOP: persistent data was requested; refusing a RAM-only replacement. Use recovery.\n");
+		reboot(RB_HALT);
+		for (;;) {
+			usleep(1000000); /* If halt returns, never continue into launchd or data initialization. */
+		}
 	}
-	check(ok, "mount a memory filesystem on /private/var");
+	if (!ok) {
+		ok = mount("ramfs", "/private/var", 0, NULL) == 0;
+		if (!ok) {
+			printf("  mount: %s\n", strerror(errno));
+		}
+		check(ok, "mount a memory filesystem on /private/var");
+	}
+	if (ok) {
+		island_cache_sync();
+		mg_scale_sync();
+		clock_restore();
+	}
 
 	/* the directories of the data volume, as listed in the template that ships with iOS (ios165/mkvarskel.py) */
 	read_whole(in_image("/etc/var.skel"), skeleton, sizeof(skeleton));
@@ -851,8 +1164,12 @@ mount_writable(void)
 		if (count == 5 && f[0][0] == 'd') {
 			int mode = (int)parse_number(f[1], 8);
 
-			ok = mkdir(f[4], mode) == 0 && chmod(f[4], mode) == 0 &&
-			    chown(f[4], (int)parse_number(f[2], 10), (int)parse_number(f[3], 10)) == 0;
+			if (mkdir(f[4], mode) != 0 && errno == EEXIST) {
+				ok = 1;         /* (the data volume on the flash: there from a boot before, left as it is) */
+			} else {
+				ok = chmod(f[4], mode) == 0 &&
+				    chown(f[4], (int)parse_number(f[2], 10), (int)parse_number(f[3], 10)) == 0;
+			}
 			if (!ok) {
 				printf("  %s: %s\n", f[4], strerror(errno));
 			}
@@ -860,8 +1177,13 @@ mount_writable(void)
 		} else if (count == 3 && f[0][0] == 'l') {
 			symlink(f[1], f[2]);
 		} else if (count == 6 && f[0][0] == 'f') {
-			/* a file of ours to start with (build.sh: the var/ directory): mode, owner, group, path, source in the image */
-			if (!copy_file(in_image(f[5]), f[4], (int)parse_number(f[1], 8), (int)parse_number(f[2], 10),
+			/* a file of ours to start with (build.sh: the var/ directory): mode, owner, group, path, source in the image
+			 * -- only where there is none yet: on the flash, a later boot keeps what iOS made of it */
+			struct stat had;
+
+			if (lstat(f[4], &had) == 0) {
+				/* kept */
+			} else if (!copy_file(in_image(f[5]), f[4], (int)parse_number(f[1], 8), (int)parse_number(f[2], 10),
 			    (int)parse_number(f[3], 10))) {
 				printf("  %s: %s\n", f[4], strerror(errno));
 			}
@@ -883,6 +1205,16 @@ mount_writable(void)
 	}
 	printf("  %d directories, %d files\n", made, files);
 	check(ok && made > 50, "create the directories of the data volume");
+
+	/*
+	 * Compiled GPU shaders kept across launches and boots (on unless metal_cache=0; tools/mesa/panfrost-disk-cache-darwin.patch
+	 * redwood_shader_cache_dir): one directory per user under this one, which every user may make its own in
+	 * -- the window server and SpringBoard are mobile, not root, and could not create it in /private/var/db.
+	 * On the flash it stays from boot to boot; in a memory /var it is made again (and starts empty).
+	 */
+	if (ok && (mkdir("/private/var/db/redwood-metal-cache", 01777) == 0 || errno == EEXIST)) {
+		chmod("/private/var/db/redwood-metal-cache", 01777);
+	}
 
 	/*
 	 * and the package manager's prefix, when the image was built with one (tools/mk-jb.sh): /jb of
@@ -964,6 +1296,7 @@ mount_writable(void)
 		    users ? ", users resolvable" : "");
 		check(grafted, "graft the package manager's prefix onto the data volume");
 	}
+	touchid_early();
 }
 
 /*
@@ -999,6 +1332,143 @@ restore_var(void)
 	}
 	if (pid < 0 || wait4(pid, &status, 0, NULL) != pid || !WIFEXITED(status)) {
 		printf("  var_store did not run\n");
+	}
+}
+
+#ifndef ENOENT
+#define ENOENT 2
+#endif
+
+/* Hand a tree to an owner: every directory and file under PATH, PATH included. 1 if all of it. */
+static int
+chown_tree(const char *path, int uid, int gid)
+{
+	char buf[4096], f[512];
+	struct stat st;
+	off_t position = 0;
+	ssize_t n;
+	int ok, fd;
+
+	if (lstat(path, &st) != 0 || lchown(path, uid, gid) != 0) {
+		return 0;
+	}
+	if ((st.st_mode & S_IFMT) != S_IFDIR) {
+		return 1;
+	}
+	if ((fd = open(path, O_RDONLY | O_DIRECTORY, 0)) < 0) {
+		return 0;
+	}
+	ok = 1;
+	while (ok && (n = getdirentries(fd, buf, sizeof(buf), &position)) > 0) {
+		for (ssize_t at = 0; ok && at < n; at += ((struct dirent *)(buf + at))->d_reclen) {
+			const char *name = ((struct dirent *)(buf + at))->d_name;
+
+			if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+				continue;
+			}
+			if (strlen(path) + strlen(name) + 2 > sizeof(f)) {
+				ok = 0;
+				break;
+			}
+			strcpy(f, path);
+			strcpy(f + strlen(f), "/");
+			strcpy(f + strlen(f), name);
+			ok = chown_tree(f, uid, gid);
+		}
+	}
+	close(fd);
+	return ok;
+}
+
+/*
+ * The default wallpaper (userland/build.sh: a Photos poster with its lock-screen clock and paired home
+ * screen, PosterBoard's store reduced to it): copied into a data volume that has no poster store at all --
+ * a new one, or one wiped -- and owned by mobile, as PosterBoard keeps it. A phone with wallpapers of its own
+ * (any store there, even an empty one) is left exactly as it is. After restore_var, so a var_store volume
+ * is judged by what it brought back.
+ */
+/*
+ * The phone's call and text pieces that live on the data volume (B, 2026-11-15): redwood-ims, redwood-telephonyd,
+ * callservicesd, the call-screen hook, RedwoodSMS/RedwoodCellular. They used to be put there by hand, so a fresh or
+ * wiped data volume booted with the launchd jobs but without their programs: no calls, no texts, nothing said.
+ * build.sh lists them in /etc/seed.list (mode, owner, group, destination, source; a source starting with "/System"
+ * is in the system image, any other in this boot image). Each is copied only where there is none -- a newer one
+ * put on the phone by hand (tools/cellular/telephonyd/deploy-native-calls.sh) is never replaced.
+ */
+static void
+mkdir_parents(const char *path)
+{
+	char d[512];
+
+	if (strlen(path) >= sizeof(d)) {
+		return;
+	}
+	strcpy(d, path);
+	for (char *p = d + 1; *p; p++) {
+		if (*p == '/') {
+			*p = 0;
+			mkdir(d, 0755);
+			*p = '/';
+		}
+	}
+}
+static void
+seed_phone(void)
+{
+	static char list[4096];
+	int copied = 0, kept = 0, failed = 0;
+
+	if (read_whole(in_image("/etc/seed.list"), list, sizeof(list)) <= 0) {
+		return;
+	}
+	for (char *line = list; *line;) {
+		char *end = strchr(line, '\n'), *f[6];
+		struct stat had;
+
+		if (end) {
+			*end = 0;
+		}
+		if (split_tabs(line, f, 6) == 5) {
+			const char *from = strncmp(f[4], "/System/", 8) == 0 ? f[4] : in_image(f[4]);
+
+			if (lstat(f[3], &had) == 0) {
+				kept++;
+			} else {
+				mkdir_parents(f[3]);
+				if (copy_file(from, f[3], (int)parse_number(f[0], 8), (int)parse_number(f[1], 10), (int)parse_number(f[2], 10))) {
+					copied++;
+				} else {
+					printf("  seed %s: %s\n", f[3], strerror(errno));
+					failed++;
+				}
+			}
+		}
+		if (!end) {
+			break;
+		}
+		line = end + 1;
+	}
+	printf("  phone pieces on the data volume: %d put in place, %d already there, %d failed\n", copied, kept, failed);
+}
+
+static void
+default_wallpaper(void)
+{
+	static const char from[] = "/System/Library/Redwood/DefaultWallpaper/PRBPosterExtensionDataStore";
+	static const char to[] = "/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore";
+	static const char part[] = "/private/var/mobile/Library/Application Support/.PRBPosterExtensionDataStore.redwood";
+	struct stat st;
+	int files = 0;
+
+	if (lstat(from, &st) != 0 || lstat(to, &st) == 0 || errno != ENOENT) {
+		return;
+	}
+	printf("\n-- the default wallpaper (a data volume without one) --\n");
+	/* made under another name and renamed whole: a copy cut short (the phone off halfway) is not a store */
+	if (copy_tree(from, part, &files) && chown_tree(part, 501, 501) && rename(part, to) == 0) {
+		printf("  %d files in %s\n", files, to);
+	} else {
+		printf("  %s: %s (a part left by an earlier try blocks it: %s)\n", to, strerror(errno), part);
 	}
 }
 
@@ -1219,6 +1689,7 @@ run_command(char *line)
 			int null = open("/dev/null", O_WRONLY, 0);
 
 			if (null >= 0) {
+				dup2(null, 1);  /* (launchd's "com.apple.xpc.launchd|" lines come out here) */
 				dup2(null, 2);
 				close(null);
 			}
@@ -1444,6 +1915,8 @@ main(int argc, char **argv, char **envp)
 	show_system();
 	mount_writable();
 	restore_var();
+	default_wallpaper();
+	seed_phone();
 	test_files();
 	test_writable();
 	test_memory();

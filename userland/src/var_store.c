@@ -54,11 +54,19 @@
 
 #define BLOCK           4096
 #define BUFFER          (4u << 20)              /* the loader's own buffer: one request a write */
-#define STORE_AT        8589934592LL            /* darwin's block 2097152: past the cryptexes, with room to spare */
+/*
+ * Where the store is: the Xiaomi's darwin (its block 2097152, past the cryptexes), or the S20+'s
+ * userdata, 64 MiB in (bsd/dev/redwood_ufs.c, UFS_Y2S_STORE_*: the kernel takes writes there and
+ * nowhere else). Chosen at start by which of the two devices there is (pick_layout).
+ */
+static const char *store_device = "/dev/rufs_darwin";
+static long long store_at = 8589934592LL, state_at = 8566865920LL;
+static int has_boot_state = 1;                  /* the Xiaomi's boot guard (darwin's boot area) */
+#define STORE_AT        ((off_t)store_at)
 #define SLOT_BYTES      0x80000000LL            /* 2 GiB a slot, two slots */
 #define SLOTS           2
-#define DEVICE          "/dev/rufs_darwin"
-#define STATE_AT        8566865920LL            /* darwin's block 2091520: the boot state (common/flash/bundlefmt.py) */
+#define DEVICE          (store_device)
+#define STATE_AT        ((off_t)state_at)       /* darwin's block 2091520: the boot state (common/flash/bundlefmt.py) */
 #define BOOTOK_AFTER    60                      /* seconds of a run that make it a good start */
 #define ROOT            "/private/var"
 #define MAX_PATH        1024
@@ -1293,6 +1301,9 @@ fnv64(const void *data, uint64_t n)
 static int
 bootok(void)
 {
+	if (!has_boot_state) {
+		return 1;                       /* (the S20+: no boot guard in the flash) */
+	}
 	static uint8_t block[BLOCK] __attribute__((aligned(BLOCK)));
 	struct boot_state st;
 	int ok;
@@ -1334,53 +1345,11 @@ bootok(void)
 	return ok;
 }
 
-/*
- * A boot with no computer on the other end ends by the phone being powered off from iOS, not by
- * the kernel going back to the loader: launchd ends every job with SIGTERM first (and SIGKILL
- * after the job's ExitTimeOut, com.redwood.varstore.plist), and that is the watcher's cue to save
- * while /private/var is still whole. libmini has no signals, so this is the kernel's interface as
- * it is (bsd/dev/arm/unix_signal.c, sendsig): the handler is entered through a trampoline of ours
- * with the catcher, the style, the signal, the info, the context and a token in x0..x5, and the
- * trampoline gives the context back with sigreturn.
- */
-#define SYS_SIGACTION           46
-#define SYS_SIGRETURN           184
-#define SIGTERM_NUMBER          15
-
-static volatile int terminated;
-
-struct kernel_sigaction {
-	void (*handler)(int);
-	void (*tramp)(void (*)(int), int, int, void *, void *, long);
-	uint32_t mask;
-	int flags;
-};
-
-static void
-on_term(int sig)
-{
-	(void)sig;
-	terminated = 1;
-}
-
-static void
-signal_tramp(void (*handler)(int), int style, int sig, void *info, void *context, long token)
-{
-	(void)info;
-	handler(sig);
-	mini_syscall(SYS_SIGRETURN, (long)context, style, token, 0, 0, 0);
-}
-
 static int
 watch(int seconds)
 {
 	uint64_t last = 0;
 	int asked = 0;
-	struct kernel_sigaction action = { on_term, signal_tramp, 0, 0 };
-
-	if (mini_syscall(SYS_SIGACTION, SIGTERM_NUMBER, (long)&action, 0, 0, 0, 0) != 0) {
-		printf("var_store: no SIGTERM handler: a power-off will not save\n");
-	}
 
 	fd = open(DEVICE, O_RDWR, 0);
 	if (fd < 0) {
@@ -1416,18 +1385,11 @@ watch(int seconds)
 			asked = 1;
 		}
 		gettimeofday(&tv, NULL);
-		if (terminated || asked || (seconds > 0 && (uint64_t)tv.tv_sec - last >= (uint64_t)seconds)) {
-			int ok;
+		if (asked || (seconds > 0 && (uint64_t)tv.tv_sec - last >= (uint64_t)seconds)) {
+			int ok = save_once();
 
-			if (terminated) {
-				printf("var_store: the system is shutting down: saving the data volume\n");
-			}
-			ok = save_once();
 			if (!ok) {
 				printf("var_store: this save came to nothing; the store keeps what it had\n");
-			}
-			if (terminated) {
-				return ok;
 			}
 			last = (uint64_t)tv.tv_sec;
 			if (asked) {
@@ -1482,6 +1444,19 @@ stamp(const char *where)
 	return 1;
 }
 
+static void
+pick_layout(void)
+{
+	struct stat st;
+
+	if (stat("/dev/rufs_darwin", &st) != 0 && stat("/dev/rufs_userdata", &st) == 0) {
+		store_device = "/dev/rufs_userdata";
+		store_at = 67108864LL;          /* 64 MiB in; two slots of 2 GiB */
+		state_at = 0;
+		has_boot_state = 0;
+	}
+}
+
 int
 main(int argc, char **argv, char **envp)
 {
@@ -1490,6 +1465,7 @@ main(int argc, char **argv, char **envp)
 
 	(void)envp;
 	crc_init();
+	pick_layout();
 	if (strcmp(what, "bootok") == 0) {
 		return bootok() ? 0 : 1;
 	}

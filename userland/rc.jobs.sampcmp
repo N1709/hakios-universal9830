@@ -3,7 +3,7 @@
 #
 # METAL'S OWN SAMPLER STATE ON THE ADRENO, and 41 of these 56 lines are the
 # COMPARISON FUNCTION -- the one field of the 64-bit `constexpr sampler` word whose
-# values other than the default nothing in any corpus attests (docs/air.md 3.3).
+# values other than the default nothing in any corpus attests (docs/dev/air.md 3.3).
 #
 # Each line samples a texture with the sampler state the shader itself declares.
 # What each one must return stays on the host in manifest.json, which is NOT

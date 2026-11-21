@@ -279,7 +279,7 @@ def _fract(x):
         # metal_common defines as __METAL_FAST_MATH__ whenever __FAST_MATH__
         # is set. The corpus says it is: its modules carry `fmul fast` and
         # air.compile.denorms_disable. Under fast math an implementation is
-        # permitted to assume there are no infinities at all. docs/air.md 4.
+        # permitted to assume there are no infinities at all. docs/dev/air.md 4.
         raise Undecided("fract of an infinity: Metal's result is in [0, 1), "
                         "OpenCL's edge table says +-0, NIR's ffract computes "
                         "inf - inf = nan, and nothing here can decide between "
@@ -540,7 +540,7 @@ FMOD_ASIDE = (
     "and the exact answer needs a twelve-pass reduction whose exactness on the "
     "Adreno cannot be established on this machine because ir3 lowers fdiv to "
     "fmul(a, frcp(b)). Decided case by case -- a disagreement that does not "
-    "satisfy it fails. air_fmod in air_intrinsics.c, docs/air.md section 4")
+    "satisfy it fails. air_fmod in air_intrinsics.c, docs/dev/air.md section 4")
 
 
 def fmod_aside(args, c, rty):
@@ -786,7 +786,7 @@ def parse_type(s):
 # 16 declarations and 2 164 cases, with `air.min.u.i64(-1, -1)` reading "got
 # 4294967295 want 18446744073709551615". The frontend was right all along --
 # air2nir folds that call to 0xffffffffffffffff and softpipe executes it to
-# the same bits (docs/air.md section 4) -- and the truncation was the
+# the same bits (docs/dev/air.md section 4) -- and the truncation was the
 # harness's own. A measurement instrument that quietly drops the top half of
 # what it measures is worse than no instrument: this one accused the compiler.
 
@@ -1307,7 +1307,7 @@ FEW_INTS = [0, 1, -1, 7, -32768, 32767, 2147483647, -2147483648]
 # Integer-to-float conversion gets its own pool, because what breaks there is
 # not the magnitude but the rounding, and only a value that falls between two
 # representable floats exercises it at all. The Adreno truncates u32 -> f32
-# (section 4 of docs/air.md), and 0xFFFFFFFF was enough to see that something
+# (section 4 of docs/dev/air.md), and 0xFFFFFFFF was enough to see that something
 # was wrong while saying nothing about which rule is in use. These say which:
 #
 #   0x00FFFFFF  2^24-1, the last integer every float can hold exactly: every
@@ -2274,7 +2274,7 @@ def main(argv):
                         # the condition catches more than it means to. That is
                         # Mesa's to fix and not this frontend's to work around, so
                         # those cases are left out here and written down in
-                        # docs/air.md instead.
+                        # docs/dev/air.md instead.
                         if (isinstance(exp, float)
                                 and (math.isinf(exp)
                                      or (exp != 0.0

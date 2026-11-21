@@ -1,13 +1,13 @@
 #!/bin/bash
-# The frontend's whole test run, in the order of what it proves (docs/air.md
+# The frontend's whole test run, in the order of what it proves (docs/dev/air.md
 # section 4): first that the bitcode reader agrees with LLVM on every module of
 # the corpus, then how far every module gets through translation and ir3.
 #
 # This is the project's CI. There is no hosted one -- the corpus is Apple's
 # code and stays off the network -- so this runs before every commit that
-# touches the frontend, and docs/air-report.md is the report of that commit.
+# touches the frontend, and docs/dev/air-report.md is the report of that commit.
 #
-#   tools/air/check.sh            check, and write docs/air-report.md
+#   tools/air/check.sh            check, and write docs/dev/air-report.md
 #   tools/air/check.sh -q         only the numbers, write nothing
 set -e
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
@@ -23,7 +23,7 @@ LIBS=(
 	"$IOS/rootfs/System/Library/CoreImage/PortraitFilters.cifilter/default.metallib"
 	"$IOS/rootfs/System/Library/CoreImage/PortraitFilters.cifilter/portrait_filters.metallib"
 )
-# SafariSharedUI's default.metallib is in the corpus list of docs/air.md and is
+# SafariSharedUI's default.metallib is in the corpus list of docs/dev/air.md and is
 # deliberately not here: it is 118 bytes and holds no functions at all.
 for f in "${LIBS[@]}"; do
 	[ -f "$f" ] || { echo "check.sh: missing $f"; exit 1; }
@@ -48,8 +48,8 @@ if [ "$QUIET" = 1 ]; then
 	python3 "$ROOT/tools/air/corpus.py" --ir3 --md /dev/null "${LIBS[@]}"
 else
 	python3 "$ROOT/tools/air/corpus.py" --ir3 \
-		--md "$ROOT/docs/air-report.md" --json "$ROOT/build/air-report.json" "${LIBS[@]}"
-	echo "check.sh: wrote docs/air-report.md"
+		--md "$ROOT/docs/dev/air-report.md" --json "$ROOT/build/air-report.json" "${LIBS[@]}"
+	echo "check.sh: wrote docs/dev/air-report.md"
 fi
 
 echo
@@ -138,7 +138,7 @@ echo "== Metal's own sampler state, against Apple's rules"
 # It also runs the comparison function, the one field of that word whose other
 # eight values nothing attests -- all three words the corpus carries hold the
 # DEFAULT, which is `never` at 8, and refusing that was 653 of 653 failed draws
-# in the window server's first boot through this library (docs/air.md 3.3). The
+# in the window server's first boot through this library (docs/dev/air.md 3.3). The
 # eight give eight DISTINCT answers over three references, so the table cannot
 # be permuted and still pass, and every comparison case is run twice: through
 # air_run and through air_metal.c, which are two tables that must agree.
@@ -233,7 +233,7 @@ echo "== framebuffer fetch: the shape, because no value can be compared here"
 # a6xx needs to flush between overlapping primitives, the narrowing of a half
 # target, an integer target refused, an unused argument not turned into a fetch
 # -- plus that ir3 emits the instruction, and says in its own last line that it
-# compares no value (docs/air.md section 3.1).
+# compares no value (docs/dev/air.md section 3.1).
 python3 "$ROOT/tools/air/fbfetchcheck.py" 2>&1 | tail -8
 fbfetch_rc=${PIPESTATUS[0]}
 
@@ -251,7 +251,7 @@ echo "== vertex attributes: the shader's half of an MTLVertexDescriptor"
 #
 # Then the same translation against Apple's own metadata, read a second time
 # with a regular expression over `air2nir --ll`: QuartzCore's fourteen
-# [[stage_in]] vertex shaders, attribute by attribute (docs/air.md section 3.2).
+# [[stage_in]] vertex shaders, attribute by attribute (docs/dev/air.md section 3.2).
 #
 # tail -40 and not -8: the cases come before the summary, and this section has
 # twenty lines in a clean run and more when a real module disagrees, so a
@@ -264,7 +264,7 @@ echo
 echo "== argument buffers: the member table and the indices it allocates"
 # The one interface key with no example in this corpus at all: 0 of its 456
 # modules declare an air.indirect_buffer and 7 620 of Resident Evil 4's 7 879 do
-# (docs/air.md section 8.2). So the modules are written here, with a set whose
+# (docs/dev/air.md section 8.2). So the modules are written here, with a set whose
 # members are known, and checked three ways: the interface air2nir reports
 # against the table they were generated from, a dispatch on softpipe with
 # DIFFERENT BYTES IN EVERY SLOT -- every other buffer check in this file fills
@@ -282,7 +282,7 @@ echo
 echo "== argument buffers at run time: the encoder that records instead of writing"
 # The runtime half of the stage above, and the first stage in this file that drives
 # tools/mesa/air/air_metal.h -- the contract the Metal driver uses -- rather than the
-# frontend on its own. There is nothing for an encoder to write here (docs/air.md
+# frontend on its own. There is nothing for an encoder to write here (docs/dev/air.md
 # 8.2.2): the frontend resolved every member of every set to a binding, so
 # MTLArgumentEncoder RECORDS (resource, Metal id) against (destination buffer,
 # destination offset) and the draw binds what it finds.
@@ -303,7 +303,7 @@ echo
 echo "== the library functions, wrapped so they can run at all"
 # A third of the corpus is air.visible library functions: not entry points, and
 # not dispatchable as themselves, so nothing above touches them. --library
-# wraps one in a generated entry point (docs/air.md section 5) and this reports
+# wraps one in a generated entry point (docs/dev/air.md section 5) and this reports
 # what each comparison is worth -- LLVM is a full reference only where the
 # function calls no air.* at all, and the rest is our folder against a driver.
 python3 "$ROOT/tools/air/libcheck.py" 2>&1 | tail -24

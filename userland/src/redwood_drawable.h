@@ -51,6 +51,7 @@ struct rwd_surface {
 	uint32_t offset, rowBytes;        /* out: where the pixels start in it, and a row's length */
 	uint32_t width, height;           /* out: and what they are -- read back, not assumed, */
 	uint32_t pixelFormat, planes;     /* because MiniIOSurface substitutes some formats */
+	uint32_t planeOffset[2], planeRowBytes[2];      /* out: each plane's start and row (a newer kernel) */
 };
 
 #define RWD_DESCRIBE 0xffffffffu          /* kRedwoodDescribe: answer, allocate nothing */

@@ -20,6 +20,7 @@
  * Asking Metal is bin/metal_drv_test's job, in a process of its own, afterwards.
  *
  *   metal_props                 show what the service carries now
+ *   metal_props auto            enable only with the kernel compatibility policy
  *   metal_props on              set RedwoodMetal / RedwoodMetalDevice (what this port installs)
  *   metal_props on NAME CLASS   set those two instead
  *   metal_props off             remove both (an empty string removes, see setProperties)
@@ -132,13 +133,25 @@ main(int argc, char **argv)
 		printf("metal_props: no IOAcceleratorES service in the registry\n");
 		return 1;
 	}
-	if (strcmp(what, "on") == 0) {
+	if (strcmp(what, "auto") == 0) {
+        CFTypeRef value = IORegistryEntryCreateCFProperty(service,
+            CFSTR("RedwoodGraphicsPolicyVersion"), NULL, 0);
+        int version = 0;
+        if (value && CFGetTypeID(value) == CFNumberGetTypeID())
+            CFNumberGetValue(value, kCFNumberIntType, &version);
+        if (value) CFRelease(value);
+        if (version == 1) bad = set_both(service, "RedwoodMetal", "RedwoodMetalDevice");
+        else {
+            fprintf(stderr, "metal_props: compatibility policy unavailable; keeping legacy discovery\n");
+            bad = set_both(service, "", "");
+        }
+    } else if (strcmp(what, "on") == 0) {
 		bad = set_both(service, argc > 3 ? argv[2] : "RedwoodMetal",
 		    argc > 3 ? argv[3] : "RedwoodMetalDevice");
 	} else if (strcmp(what, "off") == 0) {
 		bad = set_both(service, "", "");
 	} else if (strcmp(what, "show") != 0) {
-		printf("metal_props: usage: metal_props [show | on [NAME CLASS] | off]\n");
+		printf("metal_props: usage: metal_props [show | auto | on [NAME CLASS] | off]\n");
 		bad = 1;
 	}
 	show_one(service, kPluginNameKey);

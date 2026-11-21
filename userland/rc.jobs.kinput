@@ -1,7 +1,7 @@
 # Commands run by the launchd job com.redwood.demo (RC_JOBS=rc.jobs.kinput).
 #
 # Two questions in one boot, because a boot costs a cold reboot: where clip y = -1 lands on
-# the Adreno, and which of the kernels docs/air.md section 5 calls undispatchable will end
+# the Adreno, and which of the kernels docs/dev/air.md section 5 calls undispatchable will end
 # when given the values their exit tests actually compare against (tools/air/kinput.py --
 # read its table before this file).
 #

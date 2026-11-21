@@ -1,0 +1,114 @@
+{
+  "overlay_sha256": [
+    "e1e3d424797fc045df23b2123661a6731ca79bcea52a18a3531f820190798c5e",
+    "956f6446ee4f4f9c8d35ba663ea026ad48d458d850f40b14c1b4a9876c74b7da"
+  ],
+  "plans": [
+    {
+      "csis_base": 386334720,
+      "dma_engine": 0,
+      "first_mode": {
+        "fps_label": 30,
+        "height": 3024,
+        "mipi_speed_label": 1501,
+        "vc0": [
+          0,
+          43,
+          4032,
+          3024,
+          43,
+          0,
+          4032,
+          3024
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "width": 4032
+      },
+      "instance": 4,
+      "phy_base": 386736896,
+      "phy_mode": "C-PHY",
+      "phy_reset_bit_index": 2,
+      "routes": [
+        {
+          "common_base": 386667520,
+          "mux_reg": [
+            386008084,
+            4
+          ],
+          "name": "sensor4-ch-mode0",
+          "vc0_base": 386666496
+        }
+      ],
+      "sensor": "2la",
+      "trios": 3,
+      "verified_on_device": false
+    },
+    {
+      "csis_base": 386203648,
+      "dma_engine": 3,
+      "first_mode": {
+        "fps_label": 15,
+        "height": 6936,
+        "mipi_speed_label": 2964,
+        "vc0": [
+          0,
+          43,
+          9248,
+          6936,
+          43,
+          0,
+          9248,
+          6936
+        ],
+        "vc1": [
+          1,
+          43,
+          1152,
+          1720,
+          43,
+          1,
+          1152,
+          1720
+        ],
+        "width": 9248
+      },
+      "instance": 2,
+      "phy_base": 386734848,
+      "phy_mode": "C-PHY",
+      "phy_reset_bit_index": 1,
+      "routes": [
+        {
+          "common_base": 386679808,
+          "mux_reg": [
+            386008096,
+            4
+          ],
+          "name": "sensor2-ch-mode0",
+          "vc0_base": 386678784
+        },
+        {
+          "common_base": 386679808,
+          "mux_reg": [
+            386008096,
+            4
+          ],
+          "name": "sensor2-ch-mode1",
+          "vc0_base": 386678784
+        }
+      ],
+      "sensor": "gw2",
+      "trios": 3,
+      "verified_on_device": false
+    }
+  ],
+  "schema": 1
+}

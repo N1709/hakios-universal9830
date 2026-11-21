@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "sources": {
+    "xnu": {
+      "url": "https://github.com/apple-oss-distributions/xnu.git",
+      "ref": "refs/tags/xnu-8796.121.2",
+      "commit": "c54f35ca767986246321eb901baf8f5ff7923f6a"
+    },
+    "ios-sdk": {
+      "url": "https://github.com/theos/sdks.git",
+      "ref": "refs/heads/master",
+      "commit": "0222fd5413cf4b9af096f37b4621afa2688572f7"
+    },
+    "mu-silicium": {
+      "url": "https://github.com/Project-Silicium/Mu-Silicium.git",
+      "ref": "refs/heads/main",
+      "commit": "4cba43c90e02cdbefbcd9fcdbda33d2328deaec0"
+    },
+    "openh264": {
+      "url": "https://github.com/cisco/openh264.git",
+      "ref": "refs/heads/master",
+      "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    }
+  },
+  "notes": "Kernel dependency commits remain pinned in xnu-deps/setup.sh. Mu pin records the existing UEFI wrapper baseline; its private overlay and submodules still require release qualification."
+}

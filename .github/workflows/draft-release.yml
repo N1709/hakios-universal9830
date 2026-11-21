@@ -1,0 +1,36 @@
+name: Draft source release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  audit:
+    if: vars.ENABLE_DRAFT_RELEASES == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: bash ci/check.sh
+      - name: Fail closed on unresolved publication inventory
+        run: python3 tools/release/audit.py --strict --output publication-audit.json
+  draft:
+    needs: audit
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build restore ZIPs (no private inputs)
+        run: ./build.sh release --set OUTPUTS=restore --set OUT=dist/draft
+      - name: Create draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" --verify-tag --draft --title "Jesvi iOS $RELEASE_TAG" --notes "Source release candidate. See docs/release/checklist.md; no qualified installer is included." dist/draft/*

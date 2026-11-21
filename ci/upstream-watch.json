@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "sources": {
+    "hakios-upstream": {
+      "url": "https://github.com/oosexgang/hakios-xnu-kernel.git",
+      "ref": "refs/heads/main",
+      "commit": "63fc2b4633bac3af8e57dadab9f5a8d4cb940438"
+    }
+  },
+  "notes": "Last locally inspected upstream revision, not a build dependency or a merge base. The Samsung overlay history is separate; review individual changes instead of blindly merging upstream."
+}

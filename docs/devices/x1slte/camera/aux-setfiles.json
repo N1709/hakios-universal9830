@@ -1,0 +1,373 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "source": "is-cis-2la-setA.h",
+      "source_sha256": "b0bd016ae837fa23a0f1290ded04bad1b1426f44cf00923d28e47c0bfe80d3ac",
+      "tables": [
+        {
+          "name": "sensor_2la_setfile_A_initial_setting",
+          "page4000_registers": {},
+          "records": 9,
+          "words_sha256_be32": "4fd1b35639acf7f5abc24c788185d032a5f2ae7cf72577857bf9aee9caa632e2"
+        },
+        {
+          "name": "sensor_2la_setfile_A_Global_1",
+          "page4000_registers": {},
+          "records": 2501,
+          "words_sha256_be32": "51626871c6b54f8db848773c784dd0dacb5c751b333000a9dc26410b473d6380"
+        },
+        {
+          "name": "sensor_2la_setfile_A_Global_2",
+          "page4000_registers": {},
+          "records": 3,
+          "words_sha256_be32": "05c6c1c017b9adb622e3b213c5b6490b933c056435cf08040b009a484c3c9dc1"
+        },
+        {
+          "label": {
+            "fps": 30,
+            "height": 3024,
+            "width": 4032
+          },
+          "name": "sensor_2la_setfile_A_4032x3024_30fps",
+          "page4000_registers": {
+            "frame_length_lines": 6652,
+            "height": 3024,
+            "lane_register_0114": 512,
+            "line_length_pck": 11200,
+            "readout_register_0900": 545,
+            "width": 4032
+          },
+          "records": 178,
+          "words_sha256_be32": "5a791eef42ca48ad2fa80250aa0b3468c6eb1e0940973fb2e3e867ab4616be32"
+        },
+        {
+          "label": {
+            "fps": 60,
+            "height": 2268,
+            "width": 4032
+          },
+          "name": "sensor_2la_setfile_A_4032x2268_60fps",
+          "page4000_registers": {
+            "frame_length_lines": 3326,
+            "height": 2268,
+            "lane_register_0114": 512,
+            "line_length_pck": 11200,
+            "readout_register_0900": 545,
+            "width": 4032
+          },
+          "records": 178,
+          "words_sha256_be32": "72edfc3484b04a1f34694a9e01fa209f9c7e7e7f383f6911cad972d0d310a9bf"
+        },
+        {
+          "label": {
+            "fps": 30,
+            "height": 2268,
+            "width": 4032
+          },
+          "name": "sensor_2la_setfile_A_4032x2268_30fps",
+          "page4000_registers": {
+            "frame_length_lines": 6652,
+            "height": 2268,
+            "lane_register_0114": 512,
+            "line_length_pck": 11200,
+            "readout_register_0900": 545,
+            "width": 4032
+          },
+          "records": 178,
+          "words_sha256_be32": "ace057ff5c62ab409bc7ae1e45703014789a8cf2b877e03a02358f6bd8b54130"
+        },
+        {
+          "label": {
+            "fps": 240,
+            "height": 1134,
+            "width": 2016
+          },
+          "name": "sensor_2la_setfile_A_2016x1134_240fps",
+          "page4000_registers": {
+            "frame_length_lines": 1896,
+            "height": 1134,
+            "lane_register_0114": 512,
+            "line_length_pck": 4912,
+            "readout_register_0900": 578,
+            "width": 2016
+          },
+          "records": 178,
+          "words_sha256_be32": "1f12c139ca1d9e14daa9071e84bd20b94ba3519129103794f96b5173759ba438"
+        },
+        {
+          "label": {
+            "fps": 120,
+            "height": 1134,
+            "width": 2016
+          },
+          "name": "sensor_2la_setfile_A_2016x1134_120fps",
+          "page4000_registers": {
+            "frame_length_lines": 2264,
+            "height": 1134,
+            "lane_register_0114": 512,
+            "line_length_pck": 8224,
+            "readout_register_0900": 578,
+            "width": 2016
+          },
+          "records": 178,
+          "words_sha256_be32": "e3d1a39f996f6f3ea53c250a4232cff6bb6cb8b23aa96e2b2dd00c20875d0053"
+        },
+        {
+          "label": {
+            "fps": 60,
+            "height": 3024,
+            "width": 4032
+          },
+          "name": "sensor_2la_setfile_A_4032x3024_60fps",
+          "page4000_registers": {
+            "frame_length_lines": 3326,
+            "height": 3024,
+            "lane_register_0114": 512,
+            "line_length_pck": 11200,
+            "readout_register_0900": 545,
+            "width": 4032
+          },
+          "records": 178,
+          "words_sha256_be32": "138287dbe03d69bfc86e5c4f8ac62df32f381603f840cd1c7c3f008caaf7163d"
+        }
+      ]
+    },
+    {
+      "source": "is-cis-gw2-setA.h",
+      "source_sha256": "148ff7fb4766db21521f337bbac4a92b70bb5c13f364b583406283a248e6fe57",
+      "tables": [
+        {
+          "name": "sensor_GW2_setfile_A_Tnp",
+          "page4000_registers": {},
+          "records": 4073,
+          "words_sha256_be32": "1b47df931b0865934f929b1ae34cb598ab87656dacbfd30ec68edbbd456d4090"
+        },
+        {
+          "name": "sensor_GW2_setfile_A_Global",
+          "page4000_registers": {},
+          "records": 320,
+          "words_sha256_be32": "3723a93b6a5f19cef064c5119ae187eb29bfc5e2071c2fdd3229efc228a6e7a2"
+        },
+        {
+          "label": {
+            "fps": 15,
+            "height": 6936,
+            "width": 9248
+          },
+          "name": "sensor_gw2_setfile_A_9248x6936_15fps",
+          "page4000_registers": {
+            "frame_length_lines": 7344,
+            "height": 6936,
+            "lane_register_0114": 513,
+            "line_length_pck": 17360,
+            "readout_register_0900": 17,
+            "width": 9248
+          },
+          "records": 217,
+          "words_sha256_be32": "05419682c9c99569ca183913f2e7c6166a77463810928285b24d9fa9ee9dad0c"
+        },
+        {
+          "label": {
+            "fps": 30,
+            "height": 4320,
+            "width": 7680
+          },
+          "name": "sensor_gw2_setfile_A_7680x4320_30fps",
+          "page4000_registers": {
+            "frame_length_lines": 4512,
+            "height": 4320,
+            "lane_register_0114": 513,
+            "line_length_pck": 14160,
+            "readout_register_0900": 17,
+            "width": 7680
+          },
+          "records": 217,
+          "words_sha256_be32": "8211fe560e163413fc8020d85d7ba0bc7c1587a502f6de88cc68401ebe42662e"
+        },
+        {
+          "label": {
+            "fps": 30,
+            "height": 3648,
+            "width": 4864
+          },
+          "name": "sensor_gw2_setfile_A_4864x3648_30fps",
+          "page4000_registers": {
+            "frame_length_lines": 5166,
+            "height": 3648,
+            "lane_register_0114": 513,
+            "line_length_pck": 12304,
+            "readout_register_0900": 17,
+            "width": 4864
+          },
+          "records": 217,
+          "words_sha256_be32": "235004ddc0776ec693e0078da998246c5e5ef695de9813868cd817634e7f7049"
+        },
+        {
+          "label": {
+            "fps": 22,
+            "height": 3648,
+            "width": 4864
+          },
+          "name": "sensor_gw2_setfile_A_4864x3648_22fps",
+          "page4000_registers": {
+            "frame_length_lines": 4134,
+            "height": 3648,
+            "lane_register_0114": 513,
+            "line_length_pck": 20896,
+            "readout_register_0900": 17,
+            "width": 4864
+          },
+          "records": 217,
+          "words_sha256_be32": "ccccb435944cff3c948dc52d03dac6356b2863190fda7e3dfd4066f990b6972c"
+        },
+        {
+          "label": {
+            "fps": 30,
+            "height": 2736,
+            "width": 4864
+          },
+          "name": "sensor_gw2_setfile_A_4864x2736_30fps",
+          "page4000_registers": {
+            "frame_length_lines": 5166,
+            "height": 2736,
+            "lane_register_0114": 513,
+            "line_length_pck": 12304,
+            "readout_register_0900": 17,
+            "width": 4864
+          },
+          "records": 217,
+          "words_sha256_be32": "5cbe42d2ac40cccb1f1c4e952f35d001198cdfd23073a732d9fbabd215675471"
+        },
+        {
+          "label": {
+            "fps": 22,
+            "height": 2736,
+            "width": 4864
+          },
+          "name": "sensor_gw2_setfile_A_4864x2736_22fps",
+          "page4000_registers": {
+            "frame_length_lines": 4134,
+            "height": 2736,
+            "lane_register_0114": 513,
+            "line_length_pck": 20896,
+            "readout_register_0900": 17,
+            "width": 4864
+          },
+          "records": 217,
+          "words_sha256_be32": "cdd4b85ace6f84e74a47fd1bc10d0ceb2a4b0f5016b03e2e7d8b7ce59f168f01"
+        },
+        {
+          "label": {
+            "fps": 30,
+            "height": 3468,
+            "width": 4624
+          },
+          "name": "sensor_gw2_setfile_A_4624x3468_30fps",
+          "page4000_registers": {
+            "frame_length_lines": 3608,
+            "height": 3468,
+            "lane_register_0114": 513,
+            "line_length_pck": 17680,
+            "readout_register_0900": 274,
+            "width": 4624
+          },
+          "records": 217,
+          "words_sha256_be32": "35d3c9bd10509e86096497d8661c8a4b28f69995aee3b61c4b3335de0f4400a2"
+        },
+        {
+          "label": {
+            "fps": 30,
+            "height": 2604,
+            "width": 4624
+          },
+          "name": "sensor_gw2_setfile_A_4624x2604_30fps",
+          "page4000_registers": {
+            "frame_length_lines": 3608,
+            "height": 2604,
+            "lane_register_0114": 513,
+            "line_length_pck": 17680,
+            "readout_register_0900": 274,
+            "width": 4624
+          },
+          "records": 217,
+          "words_sha256_be32": "3f53c70880ce45259a55dffcc818d86e08e90d811d63da1e42a339ab8eb793f1"
+        },
+        {
+          "label": {
+            "fps": 60,
+            "height": 2604,
+            "width": 4624
+          },
+          "name": "sensor_gw2_setfile_A_4624x2604_60fps",
+          "page4000_registers": {
+            "frame_length_lines": 4528,
+            "height": 2604,
+            "lane_register_0114": 513,
+            "line_length_pck": 7040,
+            "readout_register_0900": 4386,
+            "width": 4624
+          },
+          "records": 217,
+          "words_sha256_be32": "98ca07adb916fd270a132286ffcf5d07e8060b73d6411d1ba36651d9d5e13e26"
+        },
+        {
+          "label": {
+            "fps": 120,
+            "height": 1080,
+            "width": 1920
+          },
+          "name": "sensor_gw2_setfile_A_1920x1080_120fps",
+          "page4000_registers": {
+            "frame_length_lines": 2592,
+            "height": 1080,
+            "lane_register_0114": 512,
+            "line_length_pck": 6152,
+            "readout_register_0900": 4388,
+            "width": 1920
+          },
+          "records": 217,
+          "words_sha256_be32": "02c12ec9a451c02ece1f8556e347f209ce12883133837ebb9d0386259ecc96c8"
+        },
+        {
+          "label": {
+            "fps": 240,
+            "height": 1080,
+            "width": 1920
+          },
+          "name": "sensor_gw2_setfile_A_1920x1080_240fps",
+          "page4000_registers": {
+            "frame_length_lines": 1293,
+            "height": 1080,
+            "lane_register_0114": 512,
+            "line_length_pck": 6152,
+            "readout_register_0900": 4388,
+            "width": 1920
+          },
+          "records": 217,
+          "words_sha256_be32": "6038ce28b2c47b873162093d8986963146f2e1e24237df30933e42dc6fdaca2c"
+        },
+        {
+          "label": {
+            "fps": 30,
+            "height": 1824,
+            "width": 2432
+          },
+          "name": "sensor_gw2_setfile_A_2432x1824_30fps",
+          "page4000_registers": {
+            "frame_length_lines": 3608,
+            "height": 1824,
+            "lane_register_0114": 513,
+            "line_length_pck": 17680,
+            "readout_register_0900": 274,
+            "width": 2432
+          },
+          "records": 217,
+          "words_sha256_be32": "dbc490ea7b245f52ef4d5b3fa727d4462e61b5a4bde62d3f1edeed43f9df8418"
+        }
+      ]
+    }
+  ],
+  "verified_on_device": false,
+  "warning": "2LA revision-gated globals; GW2 TNP/Global and calibration required; no payloads exported"
+}

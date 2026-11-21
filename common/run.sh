@@ -5,11 +5,10 @@
 #   common/run.sh qemu-virt          QEMU window, 20 minutes (mouse = finger, H = home, L = lock)
 #   common/run.sh redwood 900        the phone over USB: loader in RAM, system image in RAM, 15 minutes
 #
-# Nothing is flashed: on a phone everything lives in RAM and `./xl reboot` (or a power-key reset)
+# Nothing is flashed: on a phone everything lives in RAM and `./xnu/xl reboot` (or a power-key reset)
 # brings back Android. The session's log is printed (QEMU) or saved in logs/ (phones).
-. "$(dirname "$(readlink -f "$0")")/lib.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 load_device "$1"
-[ "${BOOT_CHAIN:-uefi}" = none ] && die "$DEVICE has no boot chain yet: there is no loader to start"
 SECS=${2:-$DEFAULT_SECS}
 mkdir -p logs
 [ -f userland/root.apfs ] && [ -f userland/system.apfs ] || die "no images: run common/build.sh $DEVICE first"
@@ -21,10 +20,10 @@ qemu)
 	;;
 phone)
 	command -v fastboot >/dev/null || die "fastboot is not installed"
-	./xl enter || die "could not get the phone into the loader (USB? unlocked bootloader?)"
-	./xl ramdisk userland/system.apfs
-	XL_SECS=$SECS XL_CMDLINE="${XL_CMDLINE:-$BOOTARGS}" ./xl run
-	echo "run: './xl screenshot shot.png' for the screen, './xl reboot' to go back to Android"
+	./xnu/xl enter || die "could not get the phone into the loader (USB? unlocked bootloader?)"
+	./xnu/xl ramdisk userland/system.apfs
+	XL_SECS=$SECS XL_CMDLINE="${XL_CMDLINE:-$BOOTARGS}" ./xnu/xl run
+	echo "run: './xnu/xl screenshot shot.png' for the screen, './xnu/xl reboot' to go back to Android"
 	;;
 *) die "unknown KIND=$KIND in common/devices/$DEVICE.conf" ;;
 esac

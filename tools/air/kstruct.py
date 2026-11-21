@@ -10,7 +10,7 @@ all. Two such kernels were measured as "hanging the GPU" before anyone read
 them: `fbs_bistochastize_iter` counts from one `HashEntry` field to another and
 leaves the loop only on equality, and `MetalFaceMask_GenerateToothMask` walks a
 span table until it meets `-1`. Neither value occurs in the pattern, so neither
-loop ends, and the GPU faithfully runs forever (docs/air.md section 5).
+loop ends, and the GPU faithfully runs forever (docs/dev/air.md section 5).
 
 This separates the two cases by reading the module, so that the kernel table can
 say which of its unfinished rows are unfinishable *by this harness* rather than

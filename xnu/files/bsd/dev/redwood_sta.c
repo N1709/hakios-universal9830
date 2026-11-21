@@ -17,12 +17,14 @@
  * another network -- as iOS itself rejoins the networks it knows. If that other network cannot
  * be joined (a wrong passphrase), the standing one is joined again.
  */
+#include <kern/clock.h>
 #include <kern/kalloc.h>
 #include <kern/locks.h>
 #include <kern/sched_prim.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
+#include <mach/mach_time.h>
 #include <sys/errno.h>
 #include <sys/redwood_input.h>
 #include <sys/redwood_sta.h>
@@ -44,6 +46,9 @@ static bool sta_on;                             /* the radio's power, as last as
 
 /* what has been asked for and not begun */
 static bool asked_power, asked_power_on, asked_scan, asked_join, asked_leave;
+static bool asked_ap;                   /* an access point: start (asked_ap_what) or stop (asked_ap_on false) */
+static bool asked_ap_on;
+static struct redwood_sta_ap asked_ap_what;
 static struct redwood_sta_scan asked_scan_what;
 static struct redwood_sta_join asked_join_what;
 static struct redwood_sta_join standing;        /* the network joined whenever the radio comes on (ssid_length 0: none) */
@@ -65,6 +70,18 @@ heard_one(const struct redwood_sta_bss *bss, __unused void *context)
 	}
 }
 
+/*
+ * kern.redwood.wifi_scan_gap (B, 2026-11-14): wifid asks for a full scan every few seconds even while joined, and a
+ * scan polls the radio's rings every 0.2-1 ms for up to 2 s on whatever core -- measured: a scan every ~4 s, the big
+ * cores woken ~140 times a second by it with the screen off (~4.5 W from USB at idle, 66 C). A broad scan (no name,
+ * no channel list) asked for sooner than this many seconds after the last real one is answered from the list that
+ * scan heard, which is kept here anyway; a scan for a named network or given channels always goes to the radio.
+ * 0: every scan to the radio, as before.
+ */
+uint32_t redwood_wifi_scan_gap = 30;
+static uint64_t sta_last_scan_at;               /* mach_absolute_time of the last real scan's end, 0 none */
+static unsigned sta_scans_answered;
+
 static void
 sta_runs(__unused void *parameter, __unused wait_result_t result)
 {
@@ -73,11 +90,12 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 
 	for (;;) {
 		const struct redwood_sta_ops *ops;
-		bool power = false, power_on = false, leave = false, do_join = false, do_scan = false;
+		bool power = false, power_on = false, leave = false, do_join = false, do_scan = false, do_ap = false, ap_on = false;
+		static struct redwood_sta_ap ap;
 		int error = 0;
 
 		lck_mtx_lock(&sta_lock);
-		while (sta_ops == NULL || !(asked_power || asked_leave || asked_join || asked_scan)) {
+		while (sta_ops == NULL || !(asked_power || asked_leave || asked_join || asked_scan || asked_ap)) {
 			lck_mtx_sleep(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_ops, THREAD_UNINT);
 		}
 		ops = sta_ops;
@@ -86,6 +104,12 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 			power = true;
 			power_on = asked_power_on;
 			asked_power = false;
+		} else if (asked_ap) {
+			do_ap = true;
+			ap_on = asked_ap_on;
+			ap = asked_ap_what;
+			bzero(&asked_ap_what, sizeof(asked_ap_what));
+			asked_ap = false;
 		} else if (asked_leave) {
 			leave = true;
 			asked_leave = false;
@@ -122,6 +146,10 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 				asked_join = true;
 			}
 			lck_mtx_unlock(&sta_lock);
+		} else if (do_ap) {
+			error = ops->ap == NULL ? ENOTSUP : ops->ap(ap_on ? &ap : NULL);
+			bzero(&ap, sizeof(ap));
+			redwood_apple80211_event(REDWOOD_STA_AP, error != 0 ? error : ap_on ? 1 : 0);
 		} else if (leave) {
 			ops->leave();
 			redwood_apple80211_event(REDWOOD_STA_LINK, 0);
@@ -141,12 +169,29 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 			bzero(&fallback, sizeof(fallback));
 			lck_mtx_unlock(&sta_lock);
 		} else if (do_scan) {
-			error = ops->scan(&scan);
-			lck_mtx_lock(&sta_lock);
-			heard_count = 0;
-			lck_mtx_unlock(&sta_lock);
-			ops->heard(heard_one, NULL);
-			redwood_apple80211_event(REDWOOD_STA_SCAN_DONE, error);
+			uint64_t now = mach_absolute_time(), gap = 0;
+			bool broad = scan.ssid_length == 0 && scan.frequency_count == 0;
+
+			nanoseconds_to_absolutetime((uint64_t)redwood_wifi_scan_gap * NSEC_PER_SEC, &gap);
+			if (broad && redwood_wifi_scan_gap != 0 && sta_last_scan_at != 0 && heard_count > 0 &&
+			    now - sta_last_scan_at < gap) {
+				/* answered from what the last scan heard: the list stays as it is */
+				if (++sta_scans_answered % 64 == 1) {
+					printf("wifi: %u broad scans answered from the last one (kern.redwood.wifi_scan_gap=%u s)\n",
+					    sta_scans_answered, redwood_wifi_scan_gap);
+				}
+				redwood_apple80211_event(REDWOOD_STA_SCAN_DONE, 0);
+			} else {
+				error = ops->scan(&scan);
+				lck_mtx_lock(&sta_lock);
+				heard_count = 0;
+				lck_mtx_unlock(&sta_lock);
+				ops->heard(heard_one, NULL);
+				if (broad && error == 0) {
+					sta_last_scan_at = mach_absolute_time();
+				}
+				redwood_apple80211_event(REDWOOD_STA_SCAN_DONE, error);
+			}
 		}
 
 		lck_mtx_lock(&sta_lock);
@@ -166,7 +211,7 @@ redwood_sta_attach(const struct redwood_sta_ops *ops)
 	if (ops == NULL) {
 		lck_mtx_lock(&sta_lock);
 		sta_ops = NULL;
-		asked_power = asked_scan = asked_join = asked_leave = false;
+		asked_power = asked_scan = asked_join = asked_leave = asked_ap = false;
 		while (sta_calls || sta_reads != 0) {
 			lck_mtx_sleep(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_calls, THREAD_UNINT);
 		}
@@ -309,6 +354,27 @@ redwood_sta_ask_leave(void)
 	asked_join = false;
 	bzero(&asked_join_what, sizeof(asked_join_what));
 	bzero(&fallback, sizeof(fallback));
+	lck_mtx_unlock(&sta_lock);
+	thread_wakeup((event_t)&sta_ops);
+	return 0;
+}
+
+/* Personal Hotspot: our own access point (what), or none (NULL). A client network waiting to be joined is let go. */
+int
+redwood_sta_ask_ap(const struct redwood_sta_ap *what)
+{
+	lck_mtx_lock(&sta_lock);
+	if (sta_ops == NULL) {
+		lck_mtx_unlock(&sta_lock);
+		return ENXIO;
+	}
+	asked_ap = true;
+	asked_ap_on = what != NULL;
+	if (what != NULL) {
+		asked_ap_what = *what;
+		asked_join = false;
+		bzero(&asked_join_what, sizeof(asked_join_what));
+	}
 	lck_mtx_unlock(&sta_lock);
 	thread_wakeup((event_t)&sta_ops);
 	return 0;

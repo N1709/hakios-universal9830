@@ -70,6 +70,7 @@ static redwood_audio_sink_t audio_sink;
 
 static uint8_t *rec_base;
 static bool rec_fed;                    /* boot-arg rec_sound_fed=1: what the guard let through is recorded, not what was written */
+static uint32_t audio_debug;            /* boot-arg snd_debug=1: the peak scan and a report after each stretch of sound */
 static bool rec_mic;                    /* boot-arg rec_sound_mic=1: what the microphone hears (redwood_mic.c) */
 static uint64_t rec_size, rec_used;
 static uint64_t rec_frames, rec_frames_max;
@@ -174,7 +175,8 @@ audio_play(const int16_t *frames, uint32_t count)
 	uint32_t loudest = 0, taken = 0;
 	uint64_t deadline;
 
-	for (uint32_t i = 0; i < count * REDWOOD_AUDIO_CHANNELS; i++) {
+	/* (the peak scan and the per-stretch report only with snd_debug=1: they cost on every write) */
+	for (uint32_t i = 0; audio_debug && i < count * REDWOOD_AUDIO_CHANNELS; i++) {
 		uint32_t level = frames[i] < 0 ? -(int32_t)frames[i] : frames[i];
 
 		if (level > loudest) {
@@ -201,7 +203,7 @@ audio_play(const int16_t *frames, uint32_t count)
 	if (loudest > stretch_peak) {
 		stretch_peak = loudest;
 	}
-	if (!report_armed && report_call != NULL) {
+	if (audio_debug && !report_armed && report_call != NULL) {
 		report_armed = true;
 		clock_interval_to_deadline(2 * QUIET_MS, NSEC_PER_MSEC, &deadline);
 		thread_call_enter_delayed(report_call, deadline);
@@ -230,6 +232,10 @@ audio_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unus
 	return 0;
 }
 
+/* (A, 2026-11-15) the last time sound that is not silence was written: redwood_exynos_acpm.c keeps every core in use
+ * with the screen off while something plays (music, a call's voice) */
+uint64_t redwood_audio_active_at;
+
 static int
 audio_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 {
@@ -246,6 +252,12 @@ audio_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 		error = uiomove((caddr_t)frames, (int)bytes, uio);
 		if (error) {
 			break;
+		}
+		for (uint32_t i = 0; i < (uint32_t)(bytes / sizeof(frames[0])); i += 16) {
+			if (frames[i] != 0) {
+				redwood_audio_active_at = mach_absolute_time();
+				break;
+			}
 		}
 		audio_play(frames, (uint32_t)(bytes / REDWOOD_AUDIO_FRAME));
 	}
@@ -338,7 +350,11 @@ audio_recording_init(void)
 void
 redwood_audio_init(void)
 {
-	int major = cdevsw_add(-1, &audio_cdevsw);
+	int major;
+
+	redwood_exynos_camera_s20_init();
+	PE_parse_boot_argn("snd_debug", &audio_debug, sizeof(audio_debug));
+	major = cdevsw_add(-1, &audio_cdevsw);
 
 	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "redwood-audio") == NULL) {
 		printf("redwood-audio: cannot create the device\n");
@@ -347,6 +363,7 @@ redwood_audio_init(void)
 	report_call = thread_call_allocate(audio_report, NULL);
 	audio_recording_init();
 	redwood_virtio_sound_init();
+	redwood_exynos_sound_init();
 	redwood_speaker_init();
 	redwood_haptic_init();
 	redwood_torch_init();

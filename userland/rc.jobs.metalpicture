@@ -3,7 +3,7 @@
 # A picture of the whole panel, every pixel of which this port's Metal driver computed on
 # the Adreno (docs/metal.md 10.33). Everything the driver has drawn until now went into a
 # 4x4 off-screen attachment and came back as four numbers; this is the same shaders at
-# 1080x2400, put on the screen so that `./xl screenshot` can take it.
+# 1080x2400, put on the screen so that `./xnu/xl screenshot` can take it.
 #
 # WHERE THIS STANDS AFTER THREE BOOTS, because it changes what to read here.
 #
@@ -107,7 +107,7 @@
 /redwood/bin/rwtouch wait 20
 #
 # 3. The picture itself. TAKE THE SCREENSHOT AS SOON AS ANYTHING APPEARS ON THE PHONE:
-#    from another terminal, `./xl screenshot logs/metal-picture.png`. The mosaic alone is
+#    from another terminal, `./xnu/xl screenshot logs/metal-picture.png`. The mosaic alone is
 #    worth a screenshot and it is on the panel long before the bands are tried; the copy
 #    stays there by itself (MiniIOMobileFramebufferShow writes the boot framebuffer, and
 #    with JOBS="" nothing else touches it), so it survives even if the process stalls

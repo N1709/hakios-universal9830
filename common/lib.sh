@@ -1,6 +1,10 @@
 # Shared by common/*.sh: find the workspace and load a device profile.
 #   . "$(dirname "$(readlink -f "$0")")/lib.sh"; load_device "$1"
-ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+# Portable (no readlink -f): works on macOS, where the GNU userland comes from Homebrew.
+_lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+[ "$(uname -s)" = Darwin ] && . "$_lib_dir/macos-env.sh"
+ROOT=$(cd "$_lib_dir/.." && pwd)
+unset _lib_dir
 cd "$ROOT" || exit 1
 
 die() { echo "${0##*/}: $*" >&2; exit 1; }

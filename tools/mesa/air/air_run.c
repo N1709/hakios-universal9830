@@ -39,8 +39,12 @@
 #include "pipe/p_state.h"
 #include "target-helpers/inline_sw_helper.h"
 #include "null/null_sw_winsys.h"
+#if defined(GALLIUM_FREEDRENO) || defined(GALLIUM_PANFROST)
 #ifdef GALLIUM_FREEDRENO
 #include "freedreno/drm/freedreno_drm_public.h"
+#else
+#include "panfrost/drm/panfrost_drm_public.h"
+#endif
 #include "util/driconf.h"
 #include "util/xmlconfig.h"
 #include <xf86drm.h>
@@ -161,7 +165,7 @@ static bool library_fill = false;
  *
  * For the 14 kernels whose loops leave on a count or a sentinel read out of a
  * buffer, the pattern is not an input at all -- the loop never ends and the GPU
- * runs forever (docs/air.md section 5, tools/air/kstruct.py). Zeros are a
+ * runs forever (docs/dev/air.md section 5, tools/air/kstruct.py). Zeros are a
  * degenerate input but a *defined* one: a count of zero means the loop runs no
  * times, so the kernel reaches its end and the hardware answers. What that
  * proves is that the translated shader runs on the Adreno without hanging; it
@@ -500,7 +504,7 @@ finalize_for_gallium(nir_shader *nir, struct pipe_screen *screen)
  * 128x1x1 reduction. Under 4x4x1 four threads have tid == 0 -- Metal's scalar
  * thread_position_in_threadgroup is the x component, not the flattened index -- so four of
  * them run the whole reduction over the four entries this shape writes, and the word they
- * add up is a property of the dispatch rather than of the kernel (docs/air.md section 5).
+ * add up is a property of the dispatch rather than of the kernel (docs/dev/air.md section 5).
  */
 static unsigned block[3] = { GRID, GRID, 1 };
 
@@ -629,7 +633,7 @@ texture_shapes(nir_shader *cs, enum pipe_format fmt[MAX_IMG], bool isf[MAX_IMG],
  * the buffer it had filled itself as though the GPU had answered: a page of
  * numbers that were a statement about the harness and not about the shader.
  * 21 of the 47 kernels of one run were vacuous that way before anyone noticed
- * (docs/air.md section 5).
+ * (docs/dev/air.md section 5).
  *
  * The hang itself turned out to be this harness too: the kernels that did it
  * loop until a buffer value they were never given, and the fill is a byte
@@ -656,7 +660,7 @@ finish_or_say_why(struct pipe_screen *screen, struct pipe_context *pipe, const c
              "this harness: a kernel whose buffers carry counts, indices or sentinels is being "
              "given (i * 7 + 13) & 0xff, and a loop that leaves on a value it was never given "
              "does not leave at all -- both kernels measured this way turned out to be exactly "
-             "that (docs/air.md section 5). And one timeout wedges this GPU for the rest of the "
+             "that (docs/dev/air.md section 5). And one timeout wedges this GPU for the rest of the "
              "boot, so every later run in it is vacuous too.\n", what);
    return done;
 }
@@ -673,7 +677,7 @@ print_own_sampler(unsigned slot, const struct air_sampler_state *a, bool compare
                                        "mirrored_repeat", "clamp_to_border" };
    static const char *const filt[] = { "nearest", "linear", "bicubic" };
    /* Metal's compare_func, in its own order: `none` at 0 and `never` at 8, which is
-    * the value Apple's default carries (docs/air.md 3.3).
+    * the value Apple's default carries (docs/dev/air.md 3.3).
     */
    static const char *const cmp[] = { "none", "less", "less_equal", "greater",
                                       "greater_equal", "equal", "not_equal", "always",
@@ -905,7 +909,7 @@ dispatch_kernel(struct pipe_screen *screen, const struct air_shader_info *info,
                 nir_shader *cs, const char *name, const char *how)
 {
    /* Metal's threadgroup size is a dispatch argument, not a shader constant,
-    * so the frontend leaves it variable (docs/air.md section 7.4) and whoever
+    * so the frontend leaves it variable (docs/dev/air.md section 7.4) and whoever
     * dispatches has to fix it. air_run is that whoever. It is not optional:
     * softpipe reads the block size from TGSI_PROPERTY_CS_FIXED_BLOCK_*, and
     * with a variable size those are zero, so it runs ZERO threads and the
@@ -1203,7 +1207,7 @@ dispatch_kernel(struct pipe_screen *screen, const struct air_shader_info *info,
    printf("air_run: dispatching %ux%ux%u threads in one workgroup; %u device buffer%s bound, "
           "%u of them written, filled with %s\n",
           block[0], block[1], block[2], num_ssbo, num_ssbo == 1 ? "" : "s", num_written,
-          zero_fill ? "ZEROS (--zero: a degenerate input, see docs/air.md section 5)"
+          zero_fill ? "ZEROS (--zero: a degenerate input, see docs/dev/air.md section 5)"
                     : ones_fill ? "0xff BYTES (--ones: a degenerate input)"
                     : library_fill ? "the floats ((w * 13) % 29 - 14) / 4"
                                    : "(i * 7 + 13) & 0xff");
@@ -1269,7 +1273,7 @@ dispatch_kernel(struct pipe_screen *screen, const struct air_shader_info *info,
          printf("air_run: device buffer %u came back bit-identical to the fill, so this "
                 "dispatch wrote nothing visible. Either the shader writes elsewhere, or "
                 "the GPU has stopped making writes visible -- which it does after a few "
-                "dozen dispatches in one boot (docs/air.md section 4).\n", i);
+                "dozen dispatches in one boot (docs/dev/air.md section 4).\n", i);
       pipe_buffer_unmap(pipe, xfer);
    }
 
@@ -1315,6 +1319,25 @@ dispatch_kernel(struct pipe_screen *screen, const struct air_shader_info *info,
    screen->destroy(screen);
    return 0;
 }
+
+#ifdef GALLIUM_PANFROST
+/* The Mali (Darwin on redwood): a faulted job still completes its fence, so "the dispatch finished"
+ * does not say the GPU did the work. The kernel counts faults; the difference over this run does. */
+static uint64_t faults_before[4];
+static bool faults_known;
+
+static void
+say_faults(void)
+{
+   uint64_t after[4];
+
+   if (faults_known && redwood_drm_counts(after) == 0)
+      printf("air_run: GPU faults during this run: %llu (resets %llu, jobs %llu)\n",
+             (unsigned long long)(after[1] - faults_before[1]),
+             (unsigned long long)(after[2] - faults_before[2]),
+             (unsigned long long)(after[0] - faults_before[0]));
+}
+#endif
 
 int
 main(int argc, char **argv)
@@ -1470,6 +1493,33 @@ main(int argc, char **argv)
             fprintf(stderr, "air_run: the msm device opened but gave no screen\n");
       }
    }
+#elif defined(GALLIUM_PANFROST)
+   if (!debug_get_bool_option("AIR_RUN_SOFTWARE", false)) {
+      /* the Exynos 990 phone's Mali-G77: as air_metal.c's rwa_device_open */
+      int fd = drmOpenWithType("panfrost", NULL, DRM_NODE_RENDER);
+      if (fd >= 0) {
+         static const driOptionDescription panfrost_options[] = {
+#include "panfrost/driinfo_panfrost.h"
+         };
+         static driOptionCache info, cache;
+         static struct pipe_screen_config config;
+
+         driParseOptionInfo(&info, panfrost_options, ARRAY_SIZE(panfrost_options));
+         driParseConfigFiles(&cache, &info, 0, "panfrost", NULL, NULL, NULL, 0, NULL, 0);
+         config.options = &cache;
+         config.options_info = &info;
+
+         screen = panfrost_drm_screen_create(fd, &config);
+         if (screen && redwood_drm_counts(faults_before) == 0) {
+            faults_known = true;
+            atexit(say_faults);
+         }
+         if (screen)
+            how = "the GPU, through the kernel's panfrost device";
+         else
+            fprintf(stderr, "air_run: the panfrost device opened but gave no screen\n");
+      }
+   }
 #endif
    if (!screen)
       screen = sw_screen_create(null_sw_create());
@@ -1544,7 +1594,7 @@ main(int argc, char **argv)
           * so the shader computed f32(x) while the reference computed f16(x)
           * and the comparison meant nothing. Ten declarations of the corpus
           * return half and every one of them was being reported as agreeing on
-          * the strength of a case that was never compared (docs/air.md,
+          * the strength of a case that was never compared (docs/dev/air.md,
           * section 4 item 4).
           *
           * The chain is still u32 -> f32 -> f16 rather than a single
@@ -1558,7 +1608,7 @@ main(int argc, char **argv)
           * a half output. It is here because the target was one of the two things
           * missing and is the half that belongs on this side; the other half needs
           * a half render target in the generator, whose air.arg_type_name the
-          * corpus does not attest (docs/air.md, section 4 item 4).
+          * corpus does not attest (docs/dev/air.md, section 4 item 4).
           */
          rt_format = PIPE_FORMAT_R16G16B16A16_FLOAT;
          rt_is_float = true;
@@ -1804,7 +1854,7 @@ main(int argc, char **argv)
        * -- 101 where a comparison must answer 0 or 1, and for `always` and `never`
        * too, which no compare function and no clamp can explain -- against
        * r32g32b32a32_float bound for a Metal depth2d<float>, which is the one thing
-       * in that run that was this harness's own doing (docs/air.md 3.3).
+       * in that run that was this harness's own doing (docs/dev/air.md 3.3).
        *
        * So a slot a shadow instruction reads gets a real depth texture, and its
        * texels are the only pattern that fits: (x + TEX*y) / 16, which is sixteen

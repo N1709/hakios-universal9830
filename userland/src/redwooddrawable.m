@@ -72,6 +72,7 @@
 #include <string.h>
 
 #include "redwood_drawable.h"
+#include "m2m.h"
 
 /*
  * The two requests this file needs, by the numbers the kernel answers them on
@@ -100,6 +101,12 @@ int
 rwd_gpu_open(io_connect_t *connection, char *why, size_t why_size)
 {
 	io_service_t service = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodGPU"));
+
+	if (service == 0) {
+		/* the Exynos 990 phone's Mali-G77 (iokit/Kernel/RedwoodMali.cpp): the same kRedwoodSurface (0x7e)
+		 * request, with the same structure, and the same GEM close (0x09) */
+		service = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodMali"));
+	}
 	kern_return_t result;
 
 	if (connection == NULL) {
@@ -155,7 +162,7 @@ rwd_shared_connection(void)
 		opened = 1;
 		if (rwd_gpu_open(&connection, why, sizeof(why)) != 0) {
 			connection = 0;
-			printf("redwooddrawable: %s\n", why);
+			m2m_log('E', "SURF", "drawable: the GPU service: %s", why);
 		}
 	}
 	return connection;
@@ -287,8 +294,8 @@ rwd_surface_id(void *iosurface)
 		*(void **)&get_id = dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
 		looked = 1;
 		if (get_id == NULL) {
-			printf("redwooddrawable: this process has no IOSurfaceGetID, so a "
-			       "surface cannot be named to the kernel\n");
+			m2m_log('E', "SURF", "drawable: this process has no IOSurfaceGetID, so a "
+			        "surface cannot be named to the kernel");
 		}
 	}
 	return get_id != NULL ? get_id(iosurface) : 0;
@@ -313,7 +320,7 @@ rwd_surface_fits_adreno(const struct rwd_surface *surface, unsigned bytes_per_pi
 		rwd_say(why, why_size, "rwd_surface_fits_adreno needs a surface and a pixel size");
 		return -1;
 	}
-	if (surface->planes > 1) {
+	if (surface->planes > 2 || (surface->planes == 2 && surface->planeRowBytes[1] == 0)) {
 		rwd_say(why, why_size, "surface %u has %u planes; a drawable's texture is one "
 		    "plane and this driver imports no others", surface->surface, surface->planes);
 		return -1;
@@ -381,14 +388,41 @@ struct rwd_format {
 
 static const struct rwd_format rwd_formats[] = {
 	{  10, 'A008', 1, 0, "MTLPixelFormatR8Unorm" },
+	{  10, 'L008', 1, 0, "MTLPixelFormatR8Unorm" },
 	{  11, 'A008', 1, 0, "MTLPixelFormatR8Unorm_sRGB" },
+	{  11, 'L008', 1, 0, "MTLPixelFormatR8Unorm_sRGB" },
+	/* luminance + alpha, one byte each: SpringBoard's icon and label layers (25 October: 146
+	 * "Failed to allocate MTLTexture from IOSurface" in one boot, the layers simply missing) */
+	{  30, 'LA08', 2, 0, "MTLPixelFormatRG8Unorm" },
+	{  30, '2C08', 2, 0, "MTLPixelFormatRG8Unorm" },
+	/* 16-bit 5:6:5, red in the high bits and blue in the low ones of a little-endian word: what
+	 * a CAEAGLLayer with kEAGLColorFormatRGB565 is made of (12 November: Angry Birds Space ran,
+	 * sound and all, on a black screen -- every frame "no drawable: pixel format 40"). The
+	 * kernel keeps 'L565' as it is (MiniIOSurface.cpp substitutes only the ten-bit ones), and
+	 * the compiler library serves 40 as Gallium's R5G6B5_UNORM (air_metal.c rwa_pixel_formats). */
+	{  40, 'L565', 2, 0, "MTLPixelFormatB5G6R5Unorm" },
+	/* CoreVideo's one-component and float buffers, which PhotoImaging and CoreImage make
+	 * textures over (kCVPixelFormatType_OneComponent16Half / 32Float / 128RGBAFloat) */
+	{  25, 'L00h', 2, 0, "MTLPixelFormatR16Float" },
+	{  25, '1C0h', 2, 0, "MTLPixelFormatR16Float" },
+	{  55, 'L00f', 4, 0, "MTLPixelFormatR32Float" },
+	{  55, '1C0f', 4, 0, "MTLPixelFormatR32Float" },
+	{  65, '2C0h', 4, 0, "MTLPixelFormatRG16Float" },
+	{ 125, 'RGfA', 16, 0, "MTLPixelFormatRGBA32Float" },
 	{  70, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm" },
 	{  71, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm_sRGB" },
 	{  80, 'BGRA', 4, 0, "MTLPixelFormatBGRA8Unorm" },
+	/* CoreVideo's kCVPixelFormatType_32ARGB code (0x20), which CoreGraphics-made surfaces carry for
+	 * premultiplied-first little-endian pixels -- BGRA in memory -- (PhotoImaging) */
+	{  80, 0x00000020, 4, 0, "MTLPixelFormatBGRA8Unorm" },
 	{  81, 'BGRA', 4, 0, "MTLPixelFormatBGRA8Unorm_sRGB" },
 	{  90, 'R10k', 4, 0, "a ten-bit RGB format" },
 	{  94, 'l10r', 4, 1, "a ten-bit RGB format" },
 	{ 115, 'RGhA', 8, 0, "MTLPixelFormatRGBA16Float" },
+	/* two planes, 4:2:0, full and video range: the luma plane's one byte a pixel is what is
+	 * checked here; the chroma plane is the kernel's to describe (planeOffset/planeRowBytes) */
+	{ 500, '420f', 1, 0, "MTLPixelFormatYCBCR8_420_2P" },
+	{ 500, '420v', 1, 0, "MTLPixelFormatYCBCR8_420_2P" },
 	{ 550, 'b3a8', 4, 1, "a ten-bit XR format" },
 	{ 551, 'b3a8', 4, 1, "a ten-bit XR format" },
 	{ 552, 'w40a', 4, 1, "a ten-bit XR format" },
@@ -396,6 +430,18 @@ static const struct rwd_format rwd_formats[] = {
 	{ 554, 'w30r', 4, 1, "a ten-bit XR format" },
 	{ 555, 'w30r', 4, 1, "a ten-bit XR format" },
 };
+
+/* Whether a surface of `fourcc` may stand under Metal format `metal` (a format may have several). */
+static int
+rwd_fourcc_serves(unsigned metal, uint32_t fourcc)
+{
+	for (size_t i = 0; i < sizeof(rwd_formats) / sizeof(rwd_formats[0]); i++) {
+		if (rwd_formats[i].metal == metal && rwd_formats[i].fourcc == fourcc && !rwd_formats[i].substituted) {
+			return 1;
+		}
+	}
+	return 0;
+}
 
 int
 rwd_format_of_metal(unsigned metal_pixel_format, uint32_t *fourcc, unsigned *bytes_per_pixel,
@@ -500,6 +546,10 @@ typedef struct rwa_texture *(*rwd_import_call)(struct rwa_device *device,
 					       int surface_id, unsigned offset,
 					       unsigned row_bytes, char *why, size_t why_size);
 
+
+typedef struct rwa_texture *(*rwd_import_planes_call)(struct rwa_device *, const struct rwd_texture_shape *,
+    int, unsigned, unsigned, unsigned, unsigned, char *, size_t);
+static rwd_import_planes_call rwd_import_planes;
 static rwd_import_call
 rwd_import(void)
 {
@@ -512,9 +562,10 @@ rwd_import(void)
 		looked = 1;
 		if (library != NULL) {
 			*(void **)&import = dlsym(library, "rwa_texture_from_surface");
+			*(void **)&rwd_import_planes = dlsym(library, "rwa_texture_from_surface_planes");
 		}
-		printf("redwooddrawable: the compiler library %s, and %s "
-		       "rwa_texture_from_surface\n",
+		m2m_log(import != NULL ? 'I' : 'E', "SURF", "drawable: the compiler library %s, and %s "
+		        "rwa_texture_from_surface",
 		    library != NULL ? "is loaded in this process" : "is not loaded here",
 		    import != NULL ? "has" : "has NOT");
 	}
@@ -553,10 +604,12 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 	 * plane of anything else is an application's own IOSurface and not a drawable's, and it
 	 * would need a per-plane geometry this driver does not read.
 	 */
-	if (plane != 0) {
+	/* A plane other than 0 is served below, once the surface is described: only a plane
+	 * of a two-plane 4:2:0 surface, as R8 (luma) or RG8 (chroma) -- what CoreImage and
+	 * PhotoImaging ask for, a texture per plane, converting to RGB in their own shaders. */
+	if (plane > 1) {
 		rwd_say(why, why_size, "plane %lu of a surface was asked for; this driver "
-		    "imports plane 0 only, and CoreAnimation's drawables never ask for another",
-		    plane);
+		    "imports planes 0 and 1 of a two-plane surface only", plane);
 		return NULL;
 	}
 	id = rwd_surface_id(iosurface);
@@ -585,20 +638,81 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 	if (rwd_surface_describe(connection, id, &surface, why, why_size) != 0) {
 		return NULL;
 	}
-	if (surface.width != want->width || surface.height != want->height) {
+	/* One plane of a two-plane 4:2:0 surface as a single-plane texture: the luma plane is
+	 * R8Unorm (or R16 for the 10-bit kinds, not served), the chroma plane RG8Unorm at half
+	 * the size. Imported in place at the plane's own offset and row length. */
+	if (surface.planes == 2 && (surface.pixelFormat == '420f' || surface.pixelFormat == '420v') &&
+	    (want->pixel_format == 10 || want->pixel_format == 30)) {
+		unsigned pw = plane ? (surface.width + 1) / 2 : surface.width;
+		unsigned ph = plane ? (surface.height + 1) / 2 : surface.height;
+		unsigned bpp = plane ? 2 : 1;
+		if ((plane == 0) != (want->pixel_format == 10)) {
+			rwd_say(why, why_size, "plane %lu of surface %u ('420%c') asked for as Metal format "
+			    "%u; plane 0 is R8Unorm (10), plane 1 RG8Unorm (30)", plane, id,
+			    (char)surface.pixelFormat, want->pixel_format);
+			return NULL;
+		}
+		if (surface.planeRowBytes[plane] == 0) {
+			rwd_say(why, why_size, "surface %u has two planes and the kernel did not describe "
+			    "plane %lu's offset and row length", id, plane);
+			return NULL;
+		}
+		if (want->width > pw || want->height > ph) {
+			rwd_say(why, why_size, "plane %lu of surface %u is %ux%u and the descriptor asks "
+			    "for %ux%u", plane, id, pw, ph, want->width, want->height);
+			return NULL;
+		}
+		if (surface.planeRowBytes[plane] % 64 != 0 ||
+		    surface.planeRowBytes[plane] < pw * bpp) {
+			return NULL;   /* the caller's copy path serves an unaligned plane */
+		}
+		import = rwd_import();
+		if (import == NULL) {
+			rwd_say(why, why_size, "the compiler library has no rwa_texture_from_surface");
+			return NULL;
+		}
+		texture = import(mesa_device, want, (int)id, surface.planeOffset[plane],
+		    surface.planeRowBytes[plane], why, why_size);
+		if (texture != NULL && took != NULL) {
+			*took = surface;
+		}
+		return texture;
+	}
+	if (plane != 0) {
+		rwd_say(why, why_size, "plane %lu of a '%c%c%c%c' surface was asked for; only the "
+		    "planes of a two-plane 4:2:0 surface are served", plane,
+		    (char)(surface.pixelFormat >> 24), (char)(surface.pixelFormat >> 16),
+		    (char)(surface.pixelFormat >> 8), (char)surface.pixelFormat);
+		return NULL;
+	}
+	/* Metal takes a texture smaller than its surface (the top-left corner, at the
+	 * surface's own row length), and CoreImage asks for that: an 837x629 view of an
+	 * 896x640 tile. Only a texture larger than the surface is refused. */
+	if (want->width > surface.width || want->height > surface.height) {
 		rwd_say(why, why_size, "surface %u is %ux%u and the descriptor asks for %ux%u",
 		    id, surface.width, surface.height, want->width, want->height);
 		return NULL;
 	}
-	if (surface.pixelFormat != fourcc) {
-		rwd_say(why, why_size, "surface %u is '%c%c%c%c' and Metal format %u is "
-		    "'%c%c%c%c'", id, (char)(surface.pixelFormat >> 24),
-		    (char)(surface.pixelFormat >> 16), (char)(surface.pixelFormat >> 8),
-		    (char)surface.pixelFormat, want->pixel_format, (char)(fourcc >> 24),
+	if (surface.pixelFormat != fourcc && !rwd_fourcc_serves(want->pixel_format, surface.pixelFormat)) {
+		/* in hex as well: a format code with a zero byte cut the sentence off at the quote */
+		rwd_say(why, why_size, "surface %u is 0x%08x ('%c%c%c%c') and Metal format %u is "
+		    "'%c%c%c%c'", id, surface.pixelFormat,
+		    (char)((surface.pixelFormat >> 24) ? surface.pixelFormat >> 24 : '.'),
+		    (char)((surface.pixelFormat >> 16) & 0xff ? surface.pixelFormat >> 16 : '.'),
+		    (char)((surface.pixelFormat >> 8) & 0xff ? surface.pixelFormat >> 8 : '.'),
+		    (char)(surface.pixelFormat & 0xff ? surface.pixelFormat : '.'),
+		    want->pixel_format, (char)(fourcc >> 24),
 		    (char)(fourcc >> 16), (char)(fourcc >> 8), (char)fourcc);
 		return NULL;
 	}
 	if (rwd_surface_fits_adreno(&surface, bytes_per_pixel, why, why_size) != 0) {
+		/* a row length the GPU cannot address in place, and nothing else wrong: the caller
+		 * can serve the surface with a copy (newTextureWithDescriptor:iosurface:plane:), so
+		 * it is told what the surface is */
+		if (took != NULL && surface.planes <= 1 && surface.rowBytes % 64 != 0 &&
+		    surface.rowBytes >= (uint64_t)surface.width * bytes_per_pixel) {
+			*took = surface;
+		}
 		return NULL;
 	}
 	/*
@@ -625,8 +739,19 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 	 * per user client -- and then there would be two owners of one surface and only one
 	 * release.
 	 */
-	texture = import(mesa_device, want, (int)id, surface.offset, surface.rowBytes, why,
-	    why_size);
+	if (surface.planes == 2) {
+		if (rwd_import_planes == NULL) {
+			rwd_say(why, why_size, "surface %u is two planes and the compiler library has no "
+			    "rwa_texture_from_surface_planes", id);
+			return NULL;
+		}
+		texture = rwd_import_planes(mesa_device, want, (int)id, surface.planeOffset[0],
+		    surface.planeRowBytes[0], surface.planeOffset[1], surface.planeRowBytes[1], why,
+		    why_size);
+	} else {
+		texture = import(mesa_device, want, (int)id, surface.offset, surface.rowBytes, why,
+		    why_size);
+	}
 	if (texture == NULL) {
 		return NULL;    /* the library wrote the sentence; it names the GPU's own reason */
 	}

@@ -1,0 +1,361 @@
+{
+ "files": {
+  "prebuilt/SHA256SUMS": {
+   "decision": "publish",
+   "sha256": "8d170ae636c1cfe80b340cfcc6be50103632883b01c0fdd463be17fd98ef4418",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/loader.efi": {
+   "decision": "publish",
+   "sha256": "3de0d8b2095989a9a8f9f9679b8bec01d80bad38eee535d934d29b7b76fee984",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/mach.development.bcm2837": {
+   "decision": "publish",
+   "sha256": "f9bfc25edc48058d0e5e021ef16af163411e2c30e394f8e116b3c8002503236b",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/HakiosAudio": {
+   "decision": "publish",
+   "sha256": "932c856c04e87611b16c872da37c461d572c6258da0202ecd875d91c29886e03",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/LocalFilesHost": {
+   "decision": "publish",
+   "sha256": "326ffc06334d8839d9e526cee9a5eff2393fc3e7ac1a06666d2bd4382985d94f",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/RedwoodCameraBrightness.dylib": {
+   "decision": "publish",
+   "sha256": "8990796a2815a1f49f9044fccae262d68da344328540bf47e466ccf71066e553",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/RedwoodCameraLenses.dylib": {
+   "decision": "publish",
+   "sha256": "5a891029e96140bdc697e2388a61a6a85775d7ac6343cb02e21f962cd4ab13a6",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/RedwoodCellular.dylib": {
+   "decision": "publish",
+   "sha256": "f8a9713a373dd1158a825183e889b0720f5b6cf1015b92d7a5415a4ad33461a4",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/RedwoodMetal": {
+   "decision": "publish",
+   "sha256": "bd15127f424f35d9d70e2f905c9714bb9ea451088524931ca895f559d7c17ea5",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/RedwoodSMS.dylib": {
+   "decision": "publish",
+   "sha256": "287c5834371703ea992534df6c68ca951681c8072aaacf20162c5f391d844e61",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/aod-preview": {
+   "decision": "publish",
+   "sha256": "6ac776b91d8643f902f1d97aec29bc85a743b61fa4d80b83c79adad1e1af44aa",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/child": {
+   "decision": "publish",
+   "sha256": "45bffe2da6b2484836bd29074b39bd5cc67b4cdaa253c2aa39561ce5188d6ddc",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/cpu_test": {
+   "decision": "publish",
+   "sha256": "35f3065e4602965911a20d0666a289cafba16644e611ea870d40bda81ea67546",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/device_name": {
+   "decision": "publish",
+   "sha256": "021562d86938da6d734a5923b27adacd1e1bc88866bff330e85aa60412f33661",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/hello": {
+   "decision": "publish",
+   "sha256": "48a910940230506813aa0b75692e58d1c6698feccf7c6f7771c8790b6c97522d",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/hello_dyn": {
+   "decision": "publish",
+   "sha256": "e5044262e71eb9277ccc2e4d58d9868a8b535aec0c3bf8c5b9f6ab604f978f46",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/init": {
+   "decision": "publish",
+   "sha256": "07c7fe4777fb7424946932545fb61e2f2e3d81e64a0687c1e180d64d202e41ab",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libhakios.app.dylib": {
+   "decision": "publish",
+   "sha256": "ef496beee457476dcda607d27cb26398b1fc463b6f6c7fe21012eb4c0c26edb9",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libhakios.dylib": {
+   "decision": "publish",
+   "sha256": "530c2e681093ece2afe7f5180a4723bd46d92f7af39edc0a8c77136136a4dad6",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libhakios.media.dylib": {
+   "decision": "publish",
+   "sha256": "d8680034e5f0cdecd396cd7488e9d0f30037223ebc57f5309f99a6cd45a4ad26",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libhakios.sb.dylib": {
+   "decision": "publish",
+   "sha256": "d4f1c6b06b4b016b1a3ea77d741382053efde0093a5a8f77226a215bee87b232",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libhakios.tweaks.dylib": {
+   "decision": "publish",
+   "sha256": "da392e632eb6978164c4c191b73773cf4ceac2c288d1b9697d35fd1f938f73f3",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwood-alwayson.dylib": {
+   "decision": "publish",
+   "sha256": "4b8be6a96190b5a51e0720ed9a0ea344a76828a657bb00f42e10f45425a0a470",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwood-calls.dylib": {
+   "decision": "publish",
+   "sha256": "508ac73cb01f6541128408cc81e4d6725e37450510e1e2508f4daf473e010049",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwood-files.dylib": {
+   "decision": "publish",
+   "sha256": "857bc2c2f23692168724a8228aac3fca63e49f0ee7f9586a36fe3082afc51fc8",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwood-finder.dylib": {
+   "decision": "publish",
+   "sha256": "de366b8e1de03bff1cffb9da6997177d9b43010e5216cfad9e67ffa2007a21f8",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwood-graphics.dylib": {
+   "decision": "publish",
+   "sha256": "8ffce2affbb0fae55ac405ff178e94c56c049a4080499e057c22992420b47893",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwood-media.dylib": {
+   "decision": "publish",
+   "sha256": "8a5e6e11da631fe50f349f1378b6ef59c9c6599851b844e2d59ad78c2d2dcbf0",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwood-sb.dylib": {
+   "decision": "publish",
+   "sha256": "af1fd5edd6e193313775c167fdbfe94f58146a1fa81d885d64540779485ff979",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwood-tweaks.dylib": {
+   "decision": "publish",
+   "sha256": "cbdefedfd068a8f9819999553c9aadb8aea2dda7023c027f307a7928a2c0fe78",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwood.dylib": {
+   "decision": "publish",
+   "sha256": "dcd5b16b8009c7c696170c54ac8662b25f7869bc372458fa8fca2c05b18c4f6f",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/libredwoodair.dylib": {
+   "decision": "publish",
+   "sha256": "36e95669c1f9faa464a098d25f065c5f2a7b5c3f2de710fadd1841b6f7455d84",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/lpmd": {
+   "decision": "publish",
+   "sha256": "5128e4b386d941a60e8868ac76ca2688d120f8786a15783a327004151de0e1a9",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/m2m_mark": {
+   "decision": "publish",
+   "sha256": "893f2e2df99ea1d68b6be2ca8ad7d7c434404f3c6c4e4666fa08ee2c8261fe3c",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/metal_props": {
+   "decision": "publish",
+   "sha256": "0f32935a2608598e9ce12742d98977057a36f99b3e0f24b64076e9b7196d3e64",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/mg_test": {
+   "decision": "publish",
+   "sha256": "8ba7ffba4ff62aff74ab144fc25c61873408320511a83c9b8faf941f32e965d0",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/net_test": {
+   "decision": "publish",
+   "sha256": "8dccf07fb4d9f406fcf558355cc9f3a1614a39c29e5bb79740aa5c5e972023fe",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/prefset": {
+   "decision": "publish",
+   "sha256": "5083a9d219b333e132c13ab99c112f6bb798c6a87fb5c8d71efa3866a9343c81",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/redwood-cellulard": {
+   "decision": "publish",
+   "sha256": "22e0758876368e39012a85ea90a963ca168e03049a1fe13475187ab8e7ca3929",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/redwood-ims": {
+   "decision": "publish",
+   "sha256": "3cfee2d299699ecec07928ace27c00685222c5a2912d53d297d17c2fc9d3334e",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/redwood-motiond": {
+   "decision": "publish",
+   "sha256": "10265e2f7a4f02f3e8bfd847cddbaf013d2430f17bc4dd97644d1edea482e427",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/redwood-telephonyd": {
+   "decision": "publish",
+   "sha256": "29ad56c558d539e85b44f800e6b3e6146113f345606e879b10898c4e54a2e25a",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/register_finder_host": {
+   "decision": "publish",
+   "sha256": "83d19d33f97fdf489402f27ede7a2e577303598dc5ba1e2bab4777fdb612eeba",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/rwlogd": {
+   "decision": "publish",
+   "sha256": "d9a001cba30216623c8f68d7aee9f10c3cc3f1a09aacd8a9bfe722f80fb4fcab",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/rwtouch": {
+   "decision": "publish",
+   "sha256": "23083ee094e74de276c7481a487aec9ff4acafbdb4aace4bcdd42b3cfb9123e3",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/safari_favourites": {
+   "decision": "publish",
+   "sha256": "c9334ee316835b12ff46571b30ea68a6f2c9f2bc4ba0de929a67a566d7591d76",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/sd-userfs-start": {
+   "decision": "publish",
+   "sha256": "9f491feb2bb45daf6aca69b16d57f18d8e72f225b316ecb9e21a8a64415bf008",
+   "why": "Repository-owned startup helper from userland/src/sd-userfs-start.c; rebuilt from source and matched byte-for-byte. Links only CoreFoundation and libSystem."
+  },
+  "prebuilt/userland/softkeybag-init": {
+   "decision": "publish",
+   "sha256": "fb84a7d5b4dd24c94809ade386ffe3f792feba373bb6554d708e14cac108396d",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/sound_test": {
+   "decision": "publish",
+   "sha256": "23b5bea0ab7da79bd9ebc2fa46a48693f4f1a1d36c6c3eb04285233f31255422",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/stage0": {
+   "decision": "publish",
+   "sha256": "f77e716ee21d3e4ec87c1b1368ca0b02ae48f4cefd8a08040a6704511580da5e",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/surf_test": {
+   "decision": "publish",
+   "sha256": "fe6a0e4e8e07ae59c54868924c67f59624aec8f357b040601421f01fb27e3c6b",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "prebuilt/userland/svc_test": {
+   "decision": "publish",
+   "sha256": "09b99d850745193689d765bb5871328d03279b479619a775ea8b7810568de2f9",
+   "why": "our program, built from this repo (user: publish with checksums)"
+  },
+  "tools/cellular/RedwoodPhone/out/RedwoodPhone.app/RedwoodPhone": {
+   "decision": "publish",
+   "sha256": "7fbf4331adc08a5bba41e074cdd06d86583ded30743986d9e376bf54a5b694c3",
+   "why": "our installer app bundle"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/ProviderInfo.plist": {
+   "decision": "publish",
+   "sha256": "5c71c2c6d0fa3a9fb5f3af9891074d3239c640c0d7189faec873c81084cdf6fb",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/com.apple.posterkit.provider.identifierURL.suggestionMetadata.plist": {
+   "decision": "publish",
+   "sha256": "1d47874cc91337d1d9fe21f6db59760f6bba219a186e8ef15ed4fb57d4fda5f8",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/providerInfo.plist": {
+   "decision": "publish",
+   "sha256": "b4487948228e26c69fa042a26f207e14f0df33c45db5b698ab7241afa558b9fe",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/RuntimeSnapshotMetadata-lock.plist": {
+   "decision": "publish",
+   "sha256": "10cc609a9f1e4f2d4d3a9a055c2c6316f2da92d37689688ae974555312162045",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/com.apple.posterkit.provider.instance.complicationLayout.plist": {
+   "decision": "publish",
+   "sha256": "f0587d51385cde6b4368b57d77b954c20ceb1663ccbfb9708a8d1fc6aed199c4",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/com.apple.posterkit.provider.instance.titleStyleConfiguration.plist": {
+   "decision": "publish",
+   "sha256": "0f6ef939719647576ac46132f51cea8a8daa2b43791cb9349a108f24ddd108f3",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/contents/C653523D-F3B9-49B1-A167-3EB75FB33621/input.segmentation/asset.resource/Adjusted.HEIC": {
+   "decision": "publish",
+   "sha256": "57c1b8d2a72d572fad7fd086ce0a710a3ec8f8bfdd06bac8b4faec26a0ee40ad",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/contents/C653523D-F3B9-49B1-A167-3EB75FB33621/input.segmentation/asset.resource/contents.plist": {
+   "decision": "publish",
+   "sha256": "49595905aa4ddc159ab10cbaa2da2e5679f650f5789f4a6f84810a8700c49749",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/contents/C653523D-F3B9-49B1-A167-3EB75FB33621/input.segmentation/asset.resource/proxy.heic": {
+   "decision": "publish",
+   "sha256": "1ef6b125e6377b996b813e9a19ab75d50af63d7ee14907d7ab89d761556c0147",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/contents/C653523D-F3B9-49B1-A167-3EB75FB33621/input.segmentation/segmentation.data.aar": {
+   "decision": "publish",
+   "sha256": "1b29b1b9113c6a79740d0b2e3ab66143ad519eecdd1ecaf6a588fdaa18e2c883",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/contents/C653523D-F3B9-49B1-A167-3EB75FB33621/output.layerStack/layer_background.HEIC": {
+   "decision": "publish",
+   "sha256": "21dc1c8335c31b29d138e38f78a5721387ae121a510789d7a0ab1d5f8290c335",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/contents/ConfigurationModel.plist": {
+   "decision": "publish",
+   "sha256": "13f581d77ace76b428adb33913d7edaa005fb457eb72881795d56a88b606205b",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/contents/com.apple.posterkit.provider.contents.otherMetadata.plist": {
+   "decision": "publish",
+   "sha256": "2ac6cd0dff09287dc4bcce64a26c2cdcc1d76c118873223e0249d4cb50085b4c",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/Extensions/com.apple.PhotosUIPrivate.PhotosPosterProvider/configurations/AD4AE448-0CE7-4089-A2B3-8FBAD212D585/versions/1/supplements/0/com.apple.posterkit.provider.supplementURL.homescreenConfiguration.plist": {
+   "decision": "publish",
+   "sha256": "1e72a1a5c7a63785e3d3ee5f4854e6af2a105d3a336b02674b5de39cfb17a018",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/SelectedConfigurationIdentifier.plist": {
+   "decision": "publish",
+   "sha256": "e01f93add46ce49a97b4a25a49309f46d053a69bf2ebc6ce05237e1393d6121d",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/defaults/wallpaper/PRBPosterExtensionDataStore/59/SwitcherConfigurationOrdering.plist": {
+   "decision": "publish",
+   "sha256": "0905ab19eabdaf8910b48053833f06855ece5d5b63a18d589bab12a8407caeb4",
+   "why": "the user's own default wallpaper for clean installs (deliberate)"
+  },
+  "userland/hfs-kit-64000000000.bin": {
+   "decision": "publish",
+   "sha256": "2cf24aaba579bbe75c9cc885a1aa5445ac3a992b838dc1adb821a56065b151ba",
+   "why": "HFSX format kit for the release data size (release.conf IOS_DATA_GB=64; name computed by tools/release/targets.kit_path)"
+  },
+  "userland/hfs-kit.bin": {
+   "decision": "publish",
+   "sha256": "9256c8903c4d8977ba7bcedbaeb6c56903d54e12ad44377c8912a8d2fb9dbb00",
+   "why": "generated by tools/hfs-kit.py; used by the installer"
+  }
+ },
+ "reviewed": "2026-11-20",
+ "schema": 1
+}

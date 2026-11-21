@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.redwood.sshd</string>
+	<!-- x1slte (2026-11-06): SSH and SFTP, over the USB cable (10.77.0.2, usb_ecm=1) and Wi-Fi. The prefix's OpenSSH
+	     (tools/mk-jb.sh, /var/jb grafted by init before launchd starts), as root in the system domain: a job of the
+	     user's domain (com.redwood.demo) takes what it started with it when it ends. Keys only (ssh/authorized_keys and
+	     the host key, never in the repository); no passwords, no PAM. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/var/jb/usr/sbin/sshd</string>
+		<string>-D</string>
+		<string>-e</string>
+		<string>-h</string>
+		<string>/var/root/.ssh/ssh_host_ed25519_key</string>
+		<string>-o</string>
+		<string>UsePAM=no</string>
+		<string>-o</string>
+		<string>PasswordAuthentication=no</string>
+		<string>-o</string>
+		<string>PermitRootLogin=prohibit-password</string>
+		<string>-o</string>
+		<string>AuthorizedKeysFile=/var/root/.ssh/authorized_keys</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>/dev/console</string>
+	<key>StandardErrorPath</key>
+	<string>/dev/console</string>
+</dict>
+</plist>

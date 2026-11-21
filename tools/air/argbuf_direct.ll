@@ -18,7 +18,7 @@
 ; The indices are the ones the FRONTEND allocates for that set's members, which is what
 ; makes the two comparable: one flat counter per kind in (set, member) order, so the
 ; buffer member is buffer 0, the samplers are 0 and 1 in member order and the textures
-; are 0 and 1 (docs/air.md 8.2.1). This module is bound at those indices directly.
+; are 0 and 1 (docs/dev/air.md 8.2.1). This module is bound at those indices directly.
 ;
 ; So the measurement is differential and needs no oracle: the two draws must produce the
 ; SAME FOUR FLOATS. If they do, the encoder's records delivered the same five resources

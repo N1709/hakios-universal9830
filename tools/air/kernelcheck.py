@@ -136,7 +136,7 @@ def canary_boundary(path):
     """Where in a run the GPU stopped making writes visible, if a canary says so.
 
     A canary is a kernel that stores a constant to word 0 of its buffer,
-    unconditionally, from every thread (the probe in docs/air.md section 4). Put
+    unconditionally, from every thread (the probe in docs/dev/air.md section 4). Put
     one every few jobs and it marks the point past which nothing is evidence:
     this device survives about thirty dispatches of kernels that bind textures
     or images in one boot, and after that every dispatch still succeeds, every
@@ -345,7 +345,7 @@ def main(argv):
                   "this run is not evidence about any shader" % (last, total, n))
         else:
             print("  no canary in this log, so there is no way to tell a kernel that writes "
-                  "nothing from a run that had stopped writing (see docs/air.md section 4)")
+                  "nothing from a run that had stopped writing (see docs/dev/air.md section 4)")
         print("  of the %d dispatched, softpipe runs %d of them too:" % (got, len(same) + len(diff)))
         print("  %2d  write word for word what softpipe writes" % len(same))
         print("  %2d  DISAGREE with softpipe" % len(diff))

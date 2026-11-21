@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>KeepAlive</key>
+	<false/>
+	<key>Label</key>
+	<string>com.apple.mobile.lockdown</string>
+	<key>POSIXSpawnType</key>
+	<string>Interactive</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/lockdownd</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>ServiceIPC</key>
+	<false/>
+	<key>Sockets</key>
+	<dict>
+		<key>MyIPv4Socket</key>
+		<dict>
+			<key>SockFamily</key>
+			<string>IPv4</string>
+			<key>SockNodeName</key>
+			<string>127.0.0.1</string>
+			<key>SockServiceName</key>
+			<string>62078</string>
+		</dict>
+		<key>MyIPv6Socket</key>
+		<dict>
+			<key>SockFamily</key>
+			<string>IPv6</string>
+			<key>SockNodeName</key>
+			<string>::1</string>
+			<key>SockServiceName</key>
+			<string>62078</string>
+		</dict>
+		<key>MyUnixSocket</key>
+		<dict>
+			<key>SockFamily</key>
+			<string>Unix</string>
+			<key>SockPathMode</key>
+			<integer>511</integer>
+			<key>SockPathName</key>
+			<string>/var/run/lockdown.sock</string>
+		</dict>
+	</dict>
+	<key>StandardErrorPath</key>
+	<string>/dev/console</string>
+	<key>StandardOutPath</key>
+	<string>/dev/console</string>
+</dict>
+</plist>

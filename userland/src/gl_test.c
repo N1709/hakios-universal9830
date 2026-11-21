@@ -350,6 +350,9 @@ main(int argc, char **argv)
 	    (unsigned)(width * height), (unsigned)((uint64_t)coloured * 100 / (uint64_t)(width * height)));
 
 	service = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodGPU"));
+	if (service == 0) {
+		service = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodMali"));     /* (the Exynos phone's Mali) */
+	}
 	if (service == 0 || IOServiceOpen(service, mach_task_self(), 0, &connection) != 0) {
 		printf("gl_test: no GPU service in this kernel to put the picture on the panel with\n");
 		return 0;

@@ -268,6 +268,9 @@ redwood_net_link_state(bool up)
 	net_link_event(net_ifp, up ? KEV_DL_LINK_ON : KEV_DL_LINK_OFF);
 }
 
+extern volatile int redwood_display_is_on;     /* redwood_exynos_acpm.c */
+static uint32_t net_scroff_poll = 1;            /* boot-arg net_scroff_poll */
+
 /* The interface's own thread: for a link that wants to be asked, and for the minute's line in the log. */
 static void
 net_thread(__unused void *parameter, __unused wait_result_t result)
@@ -275,6 +278,7 @@ net_thread(__unused void *parameter, __unused wait_result_t result)
 	uint64_t said = 0, total;
 	unsigned quiet = 0;
 
+	PE_parse_boot_argn("net_scroff_poll", &net_scroff_poll, sizeof(net_scroff_poll));
 	for (unsigned tick = 1;; tick++) {
 		quiet = net_link->poll != NULL && net_link->poll() ? 0 : quiet + 1;
 		/* about once a minute, if anything has moved since */
@@ -285,7 +289,17 @@ net_thread(__unused void *parameter, __unused wait_result_t result)
 			    net_count.sent, net_count.sent_bytes, net_count.received, net_count.received_bytes,
 			    net_count.dropped_out, net_count.dropped_in);
 		}
-		delay_for_interval(quiet < 100 ? 2 : 10, NSEC_PER_MSEC);
+		/* 2 ms while frames move, 10 ms after a fifth of a second without, 25 ms after some ten seconds:
+		 * a still phone's cores are woken 40 times a second for this, not 500 */
+		/* (A, 2026-11-15) screen off: background broadcasts every few seconds kept it in the 2/10 ms tiers
+		 * (~370 wakes a second measured in AOD). Off: 2 ms for 50 ms after a frame, 10 ms for half a second, then
+		 * 100 ms (a still link waits at most a tenth of a second; Wi-Fi power save adds as much anyway).
+		 * net_scroff_poll=0: as before. */
+		if (!redwood_display_is_on && net_scroff_poll) {
+			delay_for_interval(quiet < 25 ? 2 : quiet < 75 ? 10 : 100, NSEC_PER_MSEC);
+			continue;
+		}
+		delay_for_interval(quiet < 100 ? 2 : quiet < 1100 ? 10 : 25, NSEC_PER_MSEC);
 	}
 }
 

@@ -114,14 +114,14 @@
 #                      at leisure.
 #
 #   AND NOT gpu_recover=1, which is the one boot-arg it would be tempting to add here. It is the
-#   way out of the gpuWait latch that the --layer step below is ordered around (docs/air.md: a hang would
+#   way out of the gpuWait latch that the --layer step below is ordered around (docs/dev/air.md: a hang would
 #   then cost one dispatch instead of the rest of the boot), and it HAS NEVER BEEN RUN -- its own
 #   measurement, userland/rc.jobs.metalrecover, is still waiting for a boot. Putting an untried
 #   kernel path into the boot that is meant to try the drawable would mean two new things at once
 #   and no way to say which answer belonged to which.
 #
 #   AND TAKE THE SCREENSHOT while it is up, from another terminal:
-#     ./xl screenshot logs/triangle.png
+#     ./xnu/xl screenshot logs/triangle.png
 #   It may be taken more than once; the picture is identical every frame on purpose.
 #
 # THE PICTURE, WRITTEN DOWN BEFORE THE RUN. Three colours, and each means a different thing:
@@ -307,7 +307,7 @@
 #    must have a RedwoodTriangle in it; if it does not, SpringBoard took the URL and the
 #    process died before exec, and the kernel's own lines above are where to look.
 #
-#    TAKE THE SCREENSHOT ANY TIME AFTER THIS LINE: ./xl screenshot logs/triangle.png
+#    TAKE THE SCREENSHOT ANY TIME AFTER THIS LINE: ./xnu/xl screenshot logs/triangle.png
 /redwood/bin/rwtouch wait 20
 /bin/ps -A
 #
@@ -322,7 +322,7 @@
 #    SpringBoard and nothing guarantees it the descriptors init gave launchd, which is why
 #    src/triangle_app.m opens /dev/console by name, as src/inject_app.c does). It runs here
 #    instead, and the reason is a measured one: ONE HUNG DISPATCH LATCHES THIS GPU and makes
-#    every dispatch after it empty (docs/air.md, the AIR suite's canary). The one thing this
+#    every dispatch after it empty (docs/dev/air.md, the AIR suite's canary). The one thing this
 #    boot can produce that no log can is the PHOTOGRAPH, so the photograph gets the undisturbed
 #    GPU and this process goes after it. If the application has already drawn, nothing is lost;
 #    if it never launched, this still runs and still answers two of the three questions.

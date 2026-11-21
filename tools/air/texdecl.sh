@@ -31,7 +31,7 @@ TEST=${AIR_METAL_TEST:-$ROOT/build/mesa-host/build/src/gallium/drivers/freedreno
 
 LIBS=("$@")
 if [ ${#LIBS[@]} = 0 ]; then
-	# The five of docs/air.md section 5, named rather than searched for, so a
+	# The five of docs/dev/air.md section 5, named rather than searched for, so a
 	# missing one is an error and not a smaller corpus. SafariSharedUI's is
 	# 118 bytes and holds no functions at all, which is why it is last and
 	# why its line below says so rather than failing the run.

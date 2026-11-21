@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.redwood.fpd</string>
+	<!-- native Touch ID: the fingerprint sensor behind RedwoodMesa (src/redwood-fpd.c). Ends at once without the
+	     boot argument touchid=1; with it, it switches RedwoodMesa on and serves biometrickitd's sensor requests -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/redwood/bin/redwood-fpd</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/dev/console</string>
+	<key>StandardErrorPath</key>
+	<string>/dev/console</string>
+</dict>
+</plist>

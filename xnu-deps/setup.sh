@@ -24,9 +24,9 @@
 #                                                   Apple's internal SDK has and the public one lacks
 set -e -o pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-source "$HERE/../xnu-env.sh"
+source "$HERE/../xnu/xnu-env.sh"
 cd "$XNUDEPS"
-JOBS=${JOBS:-$(nproc)}
+JOBS=${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}
 CCTOOLS=$THEOS/toolchain/linux/iphone/bin
 IOS_SDK=$THEOS/sdks/iPhoneOS16.5.sdk
 MACOS_SDK_URL=https://github.com/joseluisq/macosx-sdks/releases/download/13.3/MacOSX13.3.sdk.tar.xz
@@ -58,9 +58,53 @@ update() {
 	if cmp -s "$1.new" "$1"; then rm "$1.new"; else mv "$1.new" "$1"; fi
 }
 
+# macOS: no theos, but Xcode has the same cctools and the SDK can be had from github.com/theos/sdks.
+# theos-mac/ is laid out like theos so that the rest of this script does not care.
+theos_mac() {
+	local tool sdk_rev
+	sdk_rev=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sources"]["ios-sdk"]["commit"])' "$HERE/../ci/sources.lock.json")
+	mkdir -p "$THEOS/toolchain/linux/iphone/bin" "$THEOS/sdks"
+	for tool in ld nm otool strip lipo libtool nmedit ctf_insert codesign_allocate install_name_tool; do
+		link "$(/usr/bin/xcrun -f $tool)" "$THEOS/toolchain/linux/iphone/bin/$tool"
+	done
+	if [ ! -d "$THEOS/sdks-git/iPhoneOS16.5.sdk/usr/include" ]; then
+		log "fetching iPhoneOS16.5.sdk from github.com/theos/sdks (about 220 MB)"
+		rm -rf "$THEOS/sdks-git"
+		git init -q "$THEOS/sdks-git"
+		git -C "$THEOS/sdks-git" remote add origin https://github.com/theos/sdks.git
+		git -C "$THEOS/sdks-git" sparse-checkout init --cone
+		git -C "$THEOS/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
+		git -C "$THEOS/sdks-git" fetch -q --depth 1 --filter=blob:none origin "$sdk_rev"
+		git -C "$THEOS/sdks-git" checkout -q --detach "$sdk_rev" || die "cannot fetch the pinned SDK"
+	fi
+	[ "$(git -C "$THEOS/sdks-git" rev-parse HEAD)" = "$sdk_rev" ] ||
+		die "SDK differs from ci/sources.lock.json; use a fresh isolated THEOS directory"
+	link ../sdks-git/iPhoneOS16.5.sdk "$THEOS/sdks/iPhoneOS16.5.sdk"
+}
+
+# linktree FROM TO: TO becomes a tree of links to the files of FROM (cp -rs, which BSD cp lacks)
+linktree() {
+	if [ "$XNU_HOST_OS" = Darwin ]; then
+		python3 - "$1" "$2" <<-'PY'
+		import os, sys
+		src, dst = sys.argv[1], sys.argv[2]
+		for root, dirs, files in os.walk(src):
+		    rel = os.path.relpath(root, src)
+		    out = dst if rel == '.' else os.path.join(dst, rel)
+		    os.makedirs(out, exist_ok=True)
+		    for name in files:
+		        os.symlink(os.path.join(root, name), os.path.join(out, name))
+		PY
+	else
+		cp -rs "$1" "$2"
+	fi
+}
+
 stage1() {
 	local missing= tool
-	for tool in git curl tar xz make cc clang clang++ flex bison m4 perl python3 autoreconf automake; do
+	local tools="git curl tar xz make cc clang clang++ flex bison m4 perl python3 autoreconf automake"
+	[ "$XNU_HOST_OS" = Darwin ] && { theos_mac; tools="git curl tar make cc clang clang++ flex bison m4 perl python3"; }
+	for tool in $tools; do
 		command -v $tool >/dev/null || missing="$missing $tool"
 	done
 	[ -z "$missing" ] || die "not installed:$missing"
@@ -84,13 +128,31 @@ stage1() {
 	if [ ! -d MacOSX13.3.sdk/System/Library/Frameworks/Kernel.framework/Headers/DriverKit ]; then
 		log "downloading the macOS 13.3 SDK for its DriverKit headers"
 		curl -L --fail --retry 3 -s -o macos-sdk.tar.xz "$MACOS_SDK_URL" || die "download failed: $MACOS_SDK_URL"
-		tar -xJf macos-sdk.tar.xz --wildcards '*MacOSX13.3.sdk/System/Library/Frameworks/Kernel.framework*' ||
+		local wild=; tar --version 2>/dev/null | grep -q GNU && wild=--wildcards   # GNU tar (also first on GitHub's macos-15)
+		tar -xJf macos-sdk.tar.xz $wild '*MacOSX13.3.sdk/System/Library/Frameworks/Kernel.framework*' ||
 			die "cannot unpack the macOS SDK"
 		rm -f macos-sdk.tar.xz
 	fi
 
 	# --- host tools ----------------------------------------------------------------------------
 	mkdir -p host/bin
+	if [ "$XNU_HOST_OS" = Darwin ]; then
+		# macOS has it all: mig (Xcode's; it takes $MIGCC and $MIGCOM from the kernel build), unifdef, csh
+		# from the developer directory itself: xcrun -f also searches PATH, where these links are, and
+		# a second run would link them to themselves
+		_dev=$(xcode-select -p)
+		_mig=$_dev/usr/bin/mig; [ -x "$_mig" ] || _mig=$_dev/Toolchains/XcodeDefault.xctoolchain/usr/bin/mig
+		_migcom=$_dev/usr/libexec/migcom; [ -x "$_migcom" ] || _migcom=$_dev/Toolchains/XcodeDefault.xctoolchain/usr/libexec/migcom
+		rm -f host/bin/mig host/bin/migcom
+		link "$_mig" host/bin/mig
+		link "$_migcom" host/bin/migcom
+		link /usr/bin/unifdef host/bin/unifdef
+		link /bin/tcsh host/bin/tcsh
+		# GNU nproc, which the makefiles call, without needing coreutils
+		printf '#!/bin/sh\nexec /usr/sbin/sysctl -n hw.ncpu\n' > host/bin/nproc && chmod +x host/bin/nproc
+		# XNU's dSYM step runs `env python` for its lldb macros; macOS has only python3
+		link /usr/bin/python3 host/bin/python
+	fi
 	# mig: Apple's own does not build on glibc; this is a port that does
 	if [ ! -x host/bin/migcom ] || [ ! -x host/bin/mig ]; then
 		log "building mig"
@@ -120,21 +182,13 @@ stage1() {
 	for tool in nm otool strip lipo libtool nmedit ctf_insert codesign_allocate install_name_tool; do
 		link "$CCTOOLS/$tool" host/bin/$tool
 	done
-	link "$CCTOOLS/ld" host/bin/ld64
+	if [ "$XNU_HOST_OS" = Darwin ]; then
+		# (not a link: Xcode's ld looks itself up by the name it was called by, and knows no "ld64")
+		printf '#!/bin/sh\nexec "%s" "$@"\n' "$(/usr/bin/xcrun -f ld)" > host/bin/ld64.new && chmod +x host/bin/ld64.new && mv host/bin/ld64.new host/bin/ld64
+	else
+		link "$CCTOOLS/ld" host/bin/ld64
+	fi
 	link xnu-clang host/bin/xnu-clang++
-	# makesyscalls.sh writes "\(" in its awk strings: gawk makes that "(", mawk 1.3.4 (Debian and
-	# Ubuntu's default awk) leaves the backslash, and init_sysent.c does not compile
-	if ! awk --version 2>/dev/null | grep -q "GNU Awk"; then
-		command -v gawk > /dev/null || die "gawk is needed (the system's awk is not GNU awk): install gawk"
-		link "$(command -v gawk)" host/bin/awk
-	fi
-	# xcrun -find looks in host/bin and /usr/bin only; Debian and Ubuntu keep dsymutil with LLVM's own tools
-	if [ ! -x /usr/bin/dsymutil ]; then
-		d=$(ls -d /usr/lib/llvm-*/bin/dsymutil 2>/dev/null | sort -V | tail -1)
-		[ -n "$d" ] || d=$(command -v dsymutil)
-		[ -n "$d" ] || die "dsymutil is needed (package llvm)"
-		link "$d" host/bin/dsymutil
-	fi
 
 	# --- the SDK -------------------------------------------------------------------------------
 	# The makefiles ask xcrun (ours: host/bin/xcrun) for an SDK and a platform directory.
@@ -142,7 +196,7 @@ stage1() {
 	if [ ! -d "$XNU_SDK_PATH/usr/include" ]; then
 		log "making the SDK: links to $IOS_SDK"
 		rm -rf "$XNU_SDK_PATH"
-		cp -rs "$(cd "$IOS_SDK" && pwd)" "$XNU_SDK_PATH"
+		linktree "$(cd "$IOS_SDK" && pwd -P)" "$XNU_SDK_PATH"
 	fi
 	local sdk_local=$XNU_SDK_PATH/usr/local
 	mkdir -p $sdk_local/include/kernel/os $sdk_local/include/os $sdk_local/lib/kernel $sdk_local/libexec
@@ -174,8 +228,8 @@ stage2() {
 		log "stage 2: nothing to do"
 		return 0
 	fi
-	log "exporting the kernel's headers (xnu-build.sh exporthdrs)"
-	"$DARWIN_REDWOOD/xnu-build.sh" -j$JOBS exporthdrs > exporthdrs.log 2>&1 && [ -d "$hdrs/osfmk" ] ||
+	log "exporting the kernel's headers (xnu/xnu-build.sh exporthdrs)"
+	"$DARWIN_REDWOOD/xnu/xnu-build.sh" -j$JOBS exporthdrs > exporthdrs.log 2>&1 && [ -d "$hdrs/osfmk" ] ||
 		die "the kernel headers were not exported, see xnu-deps/exporthdrs.log"
 	if [ ! -f $lib/libfirehose_kernel.a ]; then
 		log "building libfirehose_kernel.a"
@@ -195,7 +249,7 @@ stage2() {
 		log "building libpthread_kext.a"
 		build/pthread/build.sh
 	fi
-	log "stage 2 done; now: ./xnu-build.sh -j$JOBS -k"
+	log "stage 2 done; now: ./xnu/xnu-build.sh -j$JOBS -k"
 }
 
 case "$1" in

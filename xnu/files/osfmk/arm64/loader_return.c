@@ -33,9 +33,9 @@
  * recent part (a ring); room is left for what is appended on the way out (the kernel message
  * buffer, a panic's text). loader_log_linearize() puts the pieces in order before returning.
  */
-#define LOADER_LOG_SIZE (1536 * 1024)
-#define LOADER_LOG_HEAD (256 * 1024)
-#define LOADER_LOG_RING (1024 * 1024)
+#define LOADER_LOG_SIZE (6656 * 1024)        /* y2s: an iOS boot with all its jobs says megabytes; the loader keeps 8 MB */
+#define LOADER_LOG_HEAD (1024 * 1024)
+#define LOADER_LOG_RING (5120 * 1024)
 
 #if defined(GENERIC_GIC_V3_IRQ)
 extern void gic_v3_irq_quiesce(void);
@@ -45,26 +45,35 @@ extern void gic_v3_irq_cpu_shutdown(void);
 void loader_log_putc(char c);
 void loader_return(void);
 extern void redwood_adreno_quiesce(void);
+extern void redwood_usb_gadget_quiesce(void);
+extern void redwood_ssp_quiesce(void);
+extern void redwood_tcs3407_quiesce(void);  /* bsd/dev/redwood_dwc3.c: the rest of the log out over USB, then the controller stopped */
+extern void redwood_mali_quiesce(void);
 extern void redwood_adreno_stop(void);
 extern void redwood_adreno_minute(void);
 extern void redwood_wifi_stop(void);
 extern void redwood_wifi_quiesce(void);
+extern void redwood_fb_quiesce(void);
 extern void redwood_adsp_stop(void);
 extern void redwood_adsp_quiesce(void);
 extern void redwood_ddr_quiesce(void);
 extern void redwood_haptic_quiesce(void);
 extern void redwood_torch_quiesce(void);
 extern void redwood_camera_quiesce(void);
+extern void redwood_exynos_sound_quiesce(void);
+extern void redwood_m2m_to_loader(void);
 extern void redwood_mic_quiesce(void);
 extern void redwood_ufs_quiesce(void);
 extern void redwood_var_save_on_return(void);   /* bsd/dev/redwood_ufs.c: the data volume into the flash */
-extern void MiniIOMobileFramebufferQuiesce(void);       /* iokit/Kernel/MiniIOMobileFramebuffer.cpp */
 void loader_checkpoint(uint64_t n);
 
 /* Also referenced from the early exception vector in start.s. */
 char     loader_log[LOADER_LOG_SIZE];
 uint32_t loader_log_len;
 static bool     loader_return_entered;
+/* why this run is handing back: the loader reads it (CTX_REASON) and acts on 3 by opening Log
+ * access instead of booting again. Set from user space by kern.redwood_menu. */
+static uint64_t loader_return_reason;
 
 /* One L1 table and one L2 table are enough to map a single 2 MB block. */
 static uint64_t loader_l1[512] __attribute__((aligned(4096)));
@@ -74,6 +83,7 @@ static uint32_t loader_log_ring_at;      /* where the next character goes in the
 static bool     loader_log_wrapped;
 static bool     loader_log_linear;       /* the pieces have been put in order: only appending from now on */
 static char     loader_log_scratch[LOADER_LOG_RING];
+uint64_t        loader_log_total;        /* characters ever put in the log (redwood_logd.c: a reader's place) */
 
 /*
  * Characters come from every processor, and from interrupt handlers on top of whatever was
@@ -84,6 +94,39 @@ static char     loader_log_scratch[LOADER_LOG_RING];
 static uint32_t loader_log_lock;
 
 static void loader_log_put_locked(char c);
+
+/*
+ * A second reader of every character the log gets, as it gets it: the USB gadget driver's (bsd/dev/redwood_dwc3.c,
+ * from Scion's hakios.dwc3.c), which streams the log to a host. Called under the lock, interrupts off: it only copies.
+ */
+static void (*volatile loader_log_tap)(char c);
+
+uint32_t loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len));
+
+/* install (or with NULL remove) the tap; history first gets the log's kept start, under the same lock */
+uint32_t
+loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len))
+{
+	uint64_t daif;
+	bool locked = false;
+	uint32_t len;
+
+	daif = __builtin_arm_rsr64("DAIF");
+	__builtin_arm_wsr("DAIFSet", DAIFSC_IRQF | DAIFSC_FIQF);
+	for (uint32_t tries = 0; !locked && tries < 10000000; tries++) {
+		locked = os_atomic_cmpxchg(&loader_log_lock, 0, 1, acquire);
+	}
+	len = loader_log_len;
+	if (history != NULL) {
+		history(loader_log, len < LOADER_LOG_HEAD || loader_log_linear || !loader_log_wrapped ? len : LOADER_LOG_HEAD);
+	}
+	loader_log_tap = tap;
+	if (locked) {
+		os_atomic_store(&loader_log_lock, 0, release);
+	}
+	__builtin_arm_wsr64("DAIF", daif);
+	return len;
+}
 
 void
 loader_log_putc(char c)
@@ -137,6 +180,12 @@ loader_log_line(const char *line)
 static void
 loader_log_put_locked(char c)
 {
+	void (*tap)(char) = loader_log_tap;
+
+	if (tap != NULL) {
+		tap(c);
+	}
+	loader_log_total++;
 	if (loader_log_linear || loader_log_len < LOADER_LOG_HEAD) {
 		if (loader_log_len < LOADER_LOG_SIZE) {
 			loader_log[loader_log_len++] = c;
@@ -153,11 +202,37 @@ loader_log_put_locked(char c)
 	}
 }
 
+/*
+ * The log so far in order, for a reader while the system runs (bsd/dev/redwood_logd.c): the head, then the
+ * ring from its oldest character -- copied, the log itself left as it is. Not under the lock: a line being
+ * written meanwhile may come out half. Returns the bytes copied (at most `cap`).
+ */
+size_t loader_log_snapshot(char *out, size_t cap);
+
+size_t
+loader_log_snapshot(char *out, size_t cap)
+{
+	size_t n = 0, head = loader_log_len < LOADER_LOG_HEAD || loader_log_linear ? loader_log_len : LOADER_LOG_HEAD;
+	uint32_t at = loader_log_ring_at;
+
+#define LOG_COPY(src, len) do { size_t l_ = (len); if (l_ > cap - n) { l_ = cap - n; } \
+	__builtin_memcpy(out + n, (src), l_); n += l_; } while (0)
+	LOG_COPY(loader_log, head);
+	if (!loader_log_linear && loader_log_len >= LOADER_LOG_HEAD) {
+		if (loader_log_wrapped) {
+			LOG_COPY(loader_log + LOADER_LOG_HEAD + at, LOADER_LOG_RING - at);
+		}
+		LOG_COPY(loader_log + LOADER_LOG_HEAD, at);
+	}
+#undef LOG_COPY
+	return n;
+}
+
 /* Oldest first: the head, a note about what was dropped, then the ring from its oldest character. */
 static void
 loader_log_linearize(void)
 {
-	static const char note[] = "\n\n[... the log between the first 256 KB and the last 1 MB was dropped ...]\n\n";
+	static const char note[] = "\n\n[... the log between the first 1 MB and the last 5 MB was dropped ...]\n\n";
 	uint32_t older = LOADER_LOG_RING - loader_log_ring_at, n = LOADER_LOG_HEAD;
 
 	if (loader_log_linear) {
@@ -199,9 +274,9 @@ struct loader_live {
 	volatile uint64_t stop;         /* the loader's to write: the host has asked for the run to end */
 	uint64_t magic2;                /* "XNULIVE2": what follows is there (a loader may meet an older kernel) */
 	const uint64_t *sound;          /* loader_sound: the same for a recording of the sound */
-	volatile uint64_t power;        /* LOADER_POWER_TAG | 1 off, 2 restart: how the system ended (loader_return_power()) */
+	uint64_t magic3;                /* XNULIVE3: geometry of the firmware channel on return */
+	uint64_t menu_width, menu_height;
 };
-#define LOADER_POWER_TAG        0x52574f5000000000ULL   /* the loader takes the low byte only with this above it */
 
 /*
  * A screen recording (the display driver makes one with boot-arg rec_secs): where it is, for the
@@ -216,16 +291,16 @@ struct loader_live loader_live = {
 	.log_wrapped = &loader_log_wrapped, .log_head = LOADER_LOG_HEAD, .log_ring = LOADER_LOG_RING,
 	.recording = loader_recording,
 	.magic2 = 0x324556494c554e58ULL, .sound = loader_sound,
+	.magic3 = 0x334556494c554e58ULL,
 };
 
-/*
- * How the system ended, for a loader that runs it without the computer: iOS turned off (the phone is
- * to be powered off) or restarted. Said just before the way back to the loader.
- */
+/* Called by framebuffer quiesce with interrupts off; memory only. */
+void loader_set_display_size(uint32_t width, uint32_t height);
 void
-loader_return_power(bool restart)
+loader_set_display_size(uint32_t width, uint32_t height)
 {
-	loader_live.power = LOADER_POWER_TAG | (restart ? 2 : 1);
+    loader_live.menu_width = width;
+    loader_live.menu_height = height;
 }
 
 /* Valid from the first instruction of C code: does not depend on gVirtBase/gPhysBase being set up. */
@@ -384,14 +459,18 @@ loader_return(void)
 #endif
 	redwood_ufs_quiesce();          /* this kernel's requests to the storage done, UEFI's list as it was, for the log */
 	redwood_adreno_quiesce();       /* the GPU block, if it was started, has tables in memory that is about to be reused */
+	redwood_mali_quiesce();         /* the S20+'s Mali powered off: its tables are in that memory too, and it kept the menu warm */
 	redwood_wifi_quiesce();         /* the Wi-Fi DSP, if it still runs (a panic), is not left to itself */
+	redwood_fb_quiesce();           /* the panel back on the firmware's framebuffer: the loader's menu shows */
 	redwood_adsp_quiesce();         /* nor the audio DSP */
 	redwood_ddr_quiesce();          /* and the vote for the memory's bandwidth taken away */
 	redwood_haptic_quiesce();       /* the vibration motor's chip back into reset, if it was let out */
 	redwood_torch_quiesce();        /* the flashlight off, if it was lit */
+	redwood_ssp_quiesce();          /* the sensor hub into standby (NSTDBY low) */
+	redwood_tcs3407_quiesce();      /* the rear light sensor's ALS off */
 	redwood_camera_quiesce();       /* the camera powered down, if it was powered up */
+	redwood_exynos_sound_quiesce(); /* the S20+'s amplifiers into reset and the audio DMA stopped: its ring is reused memory */
 	redwood_mic_quiesce();          /* (what the microphones' path did, said again: it happens in the log's middle) */
-	MiniIOMobileFramebufferQuiesce();       /* the panel back on the firmware's buffer, the one the loader draws on */
 	/*
 	 * A panic's text is first collected in the panic buffer and only later
 	 * flushed to the console; if the console itself is what failed, that
@@ -400,6 +479,7 @@ loader_return(void)
 	loader_log_linearize();
 	if (!loader_return_entered) {
 		loader_log_append_msgbuf();
+		redwood_m2m_to_loader();        /* mali2metal's last records, for a run that ends without a network */
 	}
 	if (!loader_return_entered && debug_buf_base != NULL && debug_buf_ptr > debug_buf_base &&
 	    (size_t)(debug_buf_ptr - debug_buf_base) < 256 * 1024) {
@@ -408,7 +488,20 @@ loader_return(void)
 			loader_log_putc(*c);
 		}
 	}
-	loader_jump(0, 0);
+	redwood_usb_gadget_quiesce();   /* last: the panic text above goes out over USB too, before the controller stops */
+	loader_jump(loader_return_reason, 0);
+}
+
+/*
+ * Hand back to the loader *and tell it why*: `reason' is the loader's own CTX_REASON code, passed
+ * as it is (kern.redwood_menu maps its values to these: 0 an ordinary return, 3 Log access,
+ * 4 Download Mode).
+ */
+void
+loader_return_asked(uint64_t reason)
+{
+	loader_return_reason = reason;
+	loader_return();
 }
 
 /* Bring-up aid: stop here if the loader asked for checkpoint n. */

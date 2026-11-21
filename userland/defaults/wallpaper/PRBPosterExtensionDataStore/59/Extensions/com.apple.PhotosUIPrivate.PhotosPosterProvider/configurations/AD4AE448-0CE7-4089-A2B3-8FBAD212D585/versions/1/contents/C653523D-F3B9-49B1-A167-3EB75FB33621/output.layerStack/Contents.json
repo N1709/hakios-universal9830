@@ -1,0 +1,59 @@
+{
+  "version" : 4,
+  "layers" : [
+    {
+      "frame" : {
+        "Width" : 1125,
+        "Height" : 2436,
+        "Y" : 0,
+        "X" : 0
+      },
+      "filename" : "layer_background.HEIC",
+      "zPosition" : 5,
+      "identifier" : "background"
+    }
+  ],
+  "properties" : {
+    "canvasSize" : {
+      "Width" : 1125,
+      "Height" : 2436
+    },
+    "parallaxDisabled" : false,
+    "depthEnabled" : false,
+    "clockAreaLuminance" : 0.4189453125,
+    "layout" : {
+      "clockIntersection" : 2,
+      "deviceResolution" : {
+        "Width" : 1125,
+        "Height" : 2436
+      },
+      "visibleFrame" : {
+        "Width" : 1125,
+        "Height" : 2436,
+        "Y" : 0,
+        "X" : 0
+      },
+      "timeFrame" : {
+        "Width" : 981,
+        "Height" : 210.99999999999997,
+        "Y" : 1836.9999999999998,
+        "X" : 72
+      },
+      "clockLayerOrder" : "ClockAboveForeground",
+      "inactiveFrame" : {
+        "Width" : 1125,
+        "Height" : 2436,
+        "Y" : 0,
+        "X" : 0
+      },
+      "imageSize" : {
+        "Width" : 1125,
+        "Height" : 2436
+      },
+      "parallaxPadding" : {
+        "Width" : 78,
+        "Height" : 192
+      }
+    }
+  }
+}

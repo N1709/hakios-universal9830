@@ -71,6 +71,7 @@ void redwood_gpu_stop(void);
 
 void RedwoodGPUStart(void);
 void RedwoodGPUStop(void);
+bool RedwoodMaliSurfaceDrawn(uint32_t fence, uint64_t milliseconds);
 void MiniIOMobileFramebufferShow(const uint8_t * pixels, uint32_t width, uint32_t height, uint32_t rowBytes);
 }
 
@@ -265,6 +266,8 @@ MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds)
 		IOLockLock(gGPULock);
 		done = !redwood_gpu_ready() || gpuWait(fence, milliseconds);
 		IOLockUnlock(gGPULock);
+	} else if (fence != 0) {
+		done = RedwoodMaliSurfaceDrawn(fence, milliseconds);     /* (the Exynos phone's Mali: RedwoodMali.cpp) */
 	}
 	return done;
 }

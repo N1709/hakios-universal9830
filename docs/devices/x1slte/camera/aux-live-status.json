@@ -1,0 +1,37 @@
+{
+  "date": "2026-11-15",
+  "source_baseline": "45820593",
+  "candidate_slot_sha256": "15d996b7e22abd719c79e3daa5b7a65ed64ac06a7601e56a4c45a5c1e4f747dd",
+  "kernel_installed": true,
+  "sensors": {
+    "2la": {
+      "model": "0x20ca",
+      "revision": "0xa202",
+      "native_mode_width": 4032,
+      "native_mode_height": 3024,
+      "frame_counter_changes": 11,
+      "stream_off_verified": true,
+      "cleanup_ok": true,
+      "raw_capture_verified": true,
+      "raw_width": 4032,
+      "raw_height": 3024,
+      "raw_stride": 5040,
+      "raw_guard_errors": 0,
+      "raw_dma_error": 0,
+      "usable_preview_verified": false,
+      "repeat_cleanup_bug": "FS/FE child W1C sources must be cleared; manual idle acknowledgement enabled lit repeat"
+    },
+    "gw2": {
+      "model": "0x0972",
+      "revision": "0xa300",
+      "cleanup_ok": true,
+      "streaming_verified": false,
+      "raw_capture_verified": false
+    }
+  },
+  "user_confirmed_front_main_and_repeat_passcode": true,
+  "first_host_keybag_read": 4,
+  "before_first_unlock_state_observed": false,
+  "camera_aux_lenses_exposed": false,
+  "session_camera_test_reboots_authorized": true
+}

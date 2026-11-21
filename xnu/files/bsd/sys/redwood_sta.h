@@ -27,6 +27,7 @@ struct redwood_sta_bss {
 	uint8_t ssid[32], ssid_length;
 	uint16_t frequency;                     /* MHz */
 	int16_t rssi;                           /* dBm */
+	int16_t noise;                          /* dBm, the radio's noise floor on its channel; 0: not known */
 	uint16_t beacon_interval;               /* in units of 1024 microseconds */
 	uint16_t capability;                    /* the beacon's capability field */
 	uint32_t age_ms;                        /* how long ago it was last heard */
@@ -52,12 +53,22 @@ struct redwood_sta_join {
 	uint8_t passphrase[64], passphrase_length;      /* ... or, if this is not empty, the passphrase itself */
 };
 
+/* An access point of our own (Personal Hotspot, wifid's HOST_AP_MODE; A, 2026-11-19). */
+struct redwood_sta_ap {
+	uint8_t ssid[32], ssid_length;
+	uint16_t channel;                       /* 0: the radio's choice */
+	uint8_t passphrase[64], passphrase_length;      /* empty: an open network ... */
+	uint8_t pmk[32];                        /* ... unless this, the key already made of passphrase and name, is given */
+	bool has_pmk;                           /* (wifid gives the PMK: key cipher 6) */
+};
+
 enum redwood_sta_phase { REDWOOD_STA_OFF, REDWOOD_STA_IDLE, REDWOOD_STA_SCANNING, REDWOOD_STA_JOINING, REDWOOD_STA_JOINED };
 
 struct redwood_sta_state {
 	enum redwood_sta_phase phase;
 	struct redwood_sta_bss bss;             /* the network joined or being joined */
 	int last_error;                         /* why the last join failed or the network was lost (an errno); 0: it was not */
+	bool ap;                                /* an access point of our own is up; bss is it (name, channel, our address) */
 };
 
 #define REDWOOD_STA_CHANNEL_PASSIVE     1u      /* the radio may only listen there */
@@ -79,6 +90,7 @@ struct redwood_sta_ops {
 	void (*heard)(void (*each)(const struct redwood_sta_bss *bss, void *context), void *context);   /* by the last scan */
 	int (*join)(const struct redwood_sta_join *what);
 	int (*leave)(void);
+	int (*ap)(const struct redwood_sta_ap *what);   /* an access point of our own; NULL: none (client mode again) */
 	void (*state)(struct redwood_sta_state *state);         /* on any thread; does not sleep */
 	unsigned (*channels)(struct redwood_sta_channel *channels, unsigned most);      /* what the radio may tune to */
 	uint8_t address[6];
@@ -91,6 +103,7 @@ enum redwood_sta_event {
 	REDWOOD_STA_JOIN_DONE,                  /* status: 0, or the join's errno */
 	REDWOOD_STA_LINK,                       /* status: 1 a network is joined, 0 it has been left when asked,
 	                                         * an errno: it was lost (the access point showed us the door) */
+	REDWOOD_STA_AP,                         /* status: 1 our access point is up, 0 it is down, an errno: it did not start */
 };
 
 #ifdef KERNEL
@@ -106,6 +119,7 @@ int      redwood_sta_ask_join(const struct redwood_sta_join *what);
 /* ... and joined again whenever the radio is turned on, until some other network is asked for */
 int      redwood_sta_ask_join_standing(const struct redwood_sta_join *what);
 int      redwood_sta_ask_leave(void);
+int      redwood_sta_ask_ap(const struct redwood_sta_ap *what);          /* NULL: stop it */
 bool     redwood_sta_busy(void);                                        /* something asked for is not over yet */
 bool     redwood_sta_powered(void);
 /* the `index`th access point the last scan heard: true, or false when there are not that many */
@@ -116,7 +130,9 @@ bool     redwood_sta_address(uint8_t *address);
 
 /* ---- the listener: bsd/dev/redwood_apple80211.c ---- */
 void     redwood_apple80211_event(enum redwood_sta_event event, int status);
-void     redwood_apple80211_summary(void);                              /* what was asked in this run, to the log */
+void     redwood_apple80211_summary(void);
+void     redwood_apple80211_station(bool joined, const uint8_t *mac);      /* our access point: a device came / went */
+void     redwood_apple80211_stations_clear(void);                       /* ... the access point stopped */                              /* what was asked in this run, to the log */
 #endif
 
 #endif

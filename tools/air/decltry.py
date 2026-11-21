@@ -6,7 +6,7 @@ thing that stops it. A module refused for its interface never reaches its
 arithmetic, so a library can call a hundred operations and the report name none
 of them -- and that is exactly the shape of RE4's shaders, where 7 620 of 7 879
 modules stop at `air.indirect_buffer` before an intrinsic is ever translated
-(docs/air.md section 11). The list of operations such a library needs is then
+(docs/dev/air.md section 11). The list of operations such a library needs is then
 unmeasured: `corpus.py` knows what it *calls*, not what of that works.
 
 So each declaration is put in a shader of its own, called on constants, and the

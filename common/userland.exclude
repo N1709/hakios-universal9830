@@ -16,8 +16,8 @@ __pycache__/
 /prebuilt/*
 !/prebuilt/userland/
 /docs/*
-!/docs/air.md
-!/docs/air-report.md
+!/docs/dev/air.md
+!/docs/dev/air-report.md
 /tools/*
 !/tools/apfs/
 !/tools/air/

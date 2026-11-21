@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Store / Apple account relay at every boot (B, 2026-11-19): /var/jb/usr/bin/redwood-account-boot.sh (from the
+     apple-account work) re-applies its injection rules. It lived in /var/jb/Library/LaunchDaemons, which our launchd
+     never reads, so it ran only when started by hand ("MID is invalid" after every reboot). Absent script: nothing. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.redwood.account-store</string>
+  <key>ProgramArguments</key><array>
+    <string>/var/jb/bin/sh</string>
+    <string>-c</string>
+    <string>[ -x /var/jb/usr/bin/redwood-account-boot.sh ] &amp;&amp; exec /var/jb/bin/sh /var/jb/usr/bin/redwood-account-boot.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/var/mobile/Library/RedwoodAppleAccountLab/boot.log</string>
+  <key>StandardErrorPath</key><string>/var/mobile/Library/RedwoodAppleAccountLab/boot.log</string>
+</dict></plist>

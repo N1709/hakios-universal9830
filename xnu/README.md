@@ -23,11 +23,11 @@ xnu/apply.sh             # ~6 s: tag xnu-8796.121.2 of apple-oss-distributions/x
 xnu-deps/setup.sh        # ~30 s: dependency sources, mig/unifdef/tcsh, the SDK overlay, two libraries
 tools/mk-ath11k.sh       # optional, once: the phone's Wi-Fi driver (fetches Linux and FreeBSD sources)
 tools/mk-wlfw.sh         #   ... and its firmware-service message tables
-./xnu-build.sh -j8 -k    # ~45 s on 12 threads
+./xnu/xnu-build.sh -j8 -k    # ~45 s on 12 threads
 ```
 
 Result: `xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837`.
-`./xl run` and `qemu/run-ios.sh` take the kernel from there by themselves (and from `prebuilt/` only when it is not there).
+`./xnu/xl run` and `qemu/run-ios.sh` take the kernel from there by themselves (and from `prebuilt/` only when it is not there).
 `common/build.sh <device>` runs all of these steps.
 
 Checked: in an empty directory holding only the repository, these commands produced a kernel of the same

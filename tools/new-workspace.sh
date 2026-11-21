@@ -12,7 +12,7 @@
 # (refs/redwood/baseline in the copy's kernel tree): tools/kernel-delta.sh, run in the workspace,
 # prints what was changed in the kernel since. Files below ios165/rootfs, ios165/cryptex and
 # ios165/cryptex-app are hard links to this copy's: replace them, never edit them in place.
-# The phone is not part of a workspace: there is one, and ./xl belongs to the main copy.
+# The phone is not part of a workspace: there is one, and ./xnu/xl belongs to the main copy.
 set -e
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 NAME=${1:?usage: new-workspace.sh NAME INSTANCE [DIR]}
@@ -75,7 +75,7 @@ echo "$INSTANCE" > qemu/instance
 mkdir -p logs
 
 echo "new-workspace.sh: building the kernel in $WS"
-./xnu-build.sh -j"$(nproc)" -k > xnu-build.log 2>&1 || true
+./xnu/xnu-build.sh -j"$(nproc)" -k > xnu-build.log 2>&1 || true
 [ -f $K/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837 ] ||
 	{ echo "new-workspace.sh: the kernel did not build, see $WS/xnu-build.log"; exit 1; }
 echo "new-workspace.sh: $WS is ready (branch $NAME, QEMU instance $INSTANCE)"

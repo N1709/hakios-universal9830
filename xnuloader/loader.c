@@ -10,12 +10,26 @@
  *   - exits boot services, turns the MMU off and jumps to the kernel entry
  */
 #include "efi.h"
+#include "s20_memory.h"
+#include "s20_efi_memory.h"
+#ifdef CELLULAR_SPI_LOOPBACK
+#include "../tools/cellular/s5123-spi.h"
+#endif
+#ifdef CELLULAR_CP_GPIO_PREFLIGHT
+#include "../tools/cellular/s5123-gpio-fields.h"
+#endif
 #include "identity.h"         /* who iOS shall think we are: from the iPhone's own device tree (mkidentity.py) */
 
 /* ------------------------------------------------------------------------ */
 /* Fixed conventions shared with the boot shim, the packer and the kernel   */
 
-#define PAYLOAD_BASE        0xF0000000ULL
+/*
+ * The XNUP payload is embedded in the unused tail of the UEFI FD image itself,
+ * so the stock boot shim delivers it together with the FD (no custom shim, and
+ * no image_size mismatch for the bootloader).
+ */
+#define PAYLOAD_BASE        0xE8100000ULL         /* FD base 0xE8000000 + 0x100000 */
+#define PAYLOAD_MAX_SIZE    0x00080000ULL         /* 512 KB, inside the 2 MB FD region */
 #define PAYLOAD_MAGIC       0x50554E58u /* "XNUP" */
 
 struct payload_header { uint32_t magic; uint32_t size; };
@@ -34,12 +48,30 @@ struct payload_entry { char name[16]; uint32_t size; uint32_t reserved; };
 #define RESIDENT_RD_RESERVE 0x30000000ULL         /* RAM that must remain for the kernel itself */
 #define PAGE_SIZE_MAX       0x4000ULL
 
-#define LOG_PARTITION       u"logdump"
+/*
+ * x1slte (SM-G980F): the log goes into super's free tail, not into recovery. sboot hung at the Samsung logo on cold
+ * starts after runs had written their log into recovery (twice, 2026-11-05; a fresh flash of recovery cured it), so
+ * nothing at runtime writes recovery any more. -DLOG_IN_RECOVERY=1 brings back y2s's place.
+ */
+#ifndef SUPER_TAIL_START
+#define SUPER_TAIL_START 0x1E8B04000ULL
+#endif
+#if LOG_IN_RECOVERY
+#define LOG_PARTITION       u"recovery"   /* y2s has no logdump: park the log in the recovery image */
+#define LOG_PARTITION_ASCII "recovery"
+#define LOG_OFFSET          0x01000000ULL /* 16 MB into recovery: clear of the UEFI image (0) and the kernel (32 MB) */
+#else
+#define LOG_PARTITION       u"super"
+#define LOG_PARTITION_ASCII "super"
+#define LOG_OFFSET          SUPER_TAIL_START /* super's free tail (1.2 GB past its last logical partition): 8 MB */
+#endif
 #define CHECKPOINT_SELFTEST 999
 #define PANIC_LOG_SIZE      0x80000u
 #define NVRAM_BANK_SIZE     0x2000u
-#define PANIC_LOG_BASE      (PAYLOAD_BASE + PAYLOAD_MAX_SIZE - 0x100000ULL)
-#define PAYLOAD_MAX_SIZE    0x04000000ULL         /* RAM reserved for the payload in the UEFI memory map */
+#define PANIC_LOG_BASE      (PAYLOAD_BASE + PAYLOAD_MAX_SIZE)
+/* Allocated staging; 0xf0000000 belongs to the S20 modem IPC, not downloads. */
+static uint64_t download_base;
+#define DOWNLOAD_MAX_SIZE   0x01000000ULL
 
 /* ------------------------------------------------------------------------ */
 /* XNU structures (pexpert/pexpert/arm64/boot.h, mach-o/loader.h)           */
@@ -168,6 +200,12 @@ str_eq(const char *a, const char *b)
  * the screen is left to the kernel (and to "oem screenshot").
  */
 static int screen_quiet;
+/*
+ * y2s: once the kernel has run, the firmware's console is not to be trusted until the log is in the
+ * partition -- its state has been found corrupted after a run, and the first character printed then
+ * took the loader down with the log unsaved (24 Oct, twice). Lines go to the log buffer only.
+ */
+static int console_suspect;
 
 static void
 put_char(char c)
@@ -177,7 +215,7 @@ put_char(char c)
 	if (log_len < sizeof(log_buf) - 1) {
 		log_buf[log_len++] = c;
 	}
-	if (ST->con_out != NULL && !screen_quiet) {
+	if (ST->con_out != NULL && !screen_quiet && !console_suspect) {
 		if (c == '\n') {
 			w[0] = '\r', w[1] = '\n';
 		} else {
@@ -226,6 +264,20 @@ print(const char *fmt, ...)
 #define READ_SYSREG(name) ({ uint64_t _v; __asm__ volatile ("mrs %0, " #name : "=r" (_v)); _v; })
 
 /*
+ * CNTFRQ_EL0 is read-only from EL1 (an msr traps), and some Samsung firmware
+ * leaves it at 0. The Exynos 990 arch timer runs at 26 MHz, so fall back to
+ * that: otherwise every timeout below is a division by zero and the device
+ * tree would advertise timebase-frequency = 0 to XNU.
+ */
+static uint64_t
+timer_freq(void)
+{
+	uint64_t f;
+	__asm__ volatile ("mrs %0, CNTFRQ_EL0" : "=r" (f));
+	return f != 0 ? f : 26000000ULL;
+}
+
+/*
  * Write back and drop cached copies of a range. Required for memory the
  * kernel will touch with the MMU (and so the data cache) off: its early code
  * builds page tables that way, and a stale cached copy of those pages would
@@ -255,11 +307,10 @@ clean_dcache(uint64_t start, uint64_t end)
 /* Log persistence: raw write to a GPT partition (phone only)               */
 
 static efi_block_io *
-find_log_partition(void)
+find_partition(const char16 *want)
 {
 	static const efi_guid part_guid = EFI_PARTITION_INFO_GUID;
 	static const efi_guid blk_guid = EFI_BLOCK_IO_GUID;
-	static const char16 want[] = LOG_PARTITION;
 	efi_handle *handles;
 	uint64_t count;
 
@@ -274,9 +325,12 @@ find_log_partition(void)
 		if (EFI_ERROR(BS->handle_protocol(handles[i], &part_guid, (void **)&info)) || info->type != 2) {
 			continue;
 		}
-		for (unsigned k = 0; k < sizeof(want) / sizeof(want[0]); k++) {
+		for (unsigned k = 0; k < 36; k++) {
 			if (info->name[k] != want[k]) {
 				match = 0;
+				break;
+			}
+			if (want[k] == 0) {
 				break;
 			}
 		}
@@ -287,12 +341,32 @@ find_log_partition(void)
 	return NULL;
 }
 
+/* ASCII (payload entry) to the UTF-16 name a GPT partition carries. */
+static efi_block_io *
+find_partition_ascii(const char *name)
+{
+	char16 buf[37];
+	unsigned i;
+
+	for (i = 0; i < 36 && name[i] != 0; i++) {
+		buf[i] = (char16)(uint8_t)name[i];
+	}
+	buf[i] = 0;
+	return find_partition(buf);
+}
+
+static efi_block_io *
+find_log_partition(void)
+{
+	return find_partition(LOG_PARTITION);
+}
+
 /*
  * The "staged" buffer holds the loader log followed by the kernel log of the
  * last run. It is what gets written to the log partition and what the host
  * fetches over USB (fastboot get_staged).
  */
-static char out_buf[2 * 1024 * 1024];
+static char out_buf[8 * 1024 * 1024];      /* recovery+16 MB up to the kernel at +32 MB has room for it */
 /* the storage's reads for the kernel land here (block_poll); also where the log is read back */
 #define BLOCK_BUFFER_SIZE  (4u << 20)
 static uint8_t block_buffer[BLOCK_BUFFER_SIZE] __attribute__((aligned(0x2000)));
@@ -327,25 +401,57 @@ static int hc_log_skips;                /* logs not written this run (said twice
 static void hc_print_state(const char *when);
 static void hc_take_back(const char *when);
 
+#define LOG_SCREEN_TAIL     (16 * 1024)   /* bytes of the kernel log shown on the screen after a run */
+
+static int store_logs(efi_block_io *bio, const char *klog, uint64_t klog_len);
+
 static void
 write_logs(const char *klog, uint64_t klog_len)
 {
 	efi_block_io *bio = find_log_partition();
 
 	compose_logs(klog, klog_len);
-	if (bio == NULL) {
-		/* No log partition (QEMU): echo the returned kernel log on the console instead. */
-		if (klog != NULL) {
-			print("\n== KERNEL LOG ==\n");
-			for (uint64_t i = 0; i < klog_len; i++) {
-				put_char(klog[i]);
-			}
-			print("\n== END OF LOG ==\n");
+	/*
+	 * Into the partition first, on the screen after: printing a whole iOS boot log through the
+	 * firmware's console takes minutes on the phone's 1440 x 3200 panel, and a reset during that
+	 * used to lose the log.
+	 */
+	int stored = store_logs(bio, klog, klog_len);
+
+	if (klog != NULL) {
+		console_suspect = 0;    /* the kernel's log is safe (or cannot be made so): the screen may have it now */
+	}
+
+	if (klog != NULL) {
+		/*
+		 * Show the log on a clean screen: the kernel draws its own console straight into the
+		 * framebuffer (with no font of ours), so the firmware's console would otherwise print
+		 * over the mess it leaves behind. Only its end: the whole of it is in the partition.
+		 */
+		uint64_t from = klog_len > LOG_SCREEN_TAIL ? klog_len - LOG_SCREEN_TAIL : 0;
+
+		if (ST->con_out != NULL && ST->con_out->clear_screen != NULL) {
+			ST->con_out->clear_screen(ST->con_out);
 		}
-		return;
+		print("== KERNEL LOG (last %d of %d bytes) ==\n", klog_len - from, klog_len);
+		for (uint64_t i = from; i < klog_len; i++) {
+			put_char(klog[i]);
+		}
+		print("\n== END OF LOG ==\n");
+		print(stored ? "log: saved to " LOG_PARTITION_ASCII "+%x before it was shown: the phone may be reset now\n" :
+		    "log: NOT SAVED to " LOG_PARTITION_ASCII "+%x (see above): only this screen has it\n", LOG_OFFSET);
+	}
+}
+
+static int
+store_logs(efi_block_io *bio, const char *klog, uint64_t klog_len)
+{
+	if (bio == NULL) {
+		return 0;
 	}
 	uint64_t bs = bio->media->block_size;
 	uint64_t len = (staged_len + 1 + bs - 1) / bs * bs;
+	uint64_t lba = bs != 0 ? LOG_OFFSET / bs : 0;
 	efi_status ws, rs = 0;
 	int same = 0;
 
@@ -353,12 +459,12 @@ write_logs(const char *klog, uint64_t klog_len)
 	if (!hc_list_is_uefis()) {
 		if (hc_log_skips++ < 2) {
 			hc_print_state("log not written");
-			print("log: NOT WRITTEN to logdump: UEFI's transfer list is not the one in the controller\n");
+			print("log: NOT WRITTEN to the log partition: UEFI's transfer list is not the one in the controller\n");
 		}
 		compose_logs(klog, klog_len);
-		return;
+		return 0;
 	}
-	ws = bio->write_blocks(bio, bio->media->media_id, 0, len, out_buf);
+	ws = bio->write_blocks(bio, bio->media->media_id, lba, len, out_buf);
 
 	if (!EFI_ERROR(ws)) {
 		bio->flush_blocks(bio);
@@ -368,13 +474,14 @@ write_logs(const char *klog, uint64_t klog_len)
 		 * the copy the host fetches over USB, not into the partition, which already has the rest.
 		 */
 		if (len <= sizeof(block_buffer)) {
-			rs = bio->read_blocks(bio, bio->media->media_id, 0, len, block_buffer);
+			rs = bio->read_blocks(bio, bio->media->media_id, lba, len, block_buffer);
 			same = !EFI_ERROR(rs) && memcmp(block_buffer, out_buf, len) == 0;
 		}
 	}
-	print("log: %d bytes written to logdump (%x), read back %s (%x)\n", len, ws,
+	print("log: %d bytes written to " LOG_PARTITION_ASCII "+%x (%x), read back %s (%x)\n", len, LOG_OFFSET, ws,
 	    EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT", rs);
 	compose_logs(klog, klog_len);
+	return !EFI_ERROR(ws);
 }
 
 static void
@@ -468,6 +575,13 @@ dt_prop_padded(struct dt_writer *w, const char *name, const char *value, uint32_
  * what the framebuffer is: sRGB.
  */
 static int gamut_p3;    /* boot-arg gamut=p3 (a test): the iPhone's own "P3" left in place */
+/*
+ * boot-arg island=1: the iPhone 14 Pro's "artwork-device-subtype" (2556) in place of the iPhone X's
+ * (2436). MobileGestalt's ArtworkDeviceSubType comes from it, and by it SpringBoard switches on its own
+ * Dynamic Island (SystemAperture, the "Pill" status bar, the sensor-region layout), all of which is in
+ * the iPhone X's iOS 16.5 already; the S20's camera hole sits top centre, under the pill.
+ */
+static int island;
 
 static void
 dt_identity(struct dt_writer *w, const struct identity_prop *props, uint32_t count, const unsigned char *data)
@@ -475,6 +589,11 @@ dt_identity(struct dt_writer *w, const struct identity_prop *props, uint32_t cou
 	for (uint32_t i = 0; i < count; i++) {
 		if (str_eq(props[i].name, "artwork-display-gamut") && !gamut_p3) {
 			dt_prop(w, props[i].name, "sRGB", 5);
+			continue;
+		}
+		if (str_eq(props[i].name, "artwork-device-subtype") && island) {
+			static const uint32_t island_subtype = 2556;
+			dt_prop(w, props[i].name, &island_subtype, sizeof(island_subtype));
 			continue;
 		}
 		dt_prop(w, props[i].name, data + props[i].offset, props[i].length);
@@ -516,23 +635,53 @@ dt_end(struct dt_writer *w)
 struct platform {
 	const char *name;
 	uint64_t io_base, io_size;       /* one window covering the SoC peripherals */
-	uint64_t gic_dist, gic_redist;   /* GICv3 */
+	uint64_t gic_dist, gic_redist;   /* GICv3: distributor/redistributor; GICv2: distributor/CPU interface */
 	uint64_t uart;                   /* PL011, 0 if none */
 	int psci_hvc;                    /* the firmware's power interface is called with HVC, not SMC */
 	int log_other_cpu;               /* keep notes in the log partition while a kernel starts on another core */
 	int cores;                       /* at most this many processor cores, numbered from 0 ... */
-	int core_shift;                  /* ... in this bit of MPIDR: the phone numbers them in the second affinity field */
+	int core_shift;                  /* ... in this bit of MPIDR, when mpidrs is not given (Qualcomm) */
+	const uint64_t *mpidrs;          /* or the MPIDR of each core, by index (Exynos: A55 0-3, A76 4-5, M5 0x100/0x101) */
+	int gic_v2;                      /* the interrupt controller is a GICv2 (GIC-400), not a GICv3 */
 	uint32_t timeout_scale;          /* a kernel on several cores gets this much longer to wait for a lock, 0: as it is */
-	uint32_t small_cores;            /* a bit for each of the slower cores, by number: "small-core" in the device tree */
+	uint32_t small_cores;            /* a bit for each of the slower cores, by core number: "small-core" in the device tree */
 	uint64_t fb_base;                /* the framebuffer the firmware reports (GOP): it tells this device apart */
-	/* the port's own partition "darwin" on logical unit 0, the one a write may reach (block_is_darwin): 0 for none */
-	uint64_t darwin_first, darwin_last;      /* its first and last LBA, as the GPT has them */
-	efi_guid darwin_unique;                  /* its unique GUID */
+	int watch_quietly;               /* bootcpu=N: no UEFI code on this core while the kernel runs (see run_on_other_cpu) */
 };
+
+/*
+ * The MPIDR of a core index, and the core index of an MPIDR. Qualcomm numbers its cores in the
+ * second affinity field (core << 8); some SoCs (Exynos 990) put several cores in one cluster and
+ * one in another, which no single shift expresses -- those give an explicit table (mpidrs).
+ */
+static uint64_t
+plat_mpidr_of(const struct platform *p, int core)
+{
+	return p->mpidrs ? p->mpidrs[core] : (uint64_t)core << p->core_shift;
+}
+
+static int
+plat_core_of(const struct platform *p, uint64_t mpidr)
+{
+	if (p->mpidrs) {
+		for (int i = 0; i < p->cores; i++) {
+			if (p->mpidrs[i] == mpidr) {
+				return i;
+			}
+		}
+		return -1;
+	}
+	return (int)(mpidr >> p->core_shift);
+}
 
 static const struct platform platform_qemu_virt = {
 	.name = "qemu-virt", .io_base = 0x08000000, .io_size = 0x08000000,
+#ifdef GIC_V2
+	/* -M virt,gic-version=2: a GIC-400 (GICv2), distributor at 0x08000000, CPU interface at 0x08010000 */
+	.gic_dist = 0x08000000, .gic_redist = 0x08010000, .gic_v2 = 1, .uart = 0x09000000, .psci_hvc = 1,
+#else
 	.gic_dist = 0x08000000, .gic_redist = 0x080A0000, .uart = 0x09000000, .psci_hvc = 1,
+#endif
 	.cores = 8, .core_shift = 0,
 	/*
 	 * QEMU's emulated cores stop each other all the time (every flush of a page from all the
@@ -554,40 +703,30 @@ static const struct platform platform_redwood = {
 	 */
 	.small_cores = 0x0f,
 	.fb_base = 0xE1000000,
-	.darwin_first = 25374720, .darwin_last = 30617594,
-	.darwin_unique = { 0xfd6854ad, 0x24aa, 0x4fc3, { 0x94, 0xfe, 0x29, 0x01, 0x16, 0x85, 0x8d, 0x68 } },
 };
 
-static const struct platform platform_y2q = {
-	/* Galaxy S20+ 5G (SM8250): the same peripheral window and GIC as redwood, from its device tree. */
-	.name = "y2q", .io_base = 0x00400000, .io_size = 0x3FC00000,
-	.gic_dist = 0x17A00000, .gic_redist = 0x17A60000, .uart = 0, .log_other_cpu = 1,
-	.cores = 8, .core_shift = 8,
-	/* Cores 0-3 are Cortex-A55s (Kryo 585 Silver), 4-6 A77s and 7 the prime A77 (capacity 0x766 vs 0x400). */
+/*
+ * Exynos 990 (Galaxy S20+ 5G): 4 Cortex-A55 in one cluster, 2 Cortex-A76 in the next, and 2
+ * Mongoose M5 in the third -- the MPIDRs are not core << 8, so they are given outright.
+ */
+static const uint64_t platform_y2s_mpidrs[8] = { 0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x100, 0x101 };
+
+static const struct platform platform_y2s = {
+	/* peripherals span 0x02000000 (IRAM) .. 0x1B000000 (DECON/clock); io_base must be non-zero. */
+	.name = "y2s", .io_base = 0x02000000, .io_size = 0x19000000,
+	/* GICv2 (GIC-400): distributor and CPU interface (see osfmk/arm64/gic_v2_irq.c). */
+	.gic_dist = 0x10101000, .gic_redist = 0x10102000, .gic_v2 = 1, .uart = 0, .log_other_cpu = 1,
+	.cores = 8, .mpidrs = platform_y2s_mpidrs,
+	/* cores 0-3 are the Cortex-A55s (the little cluster). */
 	.small_cores = 0x0f,
-	.fb_base = 0x9C000000,           /* the UEFI's "Display Reserved" (cont_splash_region) */
-	/* sda38, 128 GiB at the end of LUN 0, made out of userdata's end (y2q-dump/pre-repartition) */
-	.darwin_first = 28904192, .darwin_last = 62458874,
-	.darwin_unique = { 0xed95d4da, 0xc7dc, 0x4d4a, { 0xa8, 0x74, 0x6a, 0xc0, 0x97, 0x8e, 0xb3, 0x85 } },
-};
-
-/* The name the kernel sees in /arm-io's device_type. prebuilt/mach.* only knows "y2q" (touch, display, battery, GPU are
- * all gated on it); a kernel rebuilt from this tree knows "z3q" too: build the loader with -DZ3Q_NAME='"z3q"' then. */
-#ifndef Z3Q_NAME
-#define Z3Q_NAME "y2q"
-#endif
-static const struct platform platform_z3q = {
-	/* Galaxy S20 Ultra 5G (SM-G988N, SM8250): same GIC, peripheral window and cont_splash_region as the y2q (checked
-	 * against both device trees). The framebuffer base is therefore NOT enough to tell y2q and z3q apart: build the
-	 * loader for one of them (xnuloader/build.sh, LOADER_TARGET=z3q). */
-	.name = Z3Q_NAME, .io_base = 0x00400000, .io_size = 0x3FC00000,
-	.gic_dist = 0x17A00000, .gic_redist = 0x17A60000, .uart = 0, .log_other_cpu = 1,
-	.cores = 8, .core_shift = 8,
-	.small_cores = 0x0f,             /* cpu@0-300 capacity 0x1c0 (A55), cpu@400-600 0x3ff, cpu@700 0x400 */
-	.fb_base = 0x9C000000,           /* cont_splash_region@9c000000, 0x2300000 -- same as y2q */
-	/* sda38, 128 GiB at the end of LUN 0, carved off userdata's end (tools/userdata-carve.py, G988N's own GPT) */
-	.darwin_first = 28904448, .darwin_last = 62458874,
-	.darwin_unique = { 0x489c5013, 0xe662, 0x4e33, { 0xab, 0xe1, 0x51, 0x6b, 0x1a, 0xea, 0xe9, 0x07 } },
+	/* the UEFI's Display Reserved window (see the x1s MemoryMapLib). VERIFY: the runtime "display ... at" line. */
+	.fb_base = 0xF1000000,
+	/*
+	 * Mu-Silicium's DXE core, left to take its timer interrupts on core 0 while the kernel started
+	 * on core 0x100, jumped through a corrupted event ("evnt" as the PC, 24 Oct). Nothing of it is
+	 * needed meanwhile on this phone (no watchdog, charger or USB here), so it is not run at all.
+	 */
+	.watch_quietly = 1,
 };
 
 /*
@@ -597,11 +736,7 @@ static const struct platform platform_z3q = {
  */
 static const struct platform *const platforms[] = {
 	&platform_redwood,
-#ifdef LOADER_TARGET_Z3Q
-	&platform_z3q,
-#else
-	&platform_y2q,
-#endif
+	&platform_y2s,
 };
 
 /* ------------------------------------------------------------------------ */
@@ -612,18 +747,6 @@ reboot(void)
 	hc_take_back("before the reset");
 	flush_log();
 	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
-	for (;;) {
-	}
-}
-
-/* The phone off, as the firmware turns it off (its ResetSystem: the PMIC lets go of the power). */
-static void __attribute__((noreturn))
-power_off(void)
-{
-	hc_take_back("before powering off");
-	print("the kernel asked for the phone to be turned off: off\n");
-	flush_log();
-	ST->rt->reset_system(2 /* EfiResetShutdown */, 0, 0, NULL);
 	for (;;) {
 	}
 }
@@ -651,6 +774,10 @@ enum {
 	CTX_ICC_PMR, CTX_ICC_IGRPEN1, CTX_ICC_BPR1, CTX_COUNT
 };
 uint64_t loader_ctx[CTX_COUNT];
+
+/* set when the kernel hands back asking for Log access (CTX_REASON 3, kern.redwood_menu) */
+static int y2s_want_log_access;
+static int y2s_want_download;
 int loader_save_ctx(void);
 void loader_return_stub(void);
 
@@ -682,10 +809,13 @@ __asm__ (
         "  mrs x9, mdscr_el1\n     str x9, [x10, #320]\n"
         "  mrs x9, s3_3_c4_c4_0\n          str x9, [x10, #328]\n"
         "  mrs x9, s3_3_c4_c4_1\n          str x9, [x10, #336]\n"
-        /* GICv3 CPU interface: the kernel reprograms it for its own interrupts */
+        /* GICv3 CPU interface: the kernel reprograms it for its own interrupts.
+         * A GICv2 (GIC-400) has no ICC_* system registers: reading them traps. */
+#ifndef GIC_V2
         "  mrs x9, icc_pmr_el1\n     str x9, [x10, #344]\n"
         "  mrs x9, icc_igrpen1_el1\n str x9, [x10, #352]\n"
         "  mrs x9, icc_bpr1_el1\n    str x9, [x10, #360]\n"
+#endif
         "  mrs x9, spsel\n"
         "  cbz x9, 1f\n"                  /* SP_EL0 is only accessible while running on SP_EL1 */
         "  mrs x9, sp_el0\n        str x9, [x10, #304]\n"
@@ -742,9 +872,11 @@ __asm__ (
         "  ldr x9, [x10, #296]\n msr tpidrro_el0, x9\n"
         "  ldr x9, [x10, #312]\n msr contextidr_el1, x9\n"
         "  ldr x9, [x10, #320]\n msr mdscr_el1, x9\n"
+#ifndef GIC_V2
         "  ldr x9, [x10, #344]\n msr icc_pmr_el1, x9\n"
         "  ldr x9, [x10, #360]\n msr icc_bpr1_el1, x9\n"
         "  ldr x9, [x10, #352]\n msr icc_igrpen1_el1, x9\n"
+#endif
         "  ldr x9, [x10, #328]\n msr s3_3_c4_c4_0, x9\n"
         "  ldr x9, [x10, #336]\n msr s3_3_c4_c4_1, x9\n"
         "  ldr x9, [x10, #104]\n msr cntkctl_el1, x9\n"
@@ -816,9 +948,27 @@ jump_to_kernel(uint64_t entry, uint64_t boot_args_pa)
 #define PSCI_NOT_SUPPORTED (-1)
 
 /* each alone in a cache line: one core reads them with its caches off */
-static struct {
+struct {
 	uint64_t entry, boot_args;
 } other_cpu_start __attribute__((aligned(64)));
+/*
+ * The kernel's own CPU_ON (XNU psci_smp.c) goes through kernel_cpu_trampoline, here below 4 GB:
+ * Samsung's firmware (Exynos 990) starts a core at the address it is given only if that address
+ * fits in 32 bits, and it does not hand the core its context_id in x0. The kernel, which is far
+ * above 4 GB, writes its reset vector and the core's id into kernel_cpu_slot before each CPU_ON
+ * (it starts its cores one at a time); the device tree's /chosen says where both are.
+ */
+void kernel_cpu_trampoline(void);
+extern uint64_t kernel_cpu_slot[2];
+/*
+ * ... and kernel_cpu_resume for a core coming back from PSCI CPU_SUSPEND (a power-down idle: XNU's
+ * redwood_cpuidle.c). Any core may wake at any time, so one shared slot cannot say which it is; and its
+ * MPIDR alone is ambiguous on this SoC (A55 #1 masks to the id M5 #0 is registered under). The kernel fills
+ * kernel_cpu_resume_data: [0] its reset vector, then up to eight pairs { MPIDR & 0xffffff, phys id }; the
+ * trampoline finds its own MPIDR there and enters the kernel with that phys id in x0, as kernel_cpu_trampoline.
+ */
+void kernel_cpu_resume(void);
+extern uint64_t kernel_cpu_resume_data[17];
 volatile uint64_t other_cpu_stage __attribute__((aligned(64)));  /* 1: that core has reached other_cpu_entry */
 volatile uint64_t other_cpu_done __attribute__((aligned(64)));   /* 1: the kernel is back (other_cpu_return_stub) */
 uint64_t psci_by_hvc __attribute__((aligned(64)));
@@ -829,7 +979,7 @@ __asm__ (
         ".text\n"
         ".balign 64\n"
         ".globl other_cpu_entry\n"
-        "other_cpu_entry:\n"                    /* x0 = &other_cpu_start; MMU and caches are off */
+        "other_cpu_entry:\n"                    /* MMU and caches are off; x0 is NOT reliable (Samsung) */
         "  msr daifset, #0xf\n"
         /* until the kernel has vectors of its own, an exception must not go nowhere */
         "  adrp x9, other_cpu_vectors\n"
@@ -851,9 +1001,46 @@ __asm__ (
         "  add  x9, x9, :lo12:other_cpu_stage\n"
         "  mov x10, #1\n"
         "  str x10, [x9]\n"
+        "  adrp x0, other_cpu_start\n"
+        "  add  x0, x0, :lo12:other_cpu_start\n"
         "  ldp x9, x10, [x0]\n"
         "  mov x0, x10\n"
         "  br x9\n"
+        ".balign 64\n"
+        ".globl kernel_cpu_trampoline\n"
+        "kernel_cpu_trampoline:\n"             /* MMU off: x0 <- the core's id, then its 64-bit entry */
+        "  adr x9, kernel_cpu_slot\n"
+        "  ldp x10, x0, [x9]\n"
+        "  br x10\n"
+        ".balign 64\n"
+        ".globl kernel_cpu_slot\n"
+        "kernel_cpu_slot:\n"
+        "  .quad 0, 0\n"
+        ".balign 64\n"
+        ".globl kernel_cpu_resume\n"
+        "kernel_cpu_resume:\n"                /* MMU off: find this core in the table by its MPIDR */
+        "  mrs x11, mpidr_el1\n"
+        "  and x11, x11, #0xffffff\n"
+        "  adr x9, kernel_cpu_resume_data\n"
+        "  ldr x12, [x9], #8\n"               /* the kernel's reset vector */
+        "  mov x13, #8\n"
+        "1:\n"
+        "  ldp x10, x0, [x9], #16\n"
+        "  cmp x10, x11\n"
+        "  b.eq 2f\n"
+        "  subs x13, x13, #1\n"
+        "  b.ne 1b\n"
+        "3:\n"                                 /* not in the table: nothing to enter; stay out of the way */
+        "  wfi\n"
+        "  b 3b\n"
+        "2:\n"
+        "  cbz x12, 3b\n"
+        "  br x12\n"
+        ".balign 64\n"
+        ".globl kernel_cpu_resume_data\n"
+        "kernel_cpu_resume_data:\n"
+        "  .fill 17, 8, 0\n"
+        ".balign 64\n"
         "other_cpu_fault:\n"                    /* as an early exception in the kernel: reason 1 */
         "  mrs x3, esr_el1\n"
         "  mrs x4, elr_el1\n"
@@ -927,12 +1114,8 @@ struct kernel_live {
 	uint64_t stop;                  /* ours to write: the host wants the run to end ("oem stop") */
 	uint64_t magic2;                /* "XNULIVE2": the kernel is new enough to have what follows */
 	uint64_t sound;                 /* (a virtual address too) the same for a recording of the sound */
-	uint64_t power;                 /* KERNEL_POWER_TAG | off or restart: what iOS asked for at its end */
+	uint64_t magic3, menu_width, menu_height; /* XNULIVE3: cropped firmware channel on return */
 };
-#define KERNEL_POWER_TAG        0x52574f5000000000ULL   /* "\0\0\0\0POWR": an older kernel has no such field */
-#define KERNEL_POWER_OFF        1
-#define KERNEL_POWER_RESTART    2
-static uint64_t kernel_power;           /* what the kernel that came back last asked for */
 
 /*
  * Battery state shared with XNU.  Qualcomm's charger firmware remains a UEFI
@@ -1013,6 +1196,7 @@ static int wdt_armed;
  * While a kernel runs on another core and this one watches it: where it shows its signs of life,
  * for the commands that the host sends meanwhile (usb_poll_command).
  */
+static uint32_t menu_output_width, menu_output_height;
 static const struct kernel_live *running_live;
 static uint64_t running_slide;
 static void usb_poll_command(void);
@@ -1020,7 +1204,7 @@ static void usb_poll_command(void);
 static uint64_t
 seconds_since(uint64_t then)
 {
-	return (READ_SYSREG(CNTVCT_EL0) - then) / READ_SYSREG(CNTFRQ_EL0);
+	return (READ_SYSREG(CNTVCT_EL0) - then) / timer_freq();
 }
 
 /* Reverse a stretch of memory in place. */
@@ -1287,7 +1471,7 @@ ufs_hash_partition(efi_block_io *bio, const char *name, uint64_t bytes)
 		}
 	}
 	print("ufs: %s: fnv %x over %d bytes, %d ms\n", name, h, bytes,
-	    (READ_SYSREG(CNTVCT_EL0) - started) * 1000 / READ_SYSREG(CNTFRQ_EL0));
+	    (READ_SYSREG(CNTVCT_EL0) - started) * 1000 / timer_freq());
 }
 
 /* CRC-32 as GPT uses it (IEEE 802.3, reflected, 0xedb88320) */
@@ -1535,6 +1719,7 @@ ufs_survey(void)
 #define BLOCK_VERSION      3
 #define BLOCK_MAX_PARTS    160
 #define BLOCK_MAX_UNITS    16
+#define BLOCK_NATIVE_ONLY  1u      /* native.flags: the loader serves no request while the kernel runs */
 #define BLOCK_PART_UNIT    1u                          /* the entry is a whole logical unit, not a partition */
 #define BLOCK_OP_READ      0u
 #define BLOCK_OP_WRITE     1u
@@ -1548,8 +1733,10 @@ ufs_survey(void)
  * same partition, named the same, of the same size, in the same place, on logical unit 0.
  */
 #define BLOCK_WRITE_FIRST  2042368ULL                  /* darwin's blocks of 4096: past both cryptexes */
+#define BLOCK_DARWIN_FIRST 25374720ULL                 /* its first and last LBA of unit 0, as the GPT has them */
+#define BLOCK_DARWIN_LAST  30617594ULL
 #define BLOCK_DARWIN_TYPE  { 0x7c3457ef, 0x0000, 0x11aa, { 0xaa, 0x11, 0x00, 0x30, 0x65, 0x43, 0xec, 0xac } }
-/* where it is and its unique GUID are each phone's own: struct platform, darwin_first/last/unique */
+#define BLOCK_DARWIN_UNIQ  { 0xfd6854ad, 0x24aa, 0x4fc3, { 0x94, 0xfe, 0x29, 0x01, 0x16, 0x85, 0x8d, 0x68 } }
 
 /*
  * The partitions first, then the logical units they are on (BLOCK_PART_UNIT, named unit0, unit1,
@@ -1611,6 +1798,9 @@ struct loader_block {
 		uint64_t area_pa;              /* the list (1 KB, at the start) and command descriptors */
 		uint32_t area_size, ucd_offset, ucd_size, slots;
 		uint32_t uefi_utrlba, uefi_utrlbau;
+		uint32_t flags;                /* BLOCK_NATIVE_ONLY */
+		uint32_t gpt_units;            /* with BLOCK_NATIVE_ONLY: unit k's block 1 at gpt_pa + k * 4096 */
+		uint64_t gpt_pa;
 	} native __attribute__((aligned(128)));
 	/* written by the loader during a run: it takes the controller back (a hung kernel); send nothing more */
 	struct {
@@ -1631,6 +1821,8 @@ _Static_assert(__builtin_offsetof(struct loader_block, ask) == 128,
 static struct loader_block block_shared __attribute__((aligned(0x2000)));
 static void block_io2_probe(efi_handle h, efi_block_io *bio);
 static int block_probe_requested;       /* ufs_probe=1: block_io2_probe() at block_start() */
+/* the units' GPT headers for a kernel on this core (not block_buffer: the log's read-back reuses that) */
+static uint8_t block_gpt[BLOCK_MAX_UNITS][4096] __attribute__((aligned(0x2000)));
 static efi_block_io *block_bios[BLOCK_MAX_PARTS];
 static int block_enabled;
 static int block_write_requested;       /* ufs_write=1 on the command line */
@@ -1695,7 +1887,13 @@ device_path_print(uint64_t unit, const efi_device_path *dp)
  * touches the storage; it reads for the kernel (block_poll) and writes the log (write_logs) only
  * while UEFI's list is the one in the controller.
  */
-#define HC_PA              0x1d84000ULL        /* ufshc@1d84000, "ufs_mem", in this phone's Android device tree */
+/*
+ * ufshc@1d84000 ("ufs_mem") in the Xiaomi's Android device tree; on the S20+ (Exynos 990) the
+ * controller is at 0x13100000 (Samsung's ufs-exynos.c, Silicium's PlatformUfsLib), where offsets
+ * and lengths in a request descriptor are in bytes and a slot is cleared by writing a one.
+ */
+#define HC_PA              (PLAT == &platform_y2s ? 0x13100000ULL : 0x1d84000ULL)
+#define HC_EXYNOS          (PLAT == &platform_y2s)
 #define HC_CAP             0x00
 #define HC_VER             0x08
 #define HC_IS              0x20
@@ -1711,7 +1909,7 @@ device_path_print(uint64_t unit, const efi_device_path *dp)
 #define HC_UTMRLDBR        0x78
 #define HC_SLOTS           32
 #define HC_UCD_OFFSET      0x1000
-#define HC_UCD_SIZE        0x800
+#define HC_UCD_SIZE        0x1000              /* (Exynos: a PRD entry per 4 KB, 65 of them for 256 KB) */
 #define HC_AREA_SIZE       (HC_UCD_OFFSET + HC_SLOTS * HC_UCD_SIZE)
 
 static uint8_t hc_area[HC_AREA_SIZE] __attribute__((aligned(0x2000)));
@@ -1737,7 +1935,7 @@ hc_wr(uint32_t off, uint32_t v)
 static uint64_t
 hc_ms_since(uint64_t then)
 {
-	return (READ_SYSREG(CNTVCT_EL0) - then) * 1000 / READ_SYSREG(CNTFRQ_EL0);
+	return (READ_SYSREG(CNTVCT_EL0) - then) * 1000 / timer_freq();
 }
 
 /* UEFI's list in, and running: what UEFI's driver needs to read or write */
@@ -1763,6 +1961,27 @@ hc_print_state(const char *when)
  * is waited for (1 s), cleared if it does not finish (UTRLCLR: every slot of that list is the
  * kernel's), the list stopped, UEFI's address written back, the list started, all read back.
  */
+/*
+ * The S20+: IS's UTRCS left set by the kernel's commands makes UEFI's next command keep its doorbell
+ * bit for ever (its driver clears IS only after the bit clears): every read and write times out.
+ * Acknowledged before UEFI's driver is used again.
+ */
+static void
+hc_clear_utrcs(const char *when)
+{
+	uint32_t is;
+
+	if (!HC_EXYNOS) {
+		return;
+	}
+	is = hc_rd(HC_IS);
+	if (is & 1) {
+		hc_wr(HC_IS, 1);
+		print("ufs: %s: IS was %x: the transfer-complete status acknowledged (now %x), for UEFI's driver\n", when,
+		    (uint64_t)is, (uint64_t)hc_rd(HC_IS));
+	}
+}
+
 static void
 hc_take_back(const char *when)
 {
@@ -1779,6 +1998,7 @@ hc_take_back(const char *when)
 	if (lo == hc_uefi_lo && hi == hc_uefi_hi && (rsr & 1)) {
 		print("ufs: %s: UEFI's transfer list is in the controller (%x), running, doorbell %x\n", when, (uint64_t)lo,
 		    (uint64_t)db);
+		hc_clear_utrcs(when);
 		return;
 	}
 	print("ufs: %s: the controller has list %x:%x (run %x, doorbell %x), not UEFI's %x:%x: taking it back\n", when,
@@ -1794,7 +2014,7 @@ hc_take_back(const char *when)
 		print("ufs: %s: doorbell %x still set after 1 s\n", when, (uint64_t)db);
 		if (hc_rd(HC_UTRLBA) != hc_uefi_lo || hc_rd(HC_UTRLBAU) != hc_uefi_hi) {
 			print("ufs: %s: clearing the kernel's slots (UTRLCLR)\n", when);
-			hc_wr(HC_UTRLCLR, 0);
+			hc_wr(HC_UTRLCLR, HC_EXYNOS ? 0xffffffffu : 0);
 			for (t = READ_SYSREG(CNTVCT_EL0); (db = hc_rd(HC_UTRLDBR)) != 0 && hc_ms_since(t) < 1000;) {
 			}
 			print("ufs: %s: doorbell %x after the clear\n", when, (uint64_t)db);
@@ -1820,6 +2040,7 @@ hc_take_back(const char *when)
 	hc_wr(HC_UTRLRSR, 1);
 	for (t = READ_SYSREG(CNTVCT_EL0); hc_ms_since(t) < 50;) {
 	}
+	hc_clear_utrcs(when);
 	hc_print_state(when);
 	print("ufs: %s: UEFI's list %s\n", when, hc_list_is_uefis() ? "put back" : "NOT PUT BACK: the storage is not used");
 }
@@ -1889,8 +2110,7 @@ block_tables(void)
 static int
 block_is_darwin(const efi_partition_info *info, const efi_block_io *bio, const struct loader_block_part *bp)
 {
-	static const efi_guid type = BLOCK_DARWIN_TYPE;
-	const efi_guid uniq = PLAT->darwin_unique;
+	static const efi_guid type = BLOCK_DARWIN_TYPE, uniq = BLOCK_DARWIN_UNIQ;
 	static const char name[] = "darwin";
 	const char *why = NULL;
 
@@ -1903,15 +2123,13 @@ block_is_darwin(const efi_partition_info *info, const efi_block_io *bio, const s
 		why = "its type GUID is not the one it had";
 	} else if (memcmp(&info->unique_guid, &uniq, sizeof(uniq)) != 0) {
 		why = "its unique GUID is not the one it had";
-	} else if (PLAT->darwin_last == 0) {
-		why = "this phone has no darwin of the port's";
-	} else if (info->start_lba != PLAT->darwin_first || info->end_lba != PLAT->darwin_last) {
+	} else if (info->start_lba != BLOCK_DARWIN_FIRST || info->end_lba != BLOCK_DARWIN_LAST) {
 		why = "it does not begin and end where it did";
 	} else if (bp->unit != 0) {
 		/* the first unit UEFI lists: this firmware's device paths say no logical unit number
 		 * (device_path_print finds no 3.19 node), so bp->lun is 0xff for every unit */
 		why = "it is not on the first logical unit";
-	} else if (bp->block_size != 4096 || bp->blocks != PLAT->darwin_last - PLAT->darwin_first + 1) {
+	} else if (bp->block_size != 4096 || bp->blocks != BLOCK_DARWIN_LAST - BLOCK_DARWIN_FIRST + 1) {
 		why = "its blocks are not what they were";
 	} else if (bio->media->read_only) {
 		why = "UEFI gives it out read only";
@@ -1926,7 +2144,7 @@ block_is_darwin(const efi_partition_info *info, const efi_block_io *bio, const s
 }
 
 static void
-block_start(void)
+block_start(int kernel_on_this_core)
 {
 	static const efi_guid part_guid = EFI_PARTITION_INFO_GUID;
 	static const efi_guid blk_guid = EFI_BLOCK_IO_GUID;
@@ -2037,6 +2255,29 @@ block_start(void)
 	} else if (hc_requested) {
 		print("ufs: the kernel's own transfer list is not offered: the controller is not as UEFI keeps it\n");
 	}
+	/*
+	 * The kernel runs on this core (the S20+): nobody serves the page while it runs, so its own
+	 * driver is the only way to the storage. What it would ask the loader for -- each unit's GPT
+	 * header, to know which logical unit is which -- is read here now, unit k's into the buffer
+	 * at k * 4096 (bsd/dev/redwood_ufs.c, ufs_read_mailbox).
+	 */
+	if (kernel_on_this_core) {
+		block_shared.native.flags |= BLOCK_NATIVE_ONLY;
+		for (uint64_t u = 0; u < nunits; u++) {
+			efi_block_io *bio = units[u].bio;
+
+			memset(block_gpt[u], 0, 4096);
+			if (bio->media->block_size != 4096 ||
+			    EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, 1, 4096, block_gpt[u]))) {
+				print("ufs: unit %d: its GPT header not read\n", u);
+			}
+		}
+		block_shared.native.gpt_units = (uint32_t)nunits;
+		block_shared.native.gpt_pa = (uint64_t)(uintptr_t)block_gpt;
+		clean_dcache((uint64_t)(uintptr_t)block_gpt, (uint64_t)(uintptr_t)block_gpt + sizeof(block_gpt));
+		print("ufs: the kernel runs on this core: nothing is served while it runs; the units' GPT headers are kept "
+		    "for its own driver\n");
+	}
 	hc_refused_reads = 0;
 	hc_log_skips = 0;
 	/* per run, like the two above: this loader stays resident across runs, and a tally carried
@@ -2079,7 +2320,7 @@ block_io2_probe(efi_handle h, efi_block_io *bio)
 	efi_status (EFIAPI *check_event)(void *) = (efi_status (EFIAPI *)(void *))BS->check_event;
 	static efi_block_io2_token tokens[8];
 	efi_block_io2 *bio2 = NULL;
-	uint64_t bs = bio->media->block_size, t0, t_sync, t_issue = 0, t_all, freq = READ_SYSREG(CNTFRQ_EL0);
+	uint64_t bs = bio->media->block_size, t0, t_sync, t_issue = 0, t_all, freq = timer_freq();
 	uint64_t returned_done = 0, pending, polls = 0;
 	efi_status s;
 
@@ -2257,50 +2498,6 @@ charger_start(void)
 	    (uint64_t)charger_shared.charger_action);
 }
 
-/*
- * The y2q's Wi-Fi enable, GPIO20 (dt: qcom,cnss-qca6490 wlan-en-gpio; output high, pull-up, 16 mA): its
- * register resets the phone when the kernel reads it (bsd/dev/redwood_pcie.c, pcie_survey=2). UEFI's
- * own pin driver may reach it where we do not: 1 reads it through that driver, 2 also makes it an
- * output, drives it high and reads it back.
- */
-#define PIN_WLAN_EN             20
-
-static void
-wlan_en_start(int how)
-{
-	static const efi_guid tlmm_guid = QCOM_TLMM_GUID;
-	struct qcom_tlmm *tlmm = NULL;
-	uint32_t input = TLMM_GPIO_CFG(PIN_WLAN_EN, 0, 0, TLMM_PULL_UP, TLMM_16MA);
-	uint32_t output = TLMM_GPIO_CFG(PIN_WLAN_EN, 0, 1, TLMM_PULL_UP, TLMM_16MA);
-	uint32_t value = 0xff;
-	efi_status status;
-
-	if (PLAT != &platform_y2q && PLAT != &platform_z3q) {
-		return;
-	}
-	status = BS->locate_protocol(&tlmm_guid, NULL, (void **)&tlmm);
-	if (EFI_ERROR(status) || tlmm == NULL) {
-		print("wlan_en: no pin driver in UEFI (%x)\n", status);
-		return;
-	}
-	print("wlan_en: UEFI's pin driver, revision %d: about to read GPIO%d through it\n", tlmm->revision,
-	    (uint64_t)PIN_WLAN_EN);
-	flush_log();
-	status = tlmm->gpio_in(input, &value);
-	print("wlan_en: GPIO%d reads %d (%x)\n", (uint64_t)PIN_WLAN_EN, (uint64_t)value, status);
-	if (how < 2) {
-		return;
-	}
-	print("wlan_en: about to make GPIO%d an output and drive it high\n", (uint64_t)PIN_WLAN_EN);
-	flush_log();
-	status = tlmm->config_gpio(output, 1 /* TLMM_GPIO_ENABLE */);
-	print("wlan_en: configured (%x)\n", status);
-	status = tlmm->gpio_out(output, 1 /* GPIO_HIGH_VALUE */);
-	value = 0xff;
-	tlmm->gpio_in(output, &value);
-	print("wlan_en: driven high (%x); it reads %d now\n", status, (uint64_t)value);
-}
-
 /* For the record: how much the kernel on the other core has logged so far, and the end of it. */
 static void
 note_kernel_progress(const struct kernel_live *live, uint64_t slide, uint64_t seconds)
@@ -2382,13 +2579,23 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 	clean_dcache((uint64_t)(uintptr_t)&other_cpu_entry, (uint64_t)(uintptr_t)&other_cpu_entry + 0x1000);
 	clean_dcache((uint64_t)(uintptr_t)loader_ctx, (uint64_t)(uintptr_t)loader_ctx + sizeof(loader_ctx));
 
-	/* the last argument arrives in that core's x0 */
+	if (PLAT->watch_quietly) {
+		/* what is known so far into the partition now: after CPU_ON this core calls nothing of UEFI's */
+		print("core %x: starting the kernel there; this core watches with its interrupts off\n", mpidr);
+		flush_log();
+		watching_only = 1;
+		daif = READ_SYSREG(DAIF);
+		__asm__ volatile ("msr daifset, #0xf");
+	}
+	/* the last argument arrives in that core's x0 (not on Samsung's firmware: other_cpu_entry finds it itself) */
 	status = psci_call(PSCI_CPU_ON, mpidr, (uint64_t)(uintptr_t)&other_cpu_entry, (uint64_t)(uintptr_t)&other_cpu_start);
 
 	started = last_pet = last_battery = last_beat_at = READ_SYSREG(CNTVCT_EL0);
-	print("core %x: the firmware answers %d to the request to start it\n", mpidr, (uint64_t)status);
-	if (PLAT->log_other_cpu) {
-		flush_log();
+	if (!PLAT->watch_quietly) {
+		print("core %x: the firmware answers %d to the request to start it\n", mpidr, (uint64_t)status);
+		if (PLAT->log_other_cpu) {
+			flush_log();
+		}
 	}
 	while (status == 0) {
 		/*
@@ -2416,8 +2623,10 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 			watching_only = 1;
 			daif = READ_SYSREG(DAIF);
 			__asm__ volatile ("msr daifset, #0xf");
+#ifndef GIC_V2
 			group1 = READ_SYSREG(S3_0_C12_C12_7);          /* ICC_IGRPEN1_EL1 */
 			__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" ((uint64_t)0));
+#endif
 		}
 		/* both are written by a core with its caches off: look at memory, not at our copy */
 		flush_dcache((uint64_t)(uintptr_t)&other_cpu_done, (uint64_t)(uintptr_t)&other_cpu_done + 8);
@@ -2460,7 +2669,9 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 		if (block_enabled) {
 			block_poll();
 		}
-		usb_poll_command();
+		if (!PLAT->watch_quietly) {
+			usb_poll_command();
+		}
 		if (block_enabled) {
 			/*
 			 * The pause is spent looking at the kernel's mailbox: with one look a pass, a
@@ -2478,9 +2689,14 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 		}
 	}
 	running_live = NULL;
+	if (PLAT->watch_quietly) {
+		print("core %x: the firmware answered %d to the request to start it\n", mpidr, (uint64_t)status);
+	}
 
 	if (watching_only) {
+#ifndef GIC_V2
 		__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" (group1));
+#endif
 		__asm__ volatile ("msr daif, %0" : : "r" (daif));
 	}
 	return status;
@@ -2572,6 +2788,16 @@ exception_handler(int64_t type, uint64_t *ctx)
 	print("loader image base %x (elr offset %x)\n", (uint64_t)(uintptr_t)&__ImageBase,
 	    ctx[EXC_CTX_ELR] - (uint64_t)(uintptr_t)&__ImageBase);
 	flush_log();
+	if (PLAT == &platform_y2s) {
+		/*
+		 * Nobody resets this phone unattended, and a reset wipes the message before anyone can
+		 * read it (the log write may fail in this state too). Keep it on the screen: Vol-Down +
+		 * Power for 10-15 s resets.
+		 */
+		print("held here: photograph this screen, then hold Vol-Down + Power to reset\n");
+		for (;;) {
+		}
+	}
 	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
 	for (;;) {
 	}
@@ -2606,9 +2832,14 @@ struct payload_info {
 	uint64_t checkpoint;
 	uint64_t forced_base;
 	uint64_t resident_rd;           /* size of a root image the host put at the resident address */
-	const uint8_t *resident;        /* "resident": an image that comes with the payload, for the resident address */
-	uint32_t resident_size;
 	int usb_mode;
+	int devmode;                    /* payload entry "devmode": the HackiOS menu, countdown and text (development) */
+	char kpart[32];                 /* where the kernel lives on storage, if not in the payload */
+	uint64_t koff;                  /* byte offset of the kernel inside that partition */
+	char rpart[32];                 /* same for the root ramdisk (md1) */
+	uint64_t roff, rsize;
+	char rdpart[32];                /* same for the resident root image (md0) */
+	uint64_t rdoff, rdsize;
 };
 
 static uint64_t
@@ -2659,11 +2890,42 @@ parse_payload(struct payload_info *pi, int verbose)
 			pi->resident_rd = parse_number(text, 16); /* e.g. loaded there by QEMU; see RESIDENT_RD_OFFSET */
 		} else if (str_eq(e->name, "checkpoint")) {
 			pi->checkpoint = parse_number(text, 10);  /* where the kernel should stop and come back */
-		} else if (str_eq(e->name, "resident")) {
-			pi->resident = p + sizeof(*e);            /* put at the resident address, as `xl ramdisk` would */
-			pi->resident_size = e->size;
 		} else if (str_eq(e->name, "usb")) {
 			pi->usb_mode = 1;                         /* stay in the loader and take commands over USB */
+		} else if (str_eq(e->name, "devmode")) {
+			pi->devmode = 1;                          /* the developer's boot screen (menu, countdown, text) */
+		} else if (str_eq(e->name, "kpart")) {
+			/* the kernel is not in the payload: it sits on a GPT partition */
+			unsigned k = 0;
+			while (k + 1 < sizeof(pi->kpart) && text[k] != 0) {
+				pi->kpart[k] = text[k];
+				k++;
+			}
+			pi->kpart[k] = 0;
+		} else if (str_eq(e->name, "koff")) {
+			pi->koff = parse_number(text, 16);
+		} else if (str_eq(e->name, "rpart")) {
+			unsigned k = 0;
+			while (k + 1 < sizeof(pi->rpart) && text[k] != 0) {
+				pi->rpart[k] = text[k];
+				k++;
+			}
+			pi->rpart[k] = 0;
+		} else if (str_eq(e->name, "roff")) {
+			pi->roff = parse_number(text, 16);
+		} else if (str_eq(e->name, "rsize")) {
+			pi->rsize = parse_number(text, 16);
+		} else if (str_eq(e->name, "rdpart")) {
+			unsigned k = 0;
+			while (k + 1 < sizeof(pi->rdpart) && text[k] != 0) {
+				pi->rdpart[k] = text[k];
+				k++;
+			}
+			pi->rdpart[k] = 0;
+		} else if (str_eq(e->name, "rdoff")) {
+			pi->rdoff = parse_number(text, 16);
+		} else if (str_eq(e->name, "rdsize")) {
+			pi->rdsize = parse_number(text, 16);
 		}
 		p += sizeof(*e) + ((e->size + 15) & ~15u);
 	}
@@ -2776,6 +3038,187 @@ print_memory_map(void)
 	}
 }
 
+/*
+ * y2s: memory for the Wi-Fi chip's DMA. Samsung's hypervisor lets the PCIe block (HSI1) reach memory
+ * only where the kernel grants it, 64 KB at a time (HVC 0xc6000101), and z3s, which has this chip
+ * working, grants only between 2 and 4 GB; the kernel's own window is above 4 GB. So a piece of it
+ * there, never UEFI's again, said in /chosen as wifi-dma-base and wifi-dma-size.
+ */
+#define WIFI_DMA_SIZE   (32ULL << 20)
+static uint64_t wifi_dma_base, wifi_dma_size;
+static int cellular_memory_ready;
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+static int cellular_cp_boot_can_reset(void);
+static int cellular_cp_retry_stop(void);
+#endif
+
+/* Allocate exactly the usable span, aligned and excluding the S20 CP map.
+ * Works with old UEFI too, but only a rebuilt UEFI reserves CP memory from ALL
+ * firmware allocations. This alone is not permission to start modem DMA. */
+static int
+allocate_loader_memory(uint64_t size, uint64_t alignment, uint64_t low, uint64_t high, uint64_t *address)
+{
+	static uint8_t map_buf[65536];
+	uint64_t map_size = sizeof(map_buf), key, stride, best = 0;
+	uint32_t version;
+	if (EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &key, &stride, &version)) ||
+	    stride < sizeof(efi_memory_descriptor) || map_size > sizeof(map_buf)) return 0;
+	for (uint64_t off = 0; off + stride <= map_size; off += stride) {
+		efi_memory_descriptor *d = (efi_memory_descriptor *)(map_buf + off);
+		if (d->type != EfiConventionalMemory || d->pages > (~0ULL - d->phys_start) / 4096) continue;
+		uint64_t lo = d->phys_start > low ? d->phys_start : low;
+		uint64_t hi = d->phys_start + (d->pages << 12);
+		if (hi > high) hi = high;
+		uint64_t at = s20_memory_candidate(lo, hi, size, alignment);
+		if (at > best) best = at;
+	}
+	if (!best) {
+		print("cellular allocation: no candidate size %x align %x low %x high %x\n", size, alignment, low, high);
+		return 0;
+	}
+	efi_status status = BS->allocate_pages(AllocateAddress, EfiLoaderData, size >> 12, &best);
+	if (EFI_ERROR(status)) {
+		print("cellular allocation: address %x size %x status %x\n", best, size, status);
+		return 0;
+	}
+	*address = best;
+	return 1;
+}
+
+static int
+allocate_low_dma(uint64_t size, uint64_t alignment, uint64_t *address)
+{
+	return allocate_loader_memory(size, alignment, 0x80000000ULL, 0x100000000ULL, address);
+}
+
+static int
+reserve_download_buffer(void)
+{
+	if (download_base) return 1;
+	if (PLAT == &platform_y2s) {
+		if (!allocate_low_dma(DOWNLOAD_MAX_SIZE, 0x10000, &download_base)) return 0;
+	} else if (!allocate_loader_memory(DOWNLOAD_MAX_SIZE, 0x1000, 0x1000, ~0ULL, &download_base)) return 0;
+	print("download buffer: %x size %x\n", download_base, (uint64_t)DOWNLOAD_MAX_SIZE);
+	return 1;
+}
+
+/* Confirm firmware ownership separately from our allocator exclusions. A new
+ * loader on an old UEFI must not claim that the CP is fully reserved. */
+static efi_dxe_services *
+cellular_dxe_services(void)
+{
+	static const efi_guid guid = {0x05ad34ba, 0x6f02, 0x4214, {0x95,0x2e,0x4d,0xa0,0x39,0x8e,0x2b,0xb9}};
+	if (ST->nr_tables > 256) return NULL;
+	for (uint64_t i = 0; i < ST->nr_tables; i++) {
+		if (memcmp(&ST->tables[i].guid, &guid, sizeof(guid))) continue;
+		efi_dxe_services *dxe = ST->tables[i].table;
+		if (dxe && dxe->hdr.signature == 0x565245535f455844ULL && dxe->hdr.header_size >= sizeof(*dxe)) return dxe;
+	}
+	return NULL;
+}
+
+static int
+cellular_normal_nc(uint64_t base, uint64_t size)
+{
+	efi_dxe_services *dxe = cellular_dxe_services();
+	efi_gcd_memory_descriptor d;
+	if (!dxe || (READ_SYSREG(CurrentEL) >> 2) != 1 ||
+	    EFI_ERROR(dxe->get_memory_space_descriptor(base, &d)) ||
+	    d.base > base || d.length > ~0ULL - d.base || d.base + d.length < base + size ||
+	    (d.attributes & 0x1f) != 2 /* EFI_MEMORY_WC = Normal NC in ArmMmuLib */) return 0;
+	uint64_t saved = READ_SYSREG(PAR_EL1);
+	int okay = 1;
+	for (uint64_t address = base; address < base + size; address += 4096) {
+		__asm__ volatile ("at s1e1r, %0; isb" :: "r"(address) : "memory");
+		if (!s20_par_normal_nc(READ_SYSREG(PAR_EL1), address)) { okay = 0; break; }
+	}
+	__asm__ volatile ("msr par_el1, %0; isb" :: "r"(saved) : "memory");
+	return okay;
+}
+
+static void
+report_cellular_memory(void)
+{
+	static uint8_t map_buf[65536];
+	uint64_t map_size = sizeof(map_buf), key, stride;
+	uint32_t version, reserved = 0, normal_nc = 0;
+	cellular_memory_ready = 0;
+	if (PLAT != &platform_y2s) return;
+	if (EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &key, &stride, &version)) ||
+	    stride < sizeof(efi_memory_descriptor) || map_size > sizeof(map_buf)) {
+		print("cellular memory: reserved 0/3 (memory map unavailable)\n");
+		return;
+	}
+	for (unsigned i = 0; i < sizeof(s20_cp_regions) / sizeof(s20_cp_regions[0]); i++) {
+		int owned = s20_efi_map_covers(map_buf, map_size, stride,
+		    s20_cp_regions[i].base, s20_cp_regions[i].size, EfiReservedMemoryType, 0);
+		reserved += owned;
+		if (owned) normal_nc += cellular_normal_nc(s20_cp_regions[i].base, s20_cp_regions[i].size);
+	}
+	print("cellular memory: reserved %d/3 (UEFI ownership only)\n", (uint64_t)reserved);
+	print("cellular memory: normal-nc %d/3 (DXE and live EL1 translation; every CP page)\n", (uint64_t)normal_nc);
+	cellular_memory_ready = reserved == 3 && normal_nc == 3;
+}
+
+static void
+reserve_wifi_dma(void)
+{
+	uint64_t at;
+
+	if (wifi_dma_size != 0 || PLAT != &platform_y2s) {
+		if (wifi_dma_size) print("wifi dma: %x size %x (reused)\n", wifi_dma_base, wifi_dma_size);
+		return;
+	}
+	if (!allocate_low_dma(WIFI_DMA_SIZE, 0x10000, &at)) {
+		print("wifi dma: no %d MB below 4 GB\n", (uint64_t)(WIFI_DMA_SIZE >> 20));
+		return;
+	}
+	if (at < 0x80000000ULL) {
+		print("wifi dma: %x is not where the PCIe block may be granted: not used\n", at);
+		BS->free_pages(at, WIFI_DMA_SIZE >> 12);
+		return;
+	}
+	wifi_dma_base = at;     /* aligned to the 64-KiB S2MPU grant granule */
+	wifi_dma_size = WIFI_DMA_SIZE;
+	print("wifi dma: %x size %x\n", wifi_dma_base, wifi_dma_size);
+}
+
+/*
+ * y2s: memory for the display controller's DMA to read CoreAnimation's frames from (the kernel's
+ * fb_scaler, MiniIOSurface.cpp). Its base registers hold 32 bits and nothing translates its
+ * addresses, and XNU's own memory is all above 4 GB (its VM found no page below: "scanned 1
+ * pages", 25 October). So a piece below 4 GB, never UEFI's again, said in /chosen as
+ * display-pool-base and display-pool-size: room for four full-screen frames.
+ */
+static uint64_t display_pool_base, display_pool_size;
+
+/*
+ * As much as is free of 192, 128 or 64 MB (13, 9 or 4 slots of 14 MB): the window server's frames
+ * and an application's full-screen layers all want a slot, and memory below 4 GB is nobody
+ * else's (XNU has none of it).
+ */
+static void
+reserve_display_pool(void)
+{
+	static const uint64_t sizes[] = { 192ULL << 20, 128ULL << 20, 64ULL << 20 };
+
+	if (display_pool_size != 0 || PLAT != &platform_y2s) {
+		if (display_pool_size) print("display pool: %x size %x (reused)\n", display_pool_base, display_pool_size);
+		return;
+	}
+	for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+		uint64_t at;
+
+		if (allocate_low_dma(sizes[i], 0x10000, &at)) {
+			display_pool_base = at;
+			display_pool_size = sizes[i];
+			print("display pool: %x size %x\n", display_pool_base, display_pool_size);
+			return;
+		}
+	}
+	print("display pool: not even 64 MB below 4 GB\n");
+}
+
 static int
 choose_window(const struct payload_info *pi)
 {
@@ -2834,6 +3277,58 @@ choose_window(const struct payload_info *pi)
 }
 
 /*
+ * The kernel does not have to live in the payload: a "kpart"/"koff" pair in the
+ * payload points at a GPT partition and a byte offset, and the image is read
+ * into the download staging area. This keeps the UEFI image small and lets the
+ * kernel be replaced from Android with dd.
+ */
+static int
+read_partition_into(const char *part, uint64_t off, void *dest, uint64_t len)
+{
+	efi_block_io *bio = find_partition_ascii(part);
+	uint8_t *d = dest;
+	uint64_t bs, lba, left = len, done = 0;
+
+	if (bio == NULL || bio->media == NULL) {
+		print("storage: no partition '%s'\n", part);
+		return 0;
+	}
+	bs = bio->media->block_size;
+	if (bs == 0 || (off % bs) != 0) {
+		print("storage: bad offset %x\n", off);
+		return 0;
+	}
+	lba = off / bs;
+	while (left != 0) {
+		uint64_t chunk = left > (4ULL << 20) ? (4ULL << 20) : left;
+		if (EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, lba, chunk, d + done))) {
+			print("storage: read failed at %x\n", off + done);
+			return 0;
+		}
+		done += chunk;
+		lba += chunk / bs;
+		left -= chunk;
+	}
+	return 1;
+}
+
+static int
+load_kernel_from_partition(const char *part, uint64_t off)
+{
+	uint8_t *dest = (uint8_t *)(uintptr_t)download_base;
+
+	if (!read_partition_into(part, off, dest, DOWNLOAD_MAX_SIZE)) {
+		return 0;
+	}
+	if (*(const uint32_t *)dest != 0xfeedfacf) {
+		print("kernel: bad Mach-O magic %x at '%s'+%x\n", (uint64_t)*(const uint32_t *)dest, part, off);
+		return 0;
+	}
+	print("kernel: read %x bytes from '%s' at %x\n", (uint64_t)DOWNLOAD_MAX_SIZE, part, off);
+	return 1;
+}
+
+/*
  * Load and run the kernel from the payload. Returns when the kernel comes
  * back (panic, checkpoint, early exception); the combined log is staged and
  * written to the log partition. Returns 0 if the kernel could not be started.
@@ -2848,9 +3343,25 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	uint32_t desc_ver;
 	struct payload_info pi;
 
-	if (!parse_payload(&pi, 1) || pi.kernel == NULL) {
+	if (!parse_payload(&pi, 1)) {
+		print("no payload\n");
+		return 0;
+	}
+	/* The menu clears its log before each run; repeat boot evidence here. */
+	print("download buffer: %x size %x\n", download_base, (uint64_t)DOWNLOAD_MAX_SIZE);
+	report_cellular_memory();
+	if (pi.kernel == NULL && pi.kpart[0] != 0) {
+		if (!load_kernel_from_partition(pi.kpart, pi.koff)) {
+			return 0;
+		}
+		pi.kernel = (const uint8_t *)(uintptr_t)download_base;
+	}
+	if (pi.kernel == NULL) {
 		print("no kernel in payload\n");
 		return 0;
+	}
+	if (pi.ramdisk == NULL && pi.rpart[0] != 0) {
+		pi.ramdisk_size = pi.rsize;      /* read straight into rd_pa below */
 	}
 	if (!have_checkpoint) {
 		checkpoint = pi.checkpoint;
@@ -2901,23 +3412,37 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	/* A resident image next to a payload ramdisk: two disks (which is which is decided where the device tree is written). */
 	uint64_t rd1_pa = 0, rd1_size = 0;
 
+	/*
+	 * ufs_root=: the kernel mounts its root from the flash itself (bsd/dev/redwood_ufs.c): the
+	 * system image is not copied into memory, and the payload's small image is the only RAM disk,
+	 * md1 as always ("RAMDisk1" alone below).
+	 */
+	int root_on_flash = 0;
+
+	for (const char *c = pi.cmdline; *c; c++) {
+		root_on_flash |= starts_with(c, "ufs_root=") && (c == pi.cmdline || c[-1] == ' ');
+	}
 	if (pi.resident_rd != 0) {
 		resident_rd_size = pi.resident_rd;
 	}
-	/* a boot without the computer: the image that comes with the payload takes the resident one's place */
-	if (pi.resident != NULL && pi.resident_size != 0) {
-		if (RESIDENT_RD_OFFSET + pi.resident_size + RESIDENT_RD_RESERVE > win_size) {
-			print("the payload's resident image (%x bytes) does not fit the window\n", (uint64_t)pi.resident_size);
-			return 0;
-		}
-		memcpy((void *)(phys_base + RESIDENT_RD_OFFSET), pi.resident, pi.resident_size);
-		resident_rd_size = pi.resident_size;
-		print("resident image from the payload: %x bytes at %x\n", (uint64_t)pi.resident_size, phys_base + RESIDENT_RD_OFFSET);
+	if (pi.rdpart[0] != 0) {
+		resident_rd_size = pi.rdsize;    /* read straight to res_pa below */
+	}
+	if (root_on_flash) {
+		resident_rd_size = 0;
+		print("the root is on the flash (ufs_root=): the system image is not read into memory\n");
 	}
 	if (resident_rd_size != 0) {
 		uint64_t res_pa = phys_base + RESIDENT_RD_OFFSET;
 		uint64_t res_size = (resident_rd_size + PAGE_SIZE_MAX - 1) & ~(PAGE_SIZE_MAX - 1);
 
+		if (pi.rdpart[0] != 0) {
+			print("resident image: reading %x bytes from '%s'+%x\n", resident_rd_size, pi.rdpart, pi.rdoff);
+			if (!read_partition_into(pi.rdpart, pi.rdoff, (void *)res_pa, resident_rd_size)) {
+				return 0;
+			}
+			print("resident image: read\n");
+		}
 		if (kern_hi + rd_size > res_pa) {
 			print("kernel and ramdisk overlap the resident image\n");
 			return 0;
@@ -2957,7 +3482,11 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		print("resident ramdisk at pa %x size %x\n", rd_pa, rd_size);
 	} else if (rd_size != 0) {
 		memset((void *)rd_pa, 0, rd_size);
-		memcpy((void *)rd_pa, pi.ramdisk, pi.ramdisk_size);
+		if (pi.ramdisk != NULL) {
+			memcpy((void *)rd_pa, pi.ramdisk, pi.ramdisk_size);
+		} else if (!read_partition_into(pi.rpart, pi.roff, (void *)rd_pa, pi.ramdisk_size)) {
+			return 0;
+		}
 		print("ramdisk at pa %x size %x\n", rd_pa, rd_size);
 	}
 	if (rd1_size != 0) {
@@ -2972,27 +3501,26 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	int torch_requested = 0;
 	/* "cam=5" there too: the phone's wide camera is iOS's (bsd/dev/redwood_camera.c) */
 	int camera_requested = 0;
-	/* "wlan_en=1" (read) or "=2" (drive high): the y2q's Wi-Fi enable through UEFI's pin driver (wlan_en_start) */
-	int wlan_en_requested = 0;
+	int touchid_requested = 0;
 	/* (the loader stays for run after run: what the last run's arguments said must not hold for this one) */
 	gamut_p3 = 0;
+	island = 0;
 	/* a run that does not ask for writes does not get them, whatever an earlier run of this
 	 * loader asked for (the loader stays resident across runs) */
 	block_write_requested = 0;
 	block_write_part = -1;
 	for (const char *c = pi.cmdline; *c; c++) {
 		if (starts_with(c, "bootcpu=") && (c == pi.cmdline || c[-1] == ' ') && c[8] >= '0' && c[8] <= '7') {
-			kernel_mpidr = (uint64_t)(c[8] - '0') << PLAT->core_shift;
+			kernel_mpidr = plat_mpidr_of(PLAT, c[8] - '0');
 		}
 		more_cores |= (starts_with(c, "cpus=") || starts_with(c, "cpumask=")) && (c == pi.cmdline || c[-1] == ' ');
 		battery_requested |= starts_with(c, "battery=1") && (c == pi.cmdline || c[-1] == ' ') &&
 		    (c[9] == 0 || c[9] == ' ');
 		torch_requested |= starts_with(c, "torch=") && (c == pi.cmdline || c[-1] == ' ') && c[6] >= '1' && c[6] <= '9';
 		camera_requested |= starts_with(c, "cam=5") && (c == pi.cmdline || c[-1] == ' ') && (c[5] == 0 || c[5] == ' ');
-		if (starts_with(c, "wlan_en=") && (c == pi.cmdline || c[-1] == ' ') && c[8] >= '1' && c[8] <= '2') {
-			wlan_en_requested = c[8] - '0';
-		}
+		touchid_requested |= starts_with(c, "touchid=1") && (c == pi.cmdline || c[-1] == ' ') && (c[9] == 0 || c[9] == ' ');
 		gamut_p3 |= starts_with(c, "gamut=p3") && (c == pi.cmdline || c[-1] == ' ');
+		island |= starts_with(c, "island=1") && (c == pi.cmdline || c[-1] == ' ') && (c[8] == 0 || c[8] == ' ');
 		if (starts_with(c, "ufs=") && (c == pi.cmdline || c[-1] == ' ') && c[4] >= '1' && c[4] <= '2' &&
 		    (c[5] == 0 || c[5] == ' ')) {
 			ufs_requested = c[4] - '0';
@@ -3006,9 +3534,6 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	if (battery_requested) {
 		charger_start();
 	}
-	if (wlan_en_requested) {
-		wlan_en_start(wlan_en_requested);
-	}
 	if (ufs_requested >= 2) {
 		hc_init();              /* (ufs_native=: UEFI's transfer list kept, before anything reads) */
 	}
@@ -3016,7 +3541,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		ufs_survey();
 	}
 	if (ufs_requested >= 2) {
-		block_start();
+		block_start(kernel_mpidr == this_mpidr);
 	}
 	if (checkpoint == CHECKPOINT_SELFTEST) {
 		kernel_mpidr = this_mpidr;
@@ -3153,7 +3678,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	/* --- device tree ---------------------------------------------------- */
 	const struct platform *plat = PLAT;
 	struct dt_writer w = { .base = (uint8_t *)dt_pa, .cur = (uint8_t *)dt_pa, .depth = 0 };
-	uint64_t cntfrq = READ_SYSREG(CNTFRQ_EL0);
+	uint64_t cntfrq = timer_freq();
 	uint64_t ranges[3] = { 0, plat->io_base, plat->io_size };
 	uint64_t reg2[2];
 	uint8_t seed[64];
@@ -3183,12 +3708,37 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	dt_prop(&w, "random-seed", seed, sizeof(seed));
 	dt_prop_u64(&w, "dram-base", phys_base);
 	dt_prop_u64(&w, "dram-size", win_size);
+	/* A machine-readable handoff for the opt-in IPC backend. Recheck actual
+	 * firmware ownership/cache state after all preceding allocations. */
+	report_cellular_memory();
+	if (cellular_memory_ready) {
+		dt_prop_u64(&w, "cellular-memory-version", 1);
+		dt_prop_u64(&w, "cellular-ipc-base", 0xf0000000ULL);
+		dt_prop_u64(&w, "cellular-ipc-size", 0x800000ULL);
+	}
+
+	reserve_wifi_dma();
+	if (wifi_dma_size != 0) {
+		dt_prop_u64(&w, "wifi-dma-base", wifi_dma_base);
+		dt_prop_u64(&w, "wifi-dma-size", wifi_dma_size);
+	}
+	reserve_display_pool();
+	if (display_pool_size != 0) {
+		dt_prop_u64(&w, "display-pool-base", display_pool_base);
+		dt_prop_u64(&w, "display-pool-size", display_pool_size);
+	}
 	dt_prop_u32(&w, "debug-enabled", 1);
 	/* what MobileGestalt answers "main screen scale" from: 3 device pixels per point */
 	dt_prop_u32(&w, "display-scale", 3);
 	dt_prop_u32(&w, "display-rotation", 0);
 	/* how the kernel is to ask the firmware for more cores (PSCI) */
 	dt_prop_str(&w, "psci-method", plat->psci_hvc ? "hvc" : "smc");
+	/* ... and where it may start them from: below 4 GB, with a slot for the real entry (see kernel_cpu_trampoline) */
+	dt_prop_u64(&w, "psci-cpu-on-trampoline", (uint64_t)(uintptr_t)&kernel_cpu_trampoline);
+	dt_prop_u64(&w, "psci-cpu-on-slot", (uint64_t)(uintptr_t)kernel_cpu_slot);
+	/* ... and where a core coming back from a power-down idle enters (see kernel_cpu_resume) */
+	dt_prop_u64(&w, "psci-cpu-resume-trampoline", (uint64_t)(uintptr_t)&kernel_cpu_resume);
+	dt_prop_u64(&w, "psci-cpu-resume-data", (uint64_t)(uintptr_t)kernel_cpu_resume_data);
 	/* the time now, by the firmware's clock (the kernel has no real-time clock driver) */
 	uint64_t epoch = firmware_epoch();
 	if (epoch != 0) {
@@ -3233,7 +3783,11 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	 * images present the big resident one is the root and the payload's
 	 * small one is the second disk.
 	 */
-	if (rd_size != 0 || rd1_size != 0) {
+	if (root_on_flash && rd_size != 0 && rd1_size == 0) {
+		uint64_t only[2] = { rd_pa, rd_size };
+
+		dt_prop(&w, "RAMDisk1", only, sizeof(only));
+	} else if (rd_size != 0 || rd1_size != 0) {
 		uint64_t first[2] = { rd1_size != 0 ? rd1_pa : rd_pa, rd1_size != 0 ? rd1_size : rd_size };
 		dt_prop(&w, "RAMDisk", first, sizeof(first));
 	}
@@ -3285,6 +3839,18 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	}
 	dt_end(&w);
 
+	/*
+	 * With island=1 (the 14 Pro's subtype, see dt_identity), what a 14 Pro's tree says and the iPhone X's does
+	 * not: no home button. MobileGestalt's HomeButtonType is /buttons "home-button-type" (2 = none), and
+	 * BaseBoard's -[BSPlatform homeButtonType] calls a phone with no answer buttonless only when its subtype
+	 * is 2436; at 2556 iOS would take the S20 for a home-button iPhone (no home-bar swipe, "press home").
+	 */
+	if (island) {
+		dt_begin(&w, "buttons");
+		dt_prop_u32(&w, "home-button-type", 2);
+		dt_end(&w);
+	}
+
 	/* IOKit publishes its NVRAM object on this node; without it IOKit asserts. */
 	dt_begin(&w, "options");
 	dt_end(&w);
@@ -3306,16 +3872,20 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	 * this loader stays on while it watches is not the kernel's, nor any the firmware runs.
 	 */
 	uint64_t cpu_mpidr[8] = { kernel_mpidr };
-	int cpu_count = 1, boot_core = (int)(kernel_mpidr >> plat->core_shift);
+	int cpu_count = 1, boot_core = plat_core_of(plat, kernel_mpidr);
 
 	if (more_cores) {
 		for (int distance = 1; distance < plat->cores; distance++) {
 			for (int side = 0; side < 2; side++) {
 				int core = side == 0 ? boot_core + distance : boot_core - distance;
-				uint64_t mpidr = (uint64_t)core << plat->core_shift;
+				uint64_t mpidr;
 				int64_t state;
 
-				if (core < 0 || core >= plat->cores || mpidr == this_mpidr) {
+				if (core < 0 || core >= plat->cores) {
+					continue;
+				}
+				mpidr = plat_mpidr_of(plat, core);
+				if (mpidr == this_mpidr) {
 					continue;
 				}
 				state = psci_call(PSCI_AFFINITY_INFO, mpidr, 0, 0);
@@ -3348,7 +3918,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		dt_prop_u64(&w, "bus-frequency", 100000000ULL);
 		dt_prop_u64(&w, "memory-frequency", 100000000ULL);
 		dt_prop_u64(&w, "peripheral-frequency", 24000000ULL);
-		if (plat->small_cores & (1u << ((cpu_mpidr[i] >> plat->core_shift) & 31))) {
+		if (plat->small_cores & (1u << (plat_core_of(plat, cpu_mpidr[i]) & 31))) {
 			dt_prop_u32(&w, "small-core", 1);
 		}
 		dt_end(&w);
@@ -3370,11 +3940,31 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		dt_prop_u32(&w, "camera-rear", 1);
 		dt_end(&w);
 	}
+	/*
+	 * With touchid=1, Touch ID where an iPhone 8 has it (its tree: /arm-io/spi3/mesa, "biosensor,mesa", mesaType 1),
+	 * so MobileGestalt and Settings take the S20 for a Touch ID iPhone. Only the identity: no reg or interrupts, as
+	 * no Apple driver runs here; the kernel's RedwoodMesa plays the Secure Enclave's Touch ID part.
+	 */
+	if (touchid_requested) {
+		dt_begin(&w, "mesa");
+		dt_prop_str(&w, "device_type", "mesa");
+		dt_prop_str(&w, "compatible", "biosensor,mesa");
+		dt_prop_u32(&w, "mesaType", 1);
+		dt_end(&w);
+	}
 	dt_begin(&w, "gic");
 	dt_prop_str(&w, "device_type", "interrupt-controller");
-	dt_prop_str(&w, "compatible", "arm,gic-v3");
-	uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base, 0x100000 };
-	dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+	if (plat->gic_v2) {
+		/* GICv2: distributor + CPU interface; osfmk/arm64/gic_v2_irq.c reads this. */
+		dt_prop_str(&w, "compatible", "arm,cortex-a15-gic");
+		uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x1000, plat->gic_redist - plat->io_base, 0x1000 };
+		dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+	} else {
+		/* GICv3: distributor + redistributor; osfmk/arm64/gic_v3_irq.c reads this. */
+		dt_prop_str(&w, "compatible", "arm,gic-v3");
+		uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base, 0x100000 };
+		dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+	}
 	dt_end(&w);
 	if (plat->uart != 0) {
 		dt_begin(&w, "uart0");
@@ -3427,6 +4017,11 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		uint64_t sp_now = (uint64_t)(uintptr_t)__builtin_frame_address(0);
 		clean_dcache(sp_now - 0x2000, sp_now + 0x2000);
 		flush_dcache(phys_base, top);
+		/* the kernel writes the slot uncached and new cores read it with their caches off (the slot
+		 * is in .text, which the firmware maps read-only: not written from here, it is 0 in the image) */
+		flush_dcache((uint64_t)(uintptr_t)&kernel_cpu_trampoline,
+		    (uint64_t)(uintptr_t)kernel_cpu_resume_data + sizeof(uint64_t) * 17);
+		console_suspect = PLAT == &platform_y2s;
 		if (checkpoint == CHECKPOINT_SELFTEST) {
 			/* Do not enter the kernel at all: exercise only the return path. */
 			jump_to_kernel((uint64_t)(uintptr_t)&loader_return_stub, 0);
@@ -3507,23 +4102,32 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 			print("the kernel left a sound recording: %d bytes at %x\n", sound_len, sound[0]);
 		}
 	}
-	kernel_power = 0;
-	if (kernel_live != NULL && kernel_live->magic2 == KERNEL_LIVE_MAGIC2 && checkpoint != CHECKPOINT_SELFTEST &&
-	    (kernel_live->power & ~0xffULL) == KERNEL_POWER_TAG) {
-		kernel_power = kernel_live->power & 0xff;
-		print("the kernel ended with a request to %s the phone\n", kernel_power == KERNEL_POWER_OFF ? "turn off" :
-		    "restart");
-	}
+    if (kernel_live != NULL && kernel_live->magic3 == 0x334556494c554e58ULL &&
+        SCREEN.width == 1440 && SCREEN.height == 3200 &&
+        ((kernel_live->menu_width == 1080 && kernel_live->menu_height == 2400) ||
+         (kernel_live->menu_width == 720 && kernel_live->menu_height == 1600))) {
+        menu_output_width = (uint32_t)kernel_live->menu_width;
+        menu_output_height = (uint32_t)kernel_live->menu_height;
+    } else {
+        menu_output_width = menu_output_height = 0;
+    }
 	const char *klog = (const char *)loader_ctx[CTX_LOG_PA];
 	uint64_t klog_len = loader_ctx[CTX_LOG_LEN];
 	uint64_t reason = loader_ctx[CTX_REASON];
+
+	if (reason == 3) {
+		y2s_want_log_access = 1;
+	} else if (reason == 4) {
+		y2s_want_download = 1;      /* the kernel asked for Download Mode */
+	}
 	if (checkpoint == CHECKPOINT_SELFTEST) {
 		print("return-path self test passed\n");
 		set_result("selftest-ok", 0, 0);
 		klog = NULL;
 		klog_len = 0;
 	} else {
-		print("kernel returned: log at %x, %d bytes\n", (uint64_t)(uintptr_t)klog, klog_len);
+		print("kernel returned: reason %d, log at %x, %d bytes\n", reason,
+		    (uint64_t)(uintptr_t)klog, klog_len);
 		if (reason == 2) {
 			print("STOPPED AT CHECKPOINT %d\n", loader_ctx[CTX_ESR]);
 			set_result("checkpoint", loader_ctx[CTX_ESR], 0);
@@ -3645,7 +4249,7 @@ usb_wait(uint8_t endpoint)
 {
 	/* static: a long transfer is many short waits, and the watchdog must be fed across them */
 	static uint64_t last_pet;
-	uint64_t freq = READ_SYSREG(CNTFRQ_EL0), began = READ_SYSREG(CNTVCT_EL0);
+	uint64_t freq = timer_freq(), began = READ_SYSREG(CNTVCT_EL0);
 
 	for (;;) {
 		uint32_t msg = UsbDeviceEventNoEvent;
@@ -3672,10 +4276,23 @@ usb_wait(uint8_t endpoint)
 }
 
 static int usb_rx_queued;       /* usb_poll_command() has left the receive for the next command with the controller */
+static struct efi_usbfn_io *USBFN;      /* y2s: the transport (see the boot menu's section) */
+static int64_t ufn_rx(uint8_t *buf, uint64_t len);
+static int64_t ufn_tx(const uint8_t *data, uint64_t len);
+static uint8_t *stage_buf;
+static uint64_t stage_size, stage_len;
+static int stage_last_log(void);
+static const char *stage_write(const char *part, uint64_t off);
+static int usb_boot_asked;
+static void reboot_download(void);
+static void reboot_recovery(void);
 
 static int64_t
 usb_rx(uint8_t *buf, uint64_t len)
 {
+	if (USBFN != NULL) {
+		return ufn_rx(buf, len);
+	}
 	if (usb_rx_queued) {
 		usb_rx_queued = 0;      /* (every command is received the same way, into the same buffer) */
 	} else if (EFI_ERROR(USB->send(USB_EP_OUT, len, buf))) {
@@ -3689,6 +4306,9 @@ usb_tx(const uint8_t *data, uint64_t len)
 {
 	if (data != usb_tx_buf) {
 		memcpy(usb_tx_buf, data, len);
+	}
+	if (USBFN != NULL) {
+		return ufn_tx(usb_tx_buf, len);
 	}
 	if (EFI_ERROR(USB->send(USB_EP_IN, len, usb_tx_buf))) {
 		return -1;
@@ -3757,7 +4377,7 @@ fb_command(char *cmd)
 			} else if (str_eq(var, "version")) {
 				fb_reply("OKAY", "0.5");
 			} else if (str_eq(var, "max-download-size")) {
-				fb_reply("OKAY", download_to_ramdisk ? "0xffffffff" : "0x03f00000");
+				fb_reply("OKAY", download_to_ramdisk ? "0xffffffff" : stage_buf != NULL ? "0x05f00000" : "0x03f00000");
 			} else if (str_eq(var, "result")) {
 				fb_reply("OKAY", last_result);
 			} else if (str_eq(var, "screen") && SCREEN.base != 0) {
@@ -3789,8 +4409,8 @@ fb_command(char *cmd)
 			fb_reply("OKAY", "");
 		} else if (starts_with(cmd, "download:")) {
 			uint64_t total = parse_number(cmd + 9, 16), got = 0;
-			uint64_t limit = PAYLOAD_MAX_SIZE - 0x100000;
-			uint8_t *dest = (uint8_t *)PAYLOAD_BASE;
+			uint64_t limit = stage_buf != NULL ? stage_size : DOWNLOAD_MAX_SIZE;
+			uint8_t *dest = stage_buf != NULL ? stage_buf : (uint8_t *)(uintptr_t)download_base;
 			int to_ramdisk = download_to_ramdisk;
 
 			download_to_ramdisk = 0;
@@ -3816,6 +4436,11 @@ fb_command(char *cmd)
 			if (got == total) {
 				if (to_ramdisk) {
 					resident_rd_size = total;
+				}
+				if (stage_buf != NULL && !to_ramdisk) {
+					stage_len = total;
+					/* (a write is rounded up to the block: what follows is zeroes, not the last download's) */
+					memset(stage_buf + total, 0, (size_t)((total + 4095) / 4096 * 4096 - total));
 				}
 				fb_reply("OKAY", "");
 			} else {
@@ -3889,6 +4514,91 @@ fb_command(char *cmd)
 			/* the firmware's memory map into the log (then "oem log" and fetch it) */
 			print_memory_map();
 			fb_reply("OKAY", "");
+		} else if (starts_with(cmd, "oem read ")) {
+			/* "oem read PART HEXOFFSET HEXLEN": a piece of a partition into the stage; then "upload" (diagnostics) */
+			const char *a = cmd + 9;
+			char part[40];
+			int n = 0;
+			uint64_t off, len;
+			uint8_t *buf = stage_buf != NULL ? stage_buf : (uint8_t *)(uintptr_t)download_base;
+			uint64_t limit = stage_buf != NULL ? stage_size : DOWNLOAD_MAX_SIZE;
+
+			while (*a == ' ') {
+				a++;
+			}
+			while (*a && *a != ' ' && n < (int)sizeof(part) - 1) {
+				part[n++] = *a++;
+			}
+			part[n] = 0;
+			while (*a == ' ') {
+				a++;
+			}
+			off = parse_number(a, 16);      /* (lower-case hex) */
+			while (*a && *a != ' ') {
+				a++;
+			}
+			while (*a == ' ') {
+				a++;
+			}
+			len = parse_number(a, 16);
+			if (len == 0 || len > limit || !read_partition_into(part, off, buf, len)) {
+				fb_reply("FAIL", "oem read PART HEXOFFSET HEXLEN: no such partition, a bad offset, or too long");
+			} else {
+				staged_data = (const char *)buf;
+				staged_len = len;
+				fb_reply("OKAY", "");
+			}
+		} else if (starts_with(cmd, "oem lastlog")) {
+			/* the last run's log as it was saved in the partition; then "upload" (fastboot get_staged) */
+			fb_reply(stage_last_log() ? "OKAY" : "FAIL", "");
+		} else if (starts_with(cmd, "oem write ")) {
+			/* "oem write PART HEXOFFSET": the last download into the partition, read back */
+			char part[24];
+			const char *a = cmd + 10, *why;
+			unsigned n = 0;
+
+			while (*a == ' ') {
+				a++;
+			}
+			while (*a && *a != ' ' && n < sizeof(part) - 1) {
+				part[n++] = *a++;
+			}
+			part[n] = 0;
+			while (*a == ' ') {
+				a++;
+			}
+			why = stage_write(part, parse_number(a, 16));
+			if (why == NULL) {
+				fb_reply("INFO", "written and read back");
+				fb_reply("OKAY", "");
+			} else {
+				fb_reply("FAIL", why);
+			}
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+		} else if (starts_with(cmd, "oem cp-stop")) {
+			int safe=cellular_cp_retry_stop();
+			fb_reply(safe?"OKAY":"FAIL",safe?"CP reset/power held low":"CP cleanup not confirmed; memory remains reserved");
+#endif
+		} else if (starts_with(cmd, "oem boot")) {
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+			if (!cellular_cp_boot_can_reset()) {fb_reply("FAIL","CP stop not confirmed; use oem cp-stop");return;}
+#endif
+			fb_reply("OKAY", "booting iOS");
+			usb_boot_asked = 1;
+		} else if (starts_with(cmd, "oem recovery-mode")) {
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+			if (!cellular_cp_boot_can_reset()) {fb_reply("FAIL","CP stop not confirmed; use oem cp-stop");return;}
+#endif
+			fb_reply("OKAY", "");
+			BS->stall(200000);
+			reboot_recovery();
+		} else if (starts_with(cmd, "oem download-mode")) {
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+			if (!cellular_cp_boot_can_reset()) {fb_reply("FAIL","CP stop not confirmed; use oem cp-stop");return;}
+#endif
+			fb_reply("OKAY", "");
+			BS->stall(200000);
+			reboot_download();
 		} else if (starts_with(cmd, "oem log")) {
 			if (busy) {
 				compose_live_log(running_live, running_slide);
@@ -3897,6 +4607,9 @@ fb_command(char *cmd)
 			}
 			fb_reply("OKAY", "");
 		} else if (starts_with(cmd, "reboot") || starts_with(cmd, "oem reboot")) {
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+			if (!cellular_cp_boot_can_reset()) {fb_reply("FAIL","CP stop not confirmed; use oem cp-stop");return;}
+#endif
 			fb_reply("OKAY", "");
 			BS->stall(200000);
 			ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
@@ -3970,6 +4683,820 @@ usb_command_loop(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* y2s: the boot menu, USB through EFI_USBFN_IO_PROTOCOL, Download Mode       */
+/* (PLANS/09-standalone.md)                                                  */
+
+#include "menu_font.h"
+
+#define STAGE_SIZE      (96ULL << 20)   /* stage_buf: where downloads land on y2s (a whole recovery image) */
+
+/* the panel, through the firmware's framebuffer */
+static uint32_t
+menu_rgb(uint32_t rgb)
+{
+	/* GOP pixel format 0 is RGBX in memory (R first), 1 BGRX */
+	if (GOP != NULL && GOP->mode->info->pixel_format == 0) {
+		return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+	}
+	return rgb;
+}
+
+static void
+menu_fill(int x, int y, int w, int h, uint32_t rgb, int radius)
+{
+	uint32_t c = menu_rgb(rgb);
+
+	for (int j = 0; j < h; j++) {
+		int py = y + j;
+
+		if (py < 0 || py >= (int)SCREEN.height) {
+			continue;
+		}
+		uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)(menu_output_height ? (uint32_t)py * menu_output_height / SCREEN.height : (uint32_t)py) * SCREEN.stride);
+		int inset = 0;
+
+		if (radius > 0 && (j < radius || j >= h - radius)) {
+			int dy = j < radius ? radius - 1 - j : j - (h - radius);
+
+			/* the first x of the row inside a corner circle of this radius */
+			inset = radius;
+			while (inset > 0 && (radius - inset) * (radius - inset) + dy * dy < radius * radius) {
+				inset--;
+			}
+		}
+		for (int i = inset; i < w - inset; i++) {
+			int px = x + i;
+
+			if (px >= 0 && px < (int)SCREEN.width) {
+				row[menu_output_width ? (uint32_t)px * menu_output_width / SCREEN.width : (uint32_t)px] = c;
+			}
+		}
+	}
+}
+
+static int
+menu_text_width(const char *s, int scale)
+{
+	return (int)str_len(s) * 8 * scale;
+}
+
+static void
+menu_text(int x, int y, const char *s, int scale, uint32_t rgb)
+{
+	uint32_t c = menu_rgb(rgb);
+
+	for (; *s; s++, x += 8 * scale) {
+		const unsigned char *glyph = menu_font + (unsigned char)*s * 16;
+
+		for (int gy = 0; gy < 16; gy++) {
+			for (int gx = 0; gx < 8; gx++) {
+				if (!(glyph[gy] & (1u << gx))) {
+					continue;
+				}
+				for (int sy = 0; sy < scale; sy++) {
+					int py = y + gy * scale + sy;
+
+					if (py < 0 || py >= (int)SCREEN.height) {
+						continue;
+					}
+					uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)(menu_output_height ? (uint32_t)py * menu_output_height / SCREEN.height : (uint32_t)py) * SCREEN.stride);
+
+					for (int sx = 0; sx < scale; sx++) {
+						int px = x + gx * scale + sx;
+
+						if (px >= 0 && px < (int)SCREEN.width) {
+							row[menu_output_width ? (uint32_t)px * menu_output_width / SCREEN.width : (uint32_t)px] = c;
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+static void
+menu_text_center(int y, const char *s, int scale, uint32_t rgb)
+{
+	menu_text(((int)SCREEN.width - menu_text_width(s, scale)) / 2, y, s, scale, rgb);
+}
+
+static void
+menu_flush(void)
+{
+	clean_dcache(SCREEN.base, SCREEN.base + (uint64_t)SCREEN.stride * SCREEN.height);
+}
+
+/*
+ * The boot screen for people who just use the phone (A, 2026-11-15): no text and no menu, only iOS's own boot logo
+ * (ProgressUI apple-logo@3x, white on black, centered, the size it has once iOS runs) from the moment the loader
+ * starts until iOS draws -- the same picture Samsung's bootloader shows from up_param (tools/bootlogo/mkbootlogo.py
+ * makes both from YOUR iOS root; the artwork is never committed: without xnuloader/applelogo.h the screen is black).
+ * A volume key pressed while the logo shows opens the menu. Dev mode (payload entry "devmode", x1slte.sh DEVMODE=1;
+ * or bootui=0 in the cmdline): the loader's text and the HackiOS menu with its countdown, as before.
+ */
+#if __has_include("applelogo.h")
+#include "applelogo.h"
+#endif
+static int bootui = 1;
+#define BOOTUI_KEY_MS   700             /* how long a volume key press is looked for before iOS starts */
+
+static void
+boot_logo(void)
+{
+	menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
+#ifdef APPLELOGO_W
+	/* drawn for the 1440-wide native panel (iOS's 3x at 1080 is x 4/3); centered as iOS centers it */
+	int ox = ((int)SCREEN.width - APPLELOGO_W) / 2, oy = ((int)SCREEN.height - APPLELOGO_H) / 2;
+	uint32_t at = 0;
+
+	for (uint32_t i = 0; i + 1 < sizeof(applelogo_rle); i += 2) {
+		uint32_t v = applelogo_rle[i], n = applelogo_rle[i + 1];
+
+		for (uint32_t k = 0; k < n; k++, at++) {
+			int px = ox + (int)(at % APPLELOGO_W), py = oy + (int)(at / APPLELOGO_W);
+
+			if (v == 0 || px < 0 || py < 0 || px >= (int)SCREEN.width || py >= (int)SCREEN.height) {
+				continue;
+			}
+			uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)(menu_output_height ?
+			    (uint32_t)py * menu_output_height / SCREEN.height : (uint32_t)py) * SCREEN.stride);
+			row[menu_output_width ? (uint32_t)px * menu_output_width / SCREEN.width : (uint32_t)px] =
+			    menu_rgb(v * 0x010101u);
+		}
+	}
+#endif
+	menu_flush();
+}
+
+enum { MENU_BOOT, MENU_USB, MENU_DOWNLOAD, MENU_REBOOT, MENU_OFF, MENU_COUNT };
+static const char *const menu_items[MENU_COUNT] = { "Boot iOS", "Log access (USB)", "Download Mode", "Reboot", "Power off" };
+
+#define MENU_TOP        980
+#define MENU_ROW        230
+#define MENU_SCALE      5
+
+static void
+menu_draw(int selected, const char *banner, int countdown)
+{
+	int w = (int)SCREEN.width;
+	char line[64];
+
+	menu_fill(0, 0, w, (int)SCREEN.height, 0x000000, 0);
+	menu_text_center(300, "JesviOS", 10, 0xffffff);
+	menu_text_center(500, "Galaxy S20  -  iOS 16.5", 3, 0x8e8e93);
+	if (banner != NULL && banner[0] != 0) {
+		menu_text_center(640, banner, 3, 0xffd60a);
+	}
+	for (int i = 0; i < MENU_COUNT; i++) {
+		int y = MENU_TOP + i * MENU_ROW, x = 90;
+
+		menu_fill(x, y, w - 2 * x, MENU_ROW - 40, i == selected ? 0x0a84ff : 0x1c1c1e, 48);
+		menu_text(x + 70, y + (MENU_ROW - 40 - 16 * MENU_SCALE) / 2, menu_items[i], MENU_SCALE,
+		    i == selected ? 0xffffff : 0xebebf5);
+	}
+	if (countdown > 0) {
+		static const char head[] = "Booting iOS in ", tail[] = " s - press a key to stay";
+		unsigned n = 0;
+
+		for (unsigned i = 0; head[i]; i++) {
+			line[n++] = head[i];
+		}
+		line[n++] = (char)('0' + (countdown > 9 ? 9 : countdown));
+		for (unsigned i = 0; tail[i]; i++) {
+			line[n++] = tail[i];
+		}
+		line[n] = 0;
+		menu_text_center(MENU_TOP + MENU_COUNT * MENU_ROW + 60, line, 3, 0x8e8e93);
+	}
+	menu_text_center((int)SCREEN.height - 360, "Volume Up / Down: move", 3, 0x8e8e93);
+	menu_text_center((int)SCREEN.height - 290, "Power: select", 3, 0x8e8e93);
+	menu_flush();
+}
+
+/* a key, or 0 for none: 'u' up, 'd' down, 's' select */
+static int
+menu_key(void)
+{
+	efi_simple_text_input *in = (efi_simple_text_input *)ST->con_in;
+	efi_input_key key;
+
+	if (in == NULL || EFI_ERROR(in->read_key_stroke(in, &key))) {
+		return 0;
+	}
+	if (key.scan_code == EFI_SCAN_UP || key.scan_code == EFI_SCAN_LEFT) {
+		return 'u';
+	}
+	if (key.scan_code == EFI_SCAN_DOWN || key.scan_code == EFI_SCAN_RIGHT) {
+		return 'd';
+	}
+	if (key.unicode_char == '\r' || key.unicode_char == '\n' || key.scan_code == EFI_SCAN_ESC) {
+		return 's';
+	}
+	return 'x';
+}
+
+/* the choice: `wait` seconds untouched boot iOS (0: wait for a key) */
+static int
+menu_choose(const char *banner, int wait)
+{
+	uint64_t freq = timer_freq(), began = READ_SYSREG(CNTVCT_EL0), last_pet = began;
+	int selected = MENU_BOOT, left = wait, touched = wait == 0;
+
+	while (menu_key() != 0) {               /* (keys still held from the bootloader's combination) */
+	}
+	menu_draw(selected, banner, touched ? 0 : left);
+	for (;;) {
+		int k = menu_key();
+		uint64_t now = READ_SYSREG(CNTVCT_EL0);
+
+		if (now - last_pet > freq) {
+			last_pet = now;
+			wdt_pet();
+		}
+		if (k == 0) {
+			if (!touched) {
+				int remaining = wait - (int)((now - began) / freq);
+
+				if (remaining <= 0) {
+					return MENU_BOOT;
+				}
+				if (remaining != left) {
+					left = remaining;
+					menu_draw(selected, banner, left);
+				}
+			}
+			BS->stall(20000);
+			continue;
+		}
+		touched = 1;
+		if (k == 'u') {
+			selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
+		} else if (k == 'd') {
+			selected = (selected + 1) % MENU_COUNT;
+		} else if (k == 's') {
+			return selected;
+		}
+		menu_draw(selected, banner, 0);
+	}
+}
+
+/* the logo is up: a volume key within BOOTUI_KEY_MS opens the menu, else iOS starts */
+static int
+bootui_choose(void)
+{
+	uint64_t freq = timer_freq(), began = READ_SYSREG(CNTVCT_EL0);
+
+	while (menu_key() != 0) {               /* (keys still held from the bootloader's combination) */
+	}
+	while (READ_SYSREG(CNTVCT_EL0) - began < freq * BOOTUI_KEY_MS / 1000) {
+		int k = menu_key();
+
+		if (k == 'u' || k == 'd') {
+			return menu_choose("", 0);
+		}
+		BS->stall(10000);
+	}
+	return MENU_BOOT;
+}
+
+/* a status screen: a title and up to four lines */
+static void
+menu_status(const char *title, const char *l1, const char *l2, const char *l3, const char *l4)
+{
+	const char *lines[4] = { l1, l2, l3, l4 };
+
+	menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
+	menu_text_center(300, "JesviOS", 10, 0xffffff);
+	menu_text_center(700, title, 5, 0x0a84ff);
+	for (int i = 0; i < 4; i++) {
+		if (lines[i] != NULL) {
+			menu_text_center(1000 + i * 120, lines[i], 3, 0xebebf5);
+		}
+	}
+	menu_text_center((int)SCREEN.height - 290, "Power: back to the menu", 3, 0x8e8e93);
+	menu_flush();
+}
+
+/*
+ * Samsung's Download Mode, as `reboot download` asks for it (drivers/samsung/sec_reboot.c, exynos-reboot.c):
+ * PMU INFORM2[23:16] = 0x4E (a normal reboot, not into the charging screen), INFORM3 = 0x12345601
+ * (SEC_RESET_REASON_DOWNLOAD), RST_STAT cleared, the software reset.
+ */
+#define Y2S_PMU                 0x15860000ULL
+#define SEC_RESET_REASON_DOWNLOAD 0x12345601u
+#define SEC_RESET_REASON_RECOVERY 0x12345604u   /* sec_reboot.c "recovery": S-Boot starts the recovery partition */
+static void
+reboot_samsung(uint32_t reason)
+{
+	volatile uint32_t *pmu = (volatile uint32_t *)(uintptr_t)Y2S_PMU;
+	uint32_t v = pmu[0x808 / 4];
+
+	v &= ~(0xffu << 16);
+	v |= 0x4eu << 16;
+	pmu[0x808 / 4] = v;
+	pmu[0x80c / 4] = reason;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	pmu[0x404 / 4] = 0;
+	pmu[0x3a00 / 4] = 1u << 1;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	BS->stall(1000000);
+	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
+}
+static void reboot_download(void) { reboot_samsung(SEC_RESET_REASON_DOWNLOAD); }
+/* Samsung's `reboot recovery`: TWRP after tools/install/flash-twrp.sh wrote it (Jesvi iOS's BOOT holds this loader too,
+ * so a plain restart comes back here, not to recovery) */
+static void reboot_recovery(void) { reboot_samsung(SEC_RESET_REASON_RECOVERY); }
+
+static void
+power_off(void)
+{
+	volatile uint32_t *pmu = (volatile uint32_t *)(uintptr_t)Y2S_PMU;
+
+	ST->rt->reset_system(2 /* EfiResetShutdown */, 0, 0, NULL);
+	/* (sec_power_off: PS_HOLD low; with a charger in, S-Boot comes back to the charging screen) */
+	pmu[0x30c / 4] &= ~(1u << 8);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	BS->stall(2000000);
+}
+
+/* ---- USB: the fastboot server over EFI_USBFN_IO_PROTOCOL (high speed: bulk 512, ep0 64) ---- */
+
+static const uint8_t ufn_dev_desc[18] = { 18, 1, 0x00, 0x02, 0, 0, 0, 64, 0xd1, 0x18, 0x0d, 0xd0, 0x00, 0x01, 1, 2, 3, 1 };
+static uint8_t ufn_ep0_buf[256] __attribute__((aligned(64)));
+static int ufn_configured;
+static int ufn_done[2];                 /* a transfer on endpoint 1 finished: [0] OUT (rx), [1] IN (tx) */
+static uint64_t ufn_bytes[2];
+static int ufn_status[2];
+
+static void
+ufn_setup(const efi_usb_device_request *r)
+{
+	static const uint8_t status0[2] = { 0, 0 };
+	const uint8_t *data = NULL;
+	uint64_t len = 0;
+	uint8_t one = 1;
+
+	if (r->request_type == 0x80 && r->request == 6) {       /* GET_DESCRIPTOR */
+		uint8_t type = (uint8_t)(r->value >> 8), index = (uint8_t)r->value;
+		static const uint8_t *const strings[5] = { usb_str0, usb_str_mfr, usb_str_prod, usb_str_serial, usb_str_iface };
+
+		if (type == 1) {
+			data = ufn_dev_desc, len = sizeof(ufn_dev_desc);
+		} else if (type == 2) {
+			data = usb_cfg_desc, len = sizeof(usb_cfg_desc);
+		} else if (type == 3 && index < 5) {
+			data = strings[index], len = strings[index][0];
+		} else if (type == 6) {
+			data = usb_qualifier, len = sizeof(usb_qualifier);
+		}
+	} else if (r->request_type == 0x80 && r->request == 0) {       /* GET_STATUS */
+		data = status0, len = 2;
+	} else if (r->request_type == 0x80 && r->request == 8) {       /* GET_CONFIGURATION */
+		ufn_ep0_buf[0] = (uint8_t)ufn_configured;
+		data = ufn_ep0_buf, len = 1;
+	} else if (r->request_type == 0x00 && r->request == 9) {       /* SET_CONFIGURATION: the status stage is the driver's */
+		ufn_configured = r->value != 0;
+		usb_connected = ufn_configured;
+		return;
+	} else if ((r->request_type == 0x02) && (r->request == 1 || r->request == 3) && r->value == 0 && (r->index & 0x0f) != 0) {
+		/*
+		 * CLEAR_FEATURE / SET_FEATURE (ENDPOINT_HALT) of a bulk endpoint. macOS's fastboot clears both pipes every
+		 * time it opens the device, and the host's data toggle goes back to DATA0 with it: the device's must too
+		 * (DWC3's CLEARSTALL resets the sequence number), or every other packet after the first session is
+		 * dropped and the next command never arrives (25 October: the first command answered, the rest hung).
+		 */
+		uint8_t stall = r->request == 3;
+
+		USBFN->set_endpoint_stall_state(USBFN, (uint8_t)(r->index & 0x0f), (r->index & 0x80) ? UsbfnDirDeviceTx :
+		    UsbfnDirDeviceRx, &stall);
+		return;
+	} else if (r->length == 0) {
+		return;                 /* SET_INTERFACE, ...: nothing to say, the driver acknowledges */
+	}
+	if (data == NULL) {
+		USBFN->set_endpoint_stall_state(USBFN, 0, (r->request_type & 0x80) ? UsbfnDirDeviceTx : UsbfnDirDeviceRx, &one);
+		return;
+	}
+	if (len > r->length) {
+		len = r->length;
+	}
+	if (data != ufn_ep0_buf) {
+		memcpy(ufn_ep0_buf, data, (size_t)len);
+	}
+	USBFN->transfer(USBFN, 0, UsbfnDirDeviceTx, &len, ufn_ep0_buf);
+}
+
+/* one message from the driver: 0 nothing, 1 something */
+static int
+ufn_pump(void)
+{
+	uint32_t msg = EfiUsbMsgNone;
+	uint64_t size = sizeof(efi_usbfn_message_payload);
+	efi_usbfn_message_payload p;
+
+	if (EFI_ERROR(USBFN->event_handler(USBFN, &msg, &size, &p)) || msg == EfiUsbMsgNone) {
+		return 0;
+	}
+	switch (msg) {
+	case EfiUsbMsgSetupPacket:
+		ufn_setup(&p.udr);
+		break;
+	case EfiUsbMsgEndpointStatusChangedRx:
+	case EfiUsbMsgEndpointStatusChangedTx:
+		if (p.utr.endpoint == 1) {
+			int tx = msg == EfiUsbMsgEndpointStatusChangedTx;
+
+			ufn_done[tx] = 1;
+			ufn_bytes[tx] = p.utr.bytes;
+			ufn_status[tx] = (int)p.utr.status;
+		}
+		break;
+	case EfiUsbMsgBusEventDetach:
+	case EfiUsbMsgBusEventReset:
+		ufn_configured = 0;
+		usb_connected = 0;
+		break;
+	default:
+		break;
+	}
+	return 1;
+}
+
+static int ufn_leave;                   /* Power pressed, or "oem boot": out of the command loop */
+
+/* until endpoint 1's transfer `tx` finishes: the bytes, or -1 (aborted, unplugged, Power pressed) */
+static int64_t
+ufn_wait(int tx)
+{
+	uint64_t freq = timer_freq(), began = READ_SYSREG(CNTVCT_EL0), last_pet = began;
+
+	for (;;) {
+		/* a send the host does not take within 5 s: it went away (a fastboot that was stopped) */
+		if (tx && READ_SYSREG(CNTVCT_EL0) - began > 5 * freq) {
+			USBFN->abort_transfer(USBFN, 1, UsbfnDirDeviceTx);
+			ufn_done[1] = 0;
+			return -1;
+		}
+		if (!ufn_pump()) {
+			if (menu_key() == 's') {
+				ufn_leave = 1;
+				USBFN->abort_transfer(USBFN, 1, tx ? UsbfnDirDeviceTx : UsbfnDirDeviceRx);
+				return -1;
+			}
+		}
+		if (ufn_done[tx]) {
+			ufn_done[tx] = 0;
+			return ufn_status[tx] == UsbfnTransferComplete ? (int64_t)ufn_bytes[tx] : -1;
+		}
+		if (!ufn_configured) {
+			return -1;
+		}
+		if (READ_SYSREG(CNTVCT_EL0) - last_pet > freq) {
+			last_pet = READ_SYSREG(CNTVCT_EL0);
+			wdt_pet();
+		}
+	}
+}
+
+static int64_t
+ufn_rx(uint8_t *buf, uint64_t len)
+{
+	uint64_t n = (len + 511) & ~511ULL;
+	int64_t got;
+
+	ufn_done[0] = 0;
+	if (EFI_ERROR(USBFN->transfer(USBFN, 1, UsbfnDirDeviceRx, &n, buf))) {
+		return -1;
+	}
+	got = ufn_wait(0);
+	if (got > 0) {
+		flush_dcache((uint64_t)(uintptr_t)buf, (uint64_t)(uintptr_t)buf + (uint64_t)got);
+	}
+	return got;
+}
+
+static int64_t
+ufn_tx(const uint8_t *data, uint64_t len)
+{
+	uint64_t n = len;
+
+	ufn_done[1] = 0;
+	if (EFI_ERROR(USBFN->transfer(USBFN, 1, UsbfnDirDeviceTx, &n, (void *)(uintptr_t)data))) {
+		return -1;
+	}
+	return ufn_wait(1);
+}
+
+static int
+ufn_start(void)
+{
+	static const efi_guid guid = EFI_USBFN_IO_GUID;
+	static const void *const endpoints[2] = { usb_cfg_desc + 18, usb_cfg_desc + 25 };
+	static const efi_usb_interface_info iface = { usb_cfg_desc + 9, endpoints };
+	static const efi_usb_interface_info *const ifaces[1] = { &iface };
+	static const efi_usb_config_info config = { usb_cfg_desc, ifaces };
+	static const efi_usb_config_info *const configs[1] = { &config };
+	static efi_usb_device_info info = { ufn_dev_desc, configs };
+	static int started;
+	efi_status s;
+
+	if (started) {
+		return 1;
+	}
+	if (EFI_ERROR(BS->locate_protocol(&guid, NULL, (void **)&USBFN))) {
+		print("usb: no EFI_USBFN_IO_PROTOCOL\n");
+		USBFN = NULL;
+		return 0;
+	}
+	s = USBFN->start_controller(USBFN);
+	print("usb: UsbfnDwc3: start %x\n", s);
+	s = USBFN->configure_enable_endpoints(USBFN, &info);
+	print("usb: endpoints %x\n", s);
+	if (EFI_ERROR(s)) {
+		return 0;
+	}
+	if (usb_rx_buf == NULL) {
+		uint64_t at = 0;
+
+		if (!allocate_loader_memory(2 * USB_CHUNK, 0x1000, 0x1000, ~0ULL, &at)) {
+			return 0;
+		}
+		usb_rx_buf = (uint8_t *)(uintptr_t)at;
+		usb_tx_buf = (uint8_t *)(uintptr_t)(at + USB_CHUNK);
+	}
+	started = 1;
+	return 1;
+}
+
+/* the last run's log, as it was saved: recovery + 16 MB, NULs and all (the host drops them) */
+static int
+stage_last_log(void)
+{
+	uint8_t *buf = stage_buf != NULL ? stage_buf : (uint8_t *)(uintptr_t)download_base;
+
+	if (!read_partition_into(LOG_PARTITION_ASCII, LOG_OFFSET, buf, 8ULL << 20)) {
+		return 0;
+	}
+	staged_data = (const char *)buf;
+	staged_len = 8ULL << 20;
+	return 1;
+}
+
+/*
+ * What was downloaded, into a partition at an offset (bytes, a multiple of the block): only where this port
+ * keeps its own things -- recovery, boot, super's tail (system.apfs at 0x184B00000) -- never the bootloaders,
+ * EFS or Samsung's other partitions. Read back and compared.
+ */
+/*
+ * Where super's free tail begins: past the last logical partition in super's LP metadata, which differs per phone
+ * and firmware. y2s (SM-G986B): 0x184B00000. x1slte (SM-G980F, G980FXXSNHYB7): 0x1E8B04000 -- 0x184B00000 is
+ * inside its vendor partition. Set with -DSUPER_TAIL_START=... (xnuloader/build.sh, from the device's .conf).
+ */
+#ifndef SUPER_TAIL_START
+#define SUPER_TAIL_START 0x1E8B04000ULL
+#endif
+/*
+ * A window of userdata the port may write (bytes): a pinned, preallocated f2fs file's single extent,
+ * read with FIEMAP. 0 (the default): no write to userdata at all.
+ */
+#ifndef USERDATA_WIN_OFF
+#define USERDATA_WIN_OFF 0ULL
+#endif
+#ifndef SUPER_ROOT_LEN
+#define SUPER_ROOT_LEN 0ULL             /* -DSUPER_ROOT_LEN: super [0, LEN) is the iOS system volume's (x1slte, iOS only) */
+#endif
+#ifndef USERDATA_WIN_LEN
+#define USERDATA_WIN_LEN 0ULL
+#endif
+
+static const char *
+stage_write(const char *part, uint64_t off)
+{
+	efi_block_io *bio = find_partition_ascii(part);
+	uint64_t bs, size, len = stage_len, done = 0;
+	uint8_t *src = stage_buf;
+
+	if (str_eq(part, "userdata")) {
+		if (USERDATA_WIN_LEN == 0 || off < USERDATA_WIN_OFF || off + len > USERDATA_WIN_OFF + USERDATA_WIN_LEN) {
+			return "refused: userdata only inside the port's own window (USERDATA_WIN_OFF/LEN)";
+		}
+	} else if (str_eq(part, "super") && SUPER_ROOT_LEN != 0 && off + len <= SUPER_ROOT_LEN && SUPER_ROOT_LEN <= SUPER_TAIL_START) {
+		/* x1slte, iOS only (2026-11-06): the system volume at the head of super (Android's system/vendor are gone) */
+	} else if (str_eq(part, "up_param")) {
+		/* (A, 2026-11-15) Samsung's splash pictures (logo.jpg...): a tar of JPEGs, nothing the phone runs. Only a
+		 * whole tar from offset 0 (ustar magic in its first header), so a wrong download cannot land here. */
+		if (off != 0 || stage_len < 512 || memcmp(stage_buf + 257, "ustar", 5) != 0) {
+			return "refused: up_param takes only a tar of pictures, from offset 0";
+		}
+	} else if (!(str_eq(part, "recovery") || str_eq(part, "boot") || (str_eq(part, "super") && off >= SUPER_TAIL_START))) {
+		return "refused: only recovery, boot, up_param, super's free tail (SUPER_TAIL_START) and the userdata window";
+	}
+	if (bio == NULL || bio->media == NULL || src == NULL || len == 0) {
+		return "no such partition, or nothing downloaded";
+	}
+	bs = bio->media->block_size;
+	size = (bio->media->last_block + 1) * bs;
+	if (bs == 0 || off % bs != 0) {
+		return "the offset is not a multiple of the block";
+	}
+	len = (len + bs - 1) / bs * bs;         /* (the stage's tail beyond the download is zeroed) */
+	if (off + len > size || len > stage_size) {
+		return "past the end of the partition";
+	}
+	print("write: %d bytes to %s+%x\n", len, part, off);
+	while (done < len) {
+		uint64_t chunk = len - done > (4ULL << 20) ? (4ULL << 20) : len - done;
+
+		if (EFI_ERROR(bio->write_blocks(bio, bio->media->media_id, (off + done) / bs, chunk, src + done))) {
+			return "the write failed";
+		}
+		done += chunk;
+		wdt_pet();
+	}
+	bio->flush_blocks(bio);
+	for (done = 0; done < len;) {
+		uint64_t chunk = len - done > sizeof(ufs_buffer) ? sizeof(ufs_buffer) : len - done;
+
+		if (EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, (off + done) / bs, chunk, ufs_buffer)) ||
+		    memcmp(ufs_buffer, src + done, (size_t)chunk) != 0) {
+			return "READ BACK DIFFERENT";
+		}
+		done += chunk;
+	}
+	return NULL;
+}
+
+/*
+ * "Log access": the fastboot server until Power is pressed or the host says "oem boot". Returns 1 to boot iOS.
+ * Host: ./y2s.sh ulog (oem lastlog, get_staged), ./y2s.sh uflash (stage, oem write recovery 0), oem boot.
+ */
+static int
+log_access(void)
+{
+	/* Recheck firmware ownership/cache policy after the kernel returned. */
+	report_cellular_memory();
+	if (stage_buf == NULL) {
+		uint64_t at = 0;
+
+		if (allocate_loader_memory(STAGE_SIZE, 0x1000, 0x1000, ~0ULL, &at)) {
+			stage_buf = (uint8_t *)(uintptr_t)at;
+			stage_size = STAGE_SIZE;
+		}
+	}
+	if (!ufn_start()) {
+		menu_status("Log access", "USB could not be started", "(no EFI_USBFN_IO_PROTOCOL)", NULL, NULL);
+		while (menu_key() != 's') {
+			BS->stall(20000);
+			wdt_pet();
+		}
+		return 0;
+	}
+	/* (the last log is read from the flash when the host asks for it: oem lastlog) */
+	menu_status("Log access (USB)", "Connect the phone to the Mac, then:", "./x1slte.sh ulog    the last log",
+	    "./x1slte.sh uflash  a new build", "./x1slte.sh uboot   boot iOS");
+	ufn_leave = 0;
+	usb_boot_asked = 0;
+	while (!ufn_leave && !usb_boot_asked) {
+		char cmd[128];
+		int64_t n;
+
+		if (!ufn_configured) {
+			if (!ufn_pump()) {
+				if (menu_key() == 's') {
+					break;
+				}
+				BS->stall(2000);
+			}
+			continue;
+		}
+		n = usb_rx(usb_rx_buf, 511);
+		if (n <= 0) {
+			continue;
+		}
+		if (n > (int64_t)sizeof(cmd) - 1) {
+			n = sizeof(cmd) - 1;
+		}
+		memcpy(cmd, usb_rx_buf, (size_t)n);
+		cmd[n] = 0;
+		fb_command(cmd);
+	}
+	return usb_boot_asked;
+}
+
+/*
+ * The y2s loader: the menu at power-on, and again whenever iOS comes back. "Boot iOS" by itself after
+ * 3 s at power-on; after a run, the menu waits.
+ */
+
+/*
+ * x1slte: sboot starts recovery (this loader) only while misc's bootloader message says "boot-recovery"; after a reset
+ * it fell back to boot and hung at the Samsung logo (2026-11-05). The loader puts the command back at every start, so
+ * any reset or crash comes back here. Only the message's command field (misc's first 32 bytes) is written, read back.
+ * Android: the stock misc (ios-port-research/device/misc/misc-stock-android.img) through Download Mode.
+ */
+static void
+misc_keep_recovery(void)
+{
+	static uint8_t blk[4096] __attribute__((aligned(4096)));
+	static const char cmd[] = "boot-recovery";
+	efi_block_io *bio = find_partition_ascii("misc");
+	uint64_t bs;
+
+	if (bio == NULL || bio->media == NULL || (bs = bio->media->block_size) == 0 || bs > sizeof(blk)) {
+		print("misc: no partition (or an odd block size): the boot-recovery flag is not kept\n");
+		return;
+	}
+	if (EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, 0, bs, blk))) {
+		print("misc: not read\n");
+		return;
+	}
+	if (memcmp(blk, cmd, sizeof(cmd)) == 0) {
+		print("misc: boot-recovery is set\n");
+		return;
+	}
+	memset(blk, 0, 32);
+	memcpy(blk, cmd, sizeof(cmd));
+	if (EFI_ERROR(bio->write_blocks(bio, bio->media->media_id, 0, bs, blk))) {
+		print("misc: boot-recovery could not be written\n");
+		return;
+	}
+	if (bio->flush_blocks != NULL) {
+		bio->flush_blocks(bio);
+	}
+	memset(blk, 0, 32);
+	(void)bio->read_blocks(bio, bio->media->media_id, 0, bs, blk);
+	print("misc: boot-recovery %s\n", memcmp(blk, cmd, sizeof(cmd)) == 0 ? "written and read back" : "written, but reads back otherwise");
+}
+static void
+y2s_menu_loop(void)
+{
+	const char *banner = "";
+	int wait = 3, first = 1;
+
+	misc_keep_recovery();
+
+	for (;;) {
+		int choice;
+
+		if (y2s_want_download) {
+			y2s_want_download = 0;
+			menu_status("Download Mode", "the kernel asked for it", NULL, NULL, NULL);
+			reboot_download();
+		}
+		if (y2s_want_log_access) {
+			y2s_want_log_access = 0;
+			choice = MENU_USB;
+			wait = 0;
+			banner = "the kernel asked for Log access";
+		} else if (bootui && first) {
+			choice = bootui_choose();
+		} else {
+			choice = menu_choose(banner, wait);
+		}
+		first = 0;
+		wait = 0;
+		if (choice == MENU_USB) {
+			if (!log_access()) {
+				banner = "";
+				continue;
+			}
+			choice = MENU_BOOT;
+		}
+		if (choice == MENU_BOOT) {
+			/* The firmware must restore native DSIM/DSC geometry before another kernel. */
+			if (menu_output_width != 0) {
+				ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
+				continue;
+			}
+			if (bootui) {
+				boot_logo();
+			} else {
+				menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
+				menu_text_center((int)SCREEN.height / 2 - 40, "Starting iOS", 5, 0xffffff);
+				menu_flush();
+			}
+			log_len = 0;
+			print("== XNULOADER run (menu) ==\n");
+			if (!run_kernel(0, 0)) {
+				flush_log();            /* (why, from this loader's own lines, for Log access) */
+				banner = "iOS did not start: see Log access";
+			} else {
+				banner = "iOS returned: its log is saved (Log access)";
+			}
+			console_suspect = 1;            /* (the firmware's console after a run: see put_char) */
+		} else if (choice == MENU_DOWNLOAD) {
+			menu_status("Download Mode", "Rebooting into Samsung's Download Mode", NULL, NULL, NULL);
+			reboot_download();
+		} else if (choice == MENU_REBOOT) {
+			ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
+		} else if (choice == MENU_OFF) {
+			menu_status("Power off", "Turning off", NULL, NULL, NULL);
+			power_off();
+		}
+	}
+}
+
+/* ------------------------------------------------------------------------ */
 
 /*
  * QEMU's "ramfb" display shows whatever guest memory it is told to, in any size; the firmware
@@ -4031,7 +5558,7 @@ ramfb_phone_screen(void)
 			select = __builtin_bswap16(file.select);
 		}
 	}
-	if (select == 0 || EFI_ERROR(BS->allocate_pages(AllocateAnyPages, EfiLoaderData, (bytes + 0xFFF) >> 12, &fb))) {
+	if (select == 0 || !allocate_loader_memory((bytes + 0xFFF) & ~0xFFFULL, 0x1000, 0x1000, ~0ULL, &fb)) {
 		return;
 	}
 	memset((void *)(uintptr_t)fb, 0, (size_t)bytes);
@@ -4058,34 +5585,604 @@ ramfb_phone_screen(void)
 	SCREEN.stride = PHONE_WIDTH * 4;
 }
 
-#define AUTOBOOT_WAIT_MS        2000
-
-/* true if a volume key (an arrow) is pressed within AUTOBOOT_WAIT_MS */
-static int
-autoboot_interrupted(void)
+/*
+ * y2s/x1s: ABOX's Calliope DSP (two Cortex-A32s) is not reset by a warm restart. One left running by the last run
+ * (snd_calliope) keeps fetching through mappings the new kernel no longer owns and can write into its memory before
+ * the kernel's own stop (bsd/dev/redwood_exynos_sound.c) runs: the boot loops of 2026-11-06. Stop both cores first
+ * thing, every boot: PMU (0x15860000) core enable 0x31a0/0x3220 bit 0, then core power 0x3180/0x3200 bit 0
+ * (exynos9830.dts abox-core@18c55000/@18c55080 samsung,pmu_enable / pmu_power).
+ */
+static void
+y2s_calliope_stop(void)
 {
-	efi_text_input *in = ST->con_in;
-	efi_input_key key;
+	static const uint32_t regs[4] = { 0x31a0, 0x3220, 0x3180, 0x3200 };
+	uint32_t before[4];
 
-	if (in == NULL) {
-		return 0;
-	}
-	print("autoboot: the kernel starts in %d s; a volume key now for the USB commands instead\n",
-	    (uint64_t)(AUTOBOOT_WAIT_MS / 1000));
-	flush_log();
-	while (in->read_key_stroke(in, &key) == 0) {
-		/* keys from before: not this choice */
-	}
-	for (unsigned ms = 0; ms < AUTOBOOT_WAIT_MS; ms += 10) {
-		if (in->read_key_stroke(in, &key) == 0 && (key.scan_code == 1 || key.scan_code == 2)) {
-			print("autoboot: volume %s pressed: USB commands\n", key.scan_code == 1 ? "up" : "down");
-			return 1;
+	for (unsigned i = 0; i < 4; i++) {
+		volatile uint32_t *r = (volatile uint32_t *)(uintptr_t)(0x15860000ULL + regs[i]);
+
+		before[i] = *r;
+		if (before[i] & 1) {
+			*r = before[i] & ~1U;
 		}
-		BS->stall(10000);
 	}
-	print("autoboot: starting the kernel\n");
+	__asm__ volatile ("dsb sy" ::: "memory");
+	print("calliope: enable %x/%x power %x/%x%s\n", (uint64_t)before[0], (uint64_t)before[1], (uint64_t)before[2],
+	    (uint64_t)before[3], ((before[0] | before[1] | before[2] | before[3]) & 1) ? ": was running, stopped" : "");
+}
+
+#ifdef CELLULAR_RESERVE_CP
+/* Opt-in legacy-FD reservation: no modem action. Claim each CP range through
+ * boot services, then set Normal NC through DXE (which calls CPU Arch).
+ * Only the known fixed XNU Download descriptor may be relinquished. All
+ * other ranges must already be free or reserved; partial ownership fails.
+ * Preflight restores original attributes/ownership before fallback handoff;
+ * normal iOS runs retain the reservations. A failed request is rolled back.
+ */
+static struct {
+	uint64_t size, attributes;
+	int claimed, cache_changed;
+} cp_probe[3];
+static int cp_old_download_freed;
+static efi_dxe_services *cp_dxe;
+
+static int
+reserve_cellular_memory(void)
+{
+	static uint8_t map[65536];
+	uint64_t bytes = sizeof(map), key, stride;
+	uint32_t version;
+	if (PLAT != &platform_y2s) return 0;
+	cp_dxe = cellular_dxe_services();
+	if (!cp_dxe) return 0;
+	if (EFI_ERROR(BS->get_memory_map(&bytes, map, &key, &stride, &version)) ||
+	    stride < sizeof(efi_memory_descriptor) || bytes > sizeof(map) || bytes % stride) return 0;
+	int legacy = 0;
+	for (uint64_t off = 0; off < bytes; off += stride) {
+		efi_memory_descriptor *d = (efi_memory_descriptor *)(map + off);
+		if (d->phys_start == 0xf0000000 && d->pages == 0x1000 && d->type == EfiBootServicesData) legacy++;
+	}
+	/* Validate all ownership and GCD ranges before changing any of them. */
+	for (unsigned i = 0; i < 3; i++) {
+		uint64_t base = s20_cp_regions[i].base;
+		cp_probe[i].size = (s20_cp_regions[i].size + 0xffff) & ~0xffffULL;
+		efi_gcd_memory_descriptor d;
+		efi_status status = cp_dxe->get_memory_space_descriptor(base, &d);
+		if (EFI_ERROR(status) || d.base > base || d.length > ~0ULL - d.base ||
+		    d.base + d.length < base + cp_probe[i].size || !(d.capabilities & 2)) return 0;
+		cp_probe[i].attributes = d.attributes;
+		print("cellular reservation: GCD %x size %x attributes %x capabilities %x\n",
+		    base, cp_probe[i].size, d.attributes, d.capabilities);
+		if (s20_efi_map_covers(map, bytes, stride, base, cp_probe[i].size, EfiReservedMemoryType, 0)) continue;
+		if (i == 0 && legacy == 1) continue;
+		if (!s20_efi_map_covers(map, bytes, stride, base, cp_probe[i].size, EfiConventionalMemory, 0)) return 0;
+	}
+	if (legacy == 1) {
+		efi_status status = BS->free_pages(0xf0000000, 0x1000);
+		print("cellular reservation: release fixed download status %x\n", status);
+		if (EFI_ERROR(status)) return 0;
+		cp_old_download_freed = 1;
+	}
+	for (unsigned i = 0; i < 3; i++) {
+		uint64_t base = s20_cp_regions[i].base;
+		if (!s20_efi_map_covers(map, bytes, stride, base, cp_probe[i].size, EfiReservedMemoryType, 0)) {
+			uint64_t at = base;
+			efi_status status = BS->allocate_pages(AllocateAddress, EfiReservedMemoryType, cp_probe[i].size >> 12, &at);
+			print("cellular reservation: claim %x size %x status %x\n", base, cp_probe[i].size, status);
+			if (EFI_ERROR(status)) return 0;
+			cp_probe[i].claimed = 1;
+		}
+		if ((cp_probe[i].attributes & 0x1f) != 2) {
+			cp_probe[i].cache_changed = 1;
+			efi_status status = cp_dxe->set_memory_space_attributes(base, cp_probe[i].size,
+			    (cp_probe[i].attributes & ~0x1fULL) | 2);
+			print("cellular reservation: set Normal NC %x size %x status %x\n", base, cp_probe[i].size, status);
+			if (EFI_ERROR(status)) return 0;
+		}
+	}
+	return 1;
+}
+
+static void
+release_cellular_memory(void)
+{
+	for (unsigned i = 0; i < 3; i++) {
+		uint64_t base = s20_cp_regions[i].base;
+		if (cp_probe[i].cache_changed) {
+			efi_status status = cp_dxe->set_memory_space_attributes(base, cp_probe[i].size, cp_probe[i].attributes);
+			print("cellular reservation: restore attributes %x status %x\n", base, status);
+		}
+		if (cp_probe[i].claimed) {
+			efi_status status = BS->free_pages(base, cp_probe[i].size >> 12);
+			print("cellular reservation: release %x status %x\n", base, status);
+		}
+	}
+	if (cp_old_download_freed) {
+		uint64_t at = 0xf0000000;
+		efi_status status = BS->allocate_pages(AllocateAddress, EfiBootServicesData, 0x1000, &at);
+		print("cellular reservation: restore fixed download status %x\n", status);
+	}
+}
+#endif
+#ifdef CELLULAR_PREFLIGHT_ONLY
+#ifdef CELLULAR_CP_GPIO_PREFLIGHT
+/* Ownership/readback test only. All five AP-owned signals are held LOW;
+ * POWER_ON is never asserted, no firmware is sent, CP2AP inputs are untouched.
+ * Restore only each target's CON/DAT fields; protect RMW at TPL_HIGH_LEVEL,
+ * preserving neighboring Bluetooth GPG1-1 and every unrelated GPIO field.
+ */
+static int
+cellular_cp_gpio_preflight(void)
+{
+	static const struct {uint64_t base; unsigned pin;} pins[] = {
+		{0x15c30120,0}, /* RESET_N */
+		{0x15c30280,0}, /* POWER_ON */
+		{0x15c30320,0}, /* AP_STATUS */
+		{0x107300c0,3}, /* AP2CP_WAKE; NOT CP2AP_WAKE GPM30 */
+		{0x10730060,6}, /* DUMP_NOTI, later shared with SPI */
+	};
+	uint32_t saved_con[5], saved_dat[5];
+	int changed = 0, passed = 1;
+	report_cellular_memory();
+	uint64_t saved_par = READ_SYSREG(PAR_EL1), pmu = 0x15860720;
+	__asm__ volatile ("at s1e1r, %0; isb" :: "r"(pmu) : "memory");
+	int pmu_mapped = s20_par_device(READ_SYSREG(PAR_EL1), pmu);
+	__asm__ volatile ("msr par_el1, %0; isb" :: "r"(saved_par) : "memory");
+	if (!cellular_memory_ready || !pmu_mapped || (*(volatile uint32_t *)(uintptr_t)pmu & 1) ||
+	    (*(volatile uint32_t *)(uintptr_t)0x15c30284 & 1) ||
+	    (*(volatile uint32_t *)(uintptr_t)0x15c30384 & 1)) return 0;
+	for (unsigned i=0;i<5;i++) {
+		volatile uint32_t *bank = (volatile uint32_t *)(uintptr_t)pins[i].base;
+		saved_con[i]=bank[0]; saved_dat[i]=bank[1];
+		if ((saved_con[i]>>(4*pins[i].pin)) & 15) {
+			print("cellular GPIO: refused existing owner at %x pin %d\n", pins[i].base, (uint64_t)pins[i].pin);
+			return 0;
+		}
+	}
+	for (unsigned i=0;i<5;i++) {
+		volatile uint32_t *bank = (volatile uint32_t *)(uintptr_t)pins[i].base;
+		uint32_t con,dat;
+		uint64_t tpl=BS->raise_tpl(31 /* TPL_HIGH_LEVEL */);
+		int valid=s5123_gpio_output_values(bank[0],bank[1],pins[i].pin,0,&con,&dat);
+		if (valid) {bank[1]=dat; __asm__ volatile ("dsb sy" ::: "memory"); bank[0]=con; __asm__ volatile ("dsb sy" ::: "memory");}
+		BS->restore_tpl(tpl);
+		changed=(int)i+1;
+		uint32_t got_con=bank[0],got_dat=bank[1];
+		int okay=valid && ((got_con>>(4*pins[i].pin)) & 15)==1 && !((got_dat>>pins[i].pin)&1);
+		print("cellular GPIO: output-low %x pin %d verified %d\n",pins[i].base,(uint64_t)pins[i].pin,(uint64_t)okay);
+		if (!okay) {passed=0;break;}
+	}
+	if (passed) BS->stall(50000);
+	for (int i=changed-1;i>=0;i--) {
+		volatile uint32_t *bank = (volatile uint32_t *)(uintptr_t)pins[i].base;
+		uint32_t con_mask=15u<<(4*pins[i].pin),dat_mask=1u<<pins[i].pin;
+		uint64_t tpl=BS->raise_tpl(31);
+		bank[0]=(bank[0]&~con_mask)|(saved_con[i]&con_mask);
+		__asm__ volatile ("dsb sy" ::: "memory");
+		bank[1]=(bank[1]&~dat_mask)|(saved_dat[i]&dat_mask);
+		__asm__ volatile ("dsb sy" ::: "memory");
+		BS->restore_tpl(tpl);
+		int restored=(bank[0]&con_mask)==(saved_con[i]&con_mask);
+		int neighbors=(bank[0]&~con_mask)==(saved_con[i]&~con_mask);
+		print("cellular GPIO: restore %x pin %d verified %d neighbors preserved %d\n",
+		    pins[i].base,(uint64_t)pins[i].pin,(uint64_t)restored,(uint64_t)neighbors);
+		if (!restored || !neighbors) passed=0;
+	}
+	print("cellular GPIO: no power-on or firmware; result %d\n",(uint64_t)passed);
+	return passed;
+}
+#endif
+#ifdef CELLULAR_SPI_LOOPBACK
+struct cellular_loopback_state {
+	uint64_t base;
+	const uint8_t *expected;
+	uint32_t received, mismatches;
+	int active;
+};
+static uint32_t
+cellular_reg_read(uint64_t address)
+{
+	return *(volatile uint32_t *)(uintptr_t)address;
+}
+static void
+cellular_reg_write(uint64_t address, uint32_t value)
+{
+	*(volatile uint32_t *)(uintptr_t)address = value;
+	__asm__ volatile ("dsb sy" ::: "memory");
+}
+static int
+cellular_clock_wait(uint64_t address, uint32_t mask, uint32_t value)
+{
+	for (unsigned i = 0; i < 1000; i++) {
+		if ((cellular_reg_read(address) & mask) == value) return 1;
+		BS->stall(10);
+	}
 	return 0;
 }
+static uint32_t
+cellular_spi_read32(void *context, uint32_t offset)
+{
+	struct cellular_loopback_state *state = context;
+	return cellular_reg_read(state->base + offset);
+}
+static uint8_t
+cellular_spi_read8(void *context, uint32_t offset)
+{
+	struct cellular_loopback_state *state = context;
+	uint8_t value = *(volatile uint8_t *)(uintptr_t)(state->base + offset);
+	if (state->active) {
+		if (state->received >= 16 || value != state->expected[state->received]) state->mismatches++;
+		state->received++;
+	}
+	return value;
+}
+static void
+cellular_spi_write32(void *context, uint32_t offset, uint32_t value)
+{
+	struct cellular_loopback_state *state = context;
+	if (offset == S5123_MODE) value |= 1u << 3; /* INTERNAL loopback only. */
+	if (offset == S5123_CH) state->active = value == 3;
+	cellular_reg_write(state->base + offset, value);
+}
+static void
+cellular_spi_write8(void *context, uint32_t offset, uint8_t value)
+{
+	struct cellular_loopback_state *state = context;
+	*(volatile uint8_t *)(uintptr_t)(state->base + offset) = value;
+}
+static uint64_t
+cellular_spi_now(void *context)
+{
+	(void)context;
+	uint64_t ticks = READ_SYSREG(CNTVCT_EL0), frequency = timer_freq();
+	return (ticks / frequency) * 1000000 + (ticks % frequency) * 1000000 / frequency;
+}
+
+/* One generated 16-byte internal-loopback packet, never firmware. External
+ * SPI pins MUST stay GPIO inputs. No CP power/reset/pinmux write is allowed.
+ * Only USI mode and SPI clock divider/mux are changed, then restored along
+ * with the controller configuration. Refuse an already-configured owner.
+ */
+static int
+cellular_spi_loopback(void)
+{
+	static const uint32_t spi_offsets[] = {S5123_CH,S5123_MODE,S5123_CS,S5123_IRQ,S5123_PACKET,S5123_SWAP,S5123_FEEDBACK,S5123_USI_CON};
+	uint32_t saved_spi[sizeof(spi_offsets)/sizeof(spi_offsets[0])] = {0};
+	uint32_t mux = cellular_reg_read(0x10700690), divider = cellular_reg_read(0x10701820);
+	uint32_t mode = cellular_reg_read(0x10721048), pins = cellular_reg_read(0x10730060);
+	uint32_t gate0 = cellular_reg_read(0x107020fc), gate1 = cellular_reg_read(0x1070208c);
+	int changed_clock = 0, changed_mode = 0, saved_controller = 0, passed = 0;
+	report_cellular_memory();
+	if (!cellular_memory_ready || !timer_freq() || mode != 0 || (pins & 0xffff0000u) ||
+	    (mux & (1u<<16)) || (divider & (1u<<16)) ||
+	    !(gate0 & (1u<<21)) || !(gate1 & (1u<<21)) ||
+	    (cellular_reg_read(0x15c30284) & 1) || (cellular_reg_read(0x15c30384) & 1)) {
+		print("cellular SPI loopback: refused (memory, clock, existing owner, external pins or CP levels)\n");
+		return 0;
+	}
+	print("cellular SPI loopback: generated 16-byte packet; external pins remain inputs; no CP writes\n");
+	changed_clock = 1;
+	cellular_reg_write(0x10701820, (divider & ~15u) | 3); /* 26MHz /4 IP /4 = 1.625MHz. */
+	if (!cellular_clock_wait(0x10701820, (1u<<16)|15, 3)) goto restore;
+	cellular_reg_write(0x10700690, mux & ~(1u<<4));
+	if (!cellular_clock_wait(0x10700690, (1u<<16)|(1u<<4), 0)) goto restore;
+	changed_mode = 1;
+	cellular_reg_write(0x10721048, 2); /* SPI, while all four external pads remain inputs. */
+	if (cellular_reg_read(0x10721048) != 2) goto restore;
+	for (unsigned i = 0; i < sizeof(spi_offsets)/sizeof(spi_offsets[0]); i++)
+		saved_spi[i] = cellular_reg_read(0x10960000 + spi_offsets[i]);
+	saved_controller = 1;
+	if ((saved_spi[0] & 3) || saved_spi[3] || saved_spi[4]) {
+		print("cellular SPI loopback: controller unexpectedly active; no transfer\n");
+		goto restore;
+	}
+	uint8_t pattern[16];
+	for (unsigned i = 0; i < sizeof(pattern); i++) pattern[i] = (uint8_t)(0x35 + 17*i);
+	struct cellular_loopback_state state = {.base=0x10960000, .expected=pattern};
+	struct s5123_spi_ops ops = {&state,cellular_spi_read32,cellular_spi_read8,
+	    cellular_spi_write32,cellular_spi_write8,cellular_spi_now};
+	struct s5123_spi_result result = {0};
+	int error = s5123_spi_send_boot(&ops, &result, pattern, sizeof(pattern), 1625000, 20000, 1);
+	passed = !error && result.completed_bytes == sizeof(pattern) && state.received == sizeof(pattern) && !state.mismatches;
+	print("cellular SPI loopback: error %s%d completed %d received %d mismatches %d status %x\n",
+	    error < 0 ? "-" : "", (uint64_t)(error < 0 ? -error : error), (uint64_t)result.completed_bytes, (uint64_t)state.received,
+	    (uint64_t)state.mismatches, (uint64_t)result.last_status);
+restore:
+	if (saved_controller) {
+		cellular_reg_write(0x10960000 + S5123_CH, 0);
+		/* Restore channel enable last, while pads still remain inputs. */
+		for (unsigned i = 1; i < sizeof(spi_offsets)/sizeof(spi_offsets[0]); i++)
+			cellular_reg_write(0x10960000 + spi_offsets[i], saved_spi[i]);
+		cellular_reg_write(0x10960000 + S5123_CH, saved_spi[0]);
+		int controller_restored = 1;
+		for (unsigned i = 0; i < sizeof(spi_offsets)/sizeof(spi_offsets[0]); i++)
+			if (cellular_reg_read(0x10960000 + spi_offsets[i]) != saved_spi[i]) controller_restored = 0;
+		print("cellular SPI loopback: controller restored %d\n", (uint64_t)controller_restored);
+		if (!controller_restored) passed = 0;
+	}
+	if (changed_mode) cellular_reg_write(0x10721048, mode);
+	if (changed_clock) {
+		cellular_reg_write(0x10701820, divider);
+		if (!cellular_clock_wait(0x10701820, (1u<<16)|15, divider & 15)) passed = 0;
+		cellular_reg_write(0x10700690, mux);
+		if (!cellular_clock_wait(0x10700690, (1u<<16)|(1u<<4), mux & (1u<<4))) passed = 0;
+	}
+	int restored = cellular_reg_read(0x10721048) == mode && cellular_reg_read(0x10730060) == pins &&
+	    (cellular_reg_read(0x10701820) & 15) == (divider & 15) &&
+	    (cellular_reg_read(0x10700690) & (1u<<4)) == (mux & (1u<<4));
+	print("cellular SPI loopback: controls restored %d; result %d\n", (uint64_t)restored, (uint64_t)(passed && restored));
+	return passed && restored;
+}
+#endif
+#ifdef CELLULAR_MMIO_PREFLIGHT
+/* Add only known peripheral MMIO holes through DXE, then verify live Device
+ * identity mappings before any register read. Added maps remain until reboot;
+ * the host restores original BOOT/cold-resets after collecting the RAM report.
+ * SPI is mapped/translated only: its controller is deliberately NOT read while
+ * USI/clocks/pins remain unconfigured. CP power/reset are never written here.
+ */
+static int
+cellular_mmio_preflight(void)
+{
+	static const struct { uint64_t base, size; } regions[] = {
+		{0x10700000, 0x4000}, /* CMU PERIC1 */
+		{0x10720000, 0x10000}, /* Existing SYSREG PERIC1 */
+		{0x10730000, 0x1000}, /* GPIO PERIC1 */
+		{0x15c30000, 0x1000}, /* GPIO CMGP */
+		{0x10960000, 0x1000}, /* SPI16: mapping only, no controller access */
+#ifdef CELLULAR_PCIE_MAP_PREFLIGHT
+		{0x13c00000, 0x4000}, /* HSI2 clock controls; never write shared UFS clocks */
+		{0x13c30000, 0x1000}, /* GPF3 CLKREQ/PERST inputs */
+		{0x13c20000, 0x2000}, /* PCIe1 SYSREG: mapping only */
+		{0x13d20000, 0x2000}, /* ELBI: mapping only; PHY remains isolated */
+		{0x13d50000, 0x2000}, /* PHY: mapping only */
+		{0x13800000, 0x301000}, /* DBI: mapping only */
+		{0x13d40000, 0x1000}, /* PCS: mapping only */
+		{0x14ffe000, 0x2000}, /* configuration window: mapping only */
+		{0x13d00000, 0x1000}, /* IA: mapping only */
+#endif
+	};
+	static const uint64_t clock_pin_regs[] = {
+		0x10700690,0x10701820,0x107020fc,0x1070208c,0x10703070,
+		0x10721048,0x10730060,0x10730064,0x10730068
+	};
+	static const uint64_t gpio_banks[] = {0x15c30120,0x15c30280,0x15c30320,0x15c30380,0x15c303c0,0x15c303e0};
+	efi_dxe_services *dxe = cellular_dxe_services();
+	if (!dxe || (READ_SYSREG(CurrentEL) >> 2) != 1) return 0;
+	for (unsigned i = 0; i < sizeof(regions)/sizeof(regions[0]); i++) {
+		uint64_t base = regions[i].base, size = regions[i].size;
+		efi_gcd_memory_descriptor d;
+		efi_status status = dxe->get_memory_space_descriptor(base, &d);
+		if (EFI_ERROR(status) || d.base > base || d.length > ~0ULL-d.base || d.base+d.length < base+size) return 0;
+		print("cellular MMIO: GCD %x size %x type %d attributes %x\n", base, size, (uint64_t)d.type, d.attributes);
+		if (d.type == 0) {
+			status = dxe->add_memory_space(3 /* EfiGcdMemoryTypeMemoryMappedIo */, base, size, 1 /* UC */);
+			print("cellular MMIO: add %x status %x\n", base, status);
+			if (EFI_ERROR(status)) return 0;
+		} else if (d.type != 3 || !(d.capabilities & 1)) return 0;
+		status = dxe->set_memory_space_attributes(base, size, (d.attributes & ~0x1fULL) | 1);
+		print("cellular MMIO: Device %x status %x\n", base, status);
+		if (EFI_ERROR(status)) return 0;
+		uint64_t saved = READ_SYSREG(PAR_EL1);
+		int okay = 1;
+		for (uint64_t address = base; address < base+size; address += 4096) {
+			__asm__ volatile ("at s1e1r, %0; isb" :: "r"(address) : "memory");
+			if (!s20_par_device(READ_SYSREG(PAR_EL1), address)) { okay = 0; break; }
+		}
+		__asm__ volatile ("msr par_el1, %0; isb" :: "r"(saved) : "memory");
+		print("cellular MMIO: live Device identity %x verified %d\n", base, (uint64_t)okay);
+		if (!okay) return 0;
+	}
+	for (unsigned i = 0; i < sizeof(clock_pin_regs)/sizeof(clock_pin_regs[0]); i++) {
+		uint64_t address = clock_pin_regs[i];
+		print("cellular MMIO: read %x value %x\n", address, (uint64_t)*(volatile uint32_t *)(uintptr_t)address);
+	}
+	for (unsigned i = 0; i < sizeof(gpio_banks)/sizeof(gpio_banks[0]); i++) {
+		volatile uint32_t *bank = (volatile uint32_t *)(uintptr_t)gpio_banks[i];
+		print("cellular MMIO: GPIO %x CON %x DAT %x PUD %x\n", gpio_banks[i],
+		    (uint64_t)bank[0], (uint64_t)bank[1], (uint64_t)bank[2]);
+	}
+	print("cellular MMIO: complete; SPI controller not read; CP unchanged\n");
+#ifdef CELLULAR_PCIE_MAP_PREFLIGHT
+	static const uint64_t pcie_controls[]={0x13c00600,0x13c00610,0x13c02018,0x13c0201c,
+	    0x13c02020,0x13c02024,0x13c02028,0x13c0202c,0x13c02030,0x13c02034,
+	    0x13c30000,0x13c30004,0x13c30008};
+	for (unsigned i=0;i<sizeof(pcie_controls)/sizeof(pcie_controls[0]);i++)
+		print("cellular PCIe map: control %x value %x\n",pcie_controls[i],
+		    (uint64_t)*(volatile uint32_t *)(uintptr_t)pcie_controls[i]);
+	print("cellular PCIe map: complete; translation only, no controller read or link/power request\n");
+#ifdef CELLULAR_PCIE_ACCESS_PREFLIGHT
+	/* Cold root-port access is not equivalent to Linux's already-initialized
+	 * link-down path. Keep CP off and PERST asserted, temporarily bypass PHY
+	 * isolation, then restore isolation/pin ownership before fallback. No
+	 * shared HSI2/UFS clock, LTSSM, ATU, endpoint or DMA writes.
+	 */
+	volatile uint32_t *pmu=(volatile uint32_t *)0x15860720;
+	volatile uint32_t *con=(volatile uint32_t *)0x13c30000;
+	volatile uint32_t *dat=(volatile uint32_t *)0x13c30004;
+	volatile uint32_t *input_clock=(volatile uint32_t *)0x13d500d8;
+	uint32_t saved_pmu=*pmu,saved_con=*con,saved_dat=*dat,old_clock=0;
+	uint32_t identity=0,command=0,link=0,ltssm=0;
+	int clock_changed=0,clock_ok=0,restored=1;
+	if ((saved_pmu&1) || (*(volatile uint32_t *)0x15c30284&1) ||
+	    (*(volatile uint32_t *)0x15c30384&1) || (saved_con&0xff)) {
+		print("cellular PCIe access: owner/power guard refused\n");return 0;
+	}
+	for (uint64_t a=0x13c02018;a<=0x13c02034;a+=4) {
+		if (!(*(volatile uint32_t *)(uintptr_t)a & (1u<<21))) {
+			print("cellular PCIe access: clock guard refused %x\n",a);return 0;
+		}
+	}
+#define PCIE_CHECKPOINT(message) do { \
+	print("cellular PCIe access: checkpoint " message "\n"); \
+	compose_logs(NULL,0); \
+	if (!store_logs(find_log_partition(),NULL,0)) goto pcie_access_restore; \
+} while (0)
+	PCIE_CHECKPOINT("before PERST ownership and isolation bypass");
+	uint64_t tpl=BS->raise_tpl(31);
+	*dat &= ~2u;__asm__ volatile ("dsb sy" ::: "memory");
+	*con=(*con&~0xf0u)|0x10u;__asm__ volatile ("dsb sy" ::: "memory");
+	BS->restore_tpl(tpl);
+	if ((*con&0xf0u)!=0x10u || (*dat&2)) goto pcie_access_restore;
+	*pmu |= 1;__asm__ volatile ("dsb sy" ::: "memory");
+	if (!(*pmu&1) || EFI_ERROR(BS->stall(1000))) goto pcie_access_restore;
+	PCIE_CHECKPOINT("isolation bypass verified; before ELBI LTSSM read 13d20054");
+	ltssm=*(volatile uint32_t *)0x13d20054;
+	print("cellular PCIe access: LTSSM enable %x\n",(uint64_t)ltssm);
+	if (ltssm) goto pcie_access_restore;
+	PCIE_CHECKPOINT("before PHY clock read 13d500d8");
+	old_clock=*input_clock;
+	print("cellular PCIe access: input clock before %x\n",(uint64_t)old_clock);
+	PCIE_CHECKPOINT("before PHY clock write28");
+	clock_changed=1;
+	*input_clock=0x28;__asm__ volatile ("dsb sy" ::: "memory");
+	clock_ok=*input_clock==0x28;
+	if (clock_ok) {
+		PCIE_CHECKPOINT("before ROOT identity read13800000");
+		identity=*(volatile uint32_t *)0x13800000;
+		print("cellular PCIe access: ROOT identity read %x\n",(uint64_t)identity);
+		PCIE_CHECKPOINT("before ROOT command read13800004");
+		command=*(volatile uint32_t *)0x13800004;
+		PCIE_CHECKPOINT("before ELBI state read13d202c8");
+		link=*(volatile uint32_t *)0x13d202c8;
+		print("cellular PCIe access: ROOT id %x command/status %x link %x (not endpoint)\n",
+		    (uint64_t)identity,(uint64_t)command,(uint64_t)link);
+	}
+pcie_access_restore:
+	print("cellular PCIe access: restoring clock/isolation/PERST ownership\n");flush_log();
+	if (clock_changed) {
+		*input_clock=old_clock;__asm__ volatile ("dsb sy" ::: "memory");
+		if (*input_clock!=old_clock) restored=0;
+	}
+	*pmu=(*pmu&~1u)|(saved_pmu&1);__asm__ volatile ("dsb sy" ::: "memory");
+	if ((*pmu&1)!=(saved_pmu&1)) restored=0;
+	/* CP stayed off throughout; restore only our PERST pin, no CLKREQ writes. */
+	tpl=BS->raise_tpl(31);
+	*con=(*con&~0xf0u)|(saved_con&0xf0u);__asm__ volatile ("dsb sy" ::: "memory");
+	*dat=(*dat&~2u)|(saved_dat&2);__asm__ volatile ("dsb sy" ::: "memory");
+	BS->restore_tpl(tpl);
+	if (*con!=saved_con || (*dat&2)!=(saved_dat&2)) restored=0;
+	int valid=clock_ok && identity && identity!=0xffffffffu && restored;
+	print("cellular PCIe access: restored %d result %d; CP off, no link/DMA request\n",(uint64_t)restored,(uint64_t)valid);
+	flush_log();
+#undef PCIE_CHECKPOINT
+	if (!valid) return 0;
+#endif
+#endif
+	return 1;
+}
+#endif
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+#include "../tools/cellular/s5123-uefi-boot.h"
+#endif
+/* Exercise the real allocation path without booting a kernel with new pools.
+ * The original installed loader is loaded first and started after all probe
+ * allocations have been released. Additional opt-in probes may exercise CP
+ * controls/BOOT; those must confirm shutdown before releasing reservations.
+ * A dedicated payload entry retains the report in FD RAM while the original
+ * loader runs iOS; the host reads it through the existing read-only debug port.
+ */
+static efi_status
+cellular_memory_preflight(void)
+{
+	struct payload_header *ph = (struct payload_header *)PAYLOAD_BASE;
+	efi_handle fallback = NULL;
+	uint8_t *report = NULL;
+	uint64_t report_size = 0;
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+	const uint8_t *cp_image=NULL,*cp_info=NULL;
+	uint64_t cp_length=0,cp_info_length=0;
+#endif
+	efi_status status;
+	if (ph->magic != PAYLOAD_MAGIC || ph->size > PAYLOAD_MAX_SIZE - sizeof(*ph)) return EFI_ERROR_BIT | 2;
+	const uint8_t *p = (const uint8_t *)(ph + 1), *end = p + ph->size;
+	while ((uint64_t)(end - p) >= sizeof(struct payload_entry)) {
+		const struct payload_entry *entry = (const struct payload_entry *)p;
+		if (!entry->name[0]) break;
+		uint64_t padded = ((uint64_t)entry->size + 15) & ~15ULL;
+		if (padded > (uint64_t)(end - p) - sizeof(*entry)) return EFI_ERROR_BIT | 2;
+		if (memcmp(entry->name, "fallback.efi\0\0\0\0", 16) == 0) {
+			status = BS->load_image(0, IMAGE, NULL, (void *)(p + sizeof(*entry)), entry->size, &fallback);
+			print("cellular preflight: original loader LoadImage status %x\n", status);
+			if (EFI_ERROR(status)) return status;
+		} else if (memcmp(entry->name, "probe.report\0\0\0\0", 16) == 0) {
+			report = (uint8_t *)(p + sizeof(*entry));
+			report_size = entry->size;
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+		} else if (memcmp(entry->name,"cp.boot\0\0\0\0\0\0\0\0\0",16)==0) {
+			cp_image=p+sizeof(*entry);cp_length=entry->size;
+		} else if (memcmp(entry->name,"cp.boot.info\0\0\0\0",16)==0) {
+			cp_info=p+sizeof(*entry);cp_info_length=entry->size;
+#endif
+		}
+		p += sizeof(*entry) + padded;
+	}
+	if (!fallback || !report || report_size < 8192) return EFI_ERROR_BIT | 14;
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+	print("== CELLULAR CP BOOT PREFLIGHT (one guarded power/BOOT attempt) ==\n");
+#else
+	print("== CELLULAR MEMORY PREFLIGHT (no modem start) ==\n");
+#endif
+#ifdef CELLULAR_RESERVE_CP
+	print("cellular reservation: probe result %d\n", (uint64_t)reserve_cellular_memory());
+#endif
+#ifdef CELLULAR_MMIO_PREFLIGHT
+	int mmio_ready = cellular_mmio_preflight();
+	print("cellular MMIO: preflight result %d\n", (uint64_t)mmio_ready);
+#ifdef CELLULAR_SPI_LOOPBACK
+	int spi_ready=mmio_ready && cellular_spi_loopback();
+	print("cellular SPI loopback: preflight result %d\n", (uint64_t)spi_ready);
+#endif
+#ifdef CELLULAR_CP_GPIO_PREFLIGHT
+	int gpio_ready=mmio_ready && cellular_cp_gpio_preflight();
+	print("cellular GPIO: preflight result %d\n", (uint64_t)gpio_ready);
+#endif
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+	if (mmio_ready && spi_ready && gpio_ready) {
+		int safe=cellular_cp_boot_preflight(cp_image,cp_length,cp_info,cp_info_length);
+		while (!safe) {
+			print("cellular CP BOOT: HOLD; cleanup unconfirmed; CP RAM retained. USB oem cp-stop then oem boot\n");
+			flush_log();
+			(void)log_access();
+			safe=cellular_cp_retry_stop();
+		}
+	} else print("cellular CP BOOT: prerequisite failed; no power-on or BOOT attempt\n");
+#endif
+#endif
+	print_memory_map();
+	report_cellular_memory();
+	int staging_ok = reserve_download_buffer();
+	reserve_wifi_dma();
+	reserve_display_pool();
+	print("cellular preflight: staging %d wifi %x display %x\n", (uint64_t)staging_ok, wifi_dma_size, display_pool_size);
+	if (display_pool_size) {
+		status = BS->free_pages(display_pool_base, display_pool_size >> 12);
+		print("cellular preflight: display free status %x\n", status);
+	}
+	if (wifi_dma_size) {
+		status = BS->free_pages(wifi_dma_base, wifi_dma_size >> 12);
+		print("cellular preflight: wifi free status %x\n", status);
+	}
+	if (download_base) {
+		status = BS->free_pages(download_base, DOWNLOAD_MAX_SIZE >> 12);
+		print("cellular preflight: staging free status %x\n", status);
+	}
+#ifdef CELLULAR_RESERVE_CP
+	release_cellular_memory();
+	print("cellular reservation: after undo\n");
+	report_cellular_memory();
+#endif
+	print("cellular preflight: handing off to the original loader\n");
+	uint32_t report_len = log_len < report_size - 8 ? log_len : (uint32_t)(report_size - 8);
+	memset(report, 0, (size_t)report_size);
+	memcpy(report + 8, log_buf, report_len);
+	/* Refuse to present a silently truncated probe as complete evidence. */
+	((uint32_t *)report)[1] = report_len | (log_len > report_size - 8 ? 0x80000000u : 0);
+	((uint32_t *)report)[0] = 0x304d5043; /* CPM0 */
+	__asm__ volatile ("dsb sy" ::: "memory");
+	return BS->start_image(fallback, NULL, NULL);
+}
+#endif
 
 efi_status EFIAPI
 efi_main(efi_handle image, efi_system_table *st)
@@ -4098,9 +6195,11 @@ efi_main(efi_handle image, efi_system_table *st)
 	IMAGE = image;
 
 	BS->set_watchdog_timer(0, 0, 0, NULL);
+	screen_quiet = 1;               /* (the boot screen: no text; bootui=0 brings it back once the payload is read) */
+
 	print("== XNULOADER v3 ==\n");
 	print("CurrentEL=%x MIDR=%x MMFR0=%x CNTFRQ=%d image=%x\n", READ_SYSREG(CurrentEL) >> 2, READ_SYSREG(MIDR_EL1),
-	    READ_SYSREG(ID_AA64MMFR0_EL1), READ_SYSREG(CNTFRQ_EL0), (uint64_t)(uintptr_t)&__ImageBase);
+	    READ_SYSREG(ID_AA64MMFR0_EL1), timer_freq(), (uint64_t)(uintptr_t)&__ImageBase);
 
 	PLAT = &platform_qemu_virt;
 	if (EFI_ERROR(BS->locate_protocol(&gop_guid, NULL, (void **)&GOP)) || GOP->mode == NULL ||
@@ -4119,34 +6218,64 @@ efi_main(efi_handle image, efi_system_table *st)
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
+	if (PLAT == &platform_y2s && SCREEN.base != 0) {
+		boot_logo();
+	}
+#ifdef CELLULAR_PREFLIGHT_ONLY
+	return cellular_memory_preflight();
+#endif
+#ifdef CELLULAR_RESERVE_CP
+	if (PLAT == &platform_y2s) {
+		if (reserve_cellular_memory()) {
+			print("cellular reservation: retained for iOS; modem stays off\n");
+		} else {
+			print("cellular reservation: failed; restoring original ownership; modem unavailable\n");
+			release_cellular_memory();
+		}
+	}
+#endif
+	if (PLAT == &platform_y2s) {
+		y2s_calliope_stop();
+	}
 
 	install_exception_hook();
 	wdt_arm();
+	if (!reserve_download_buffer()) {
+		print("download buffer: no safe staging memory; loader holds without booting\n");
+		for (;;) { BS->stall(1000000); wdt_pet(); }
+	}
+	report_cellular_memory();
 
 	int have_payload = parse_payload(&pi, 0);
-	/*
-	 * A payload with a kernel and no "usb" is a boot without the computer (mkpayload.py --autoboot):
-	 * the kernel starts by itself. A volume key held in the first seconds takes the loader to its USB
-	 * commands instead, so that the phone can still be worked on from the computer.
-	 */
-	if (have_payload && !pi.usb_mode && pi.kernel != NULL && autoboot_interrupted()) {
-		pi.usb_mode = 1;
+	for (const char *c = have_payload && pi.cmdline ? pi.cmdline : ""; *c; c++) {
+		if (starts_with(c, "bootui=0") && (c == pi.cmdline || c[-1] == ' ')) {
+			bootui = 0;
+			screen_quiet = 0;
+		}
+	}
+	if (have_payload && pi.devmode) {
+		bootui = 0;             /* dev mode (x1slte.sh DEVMODE=1): the HackiOS menu with its countdown, and the text */
+		screen_quiet = 0;
+	}
+	if (PLAT != &platform_y2s) {
+		screen_quiet = 0;       /* (QEMU and the rest: as before) */
 	}
 	if (have_payload && pi.usb_mode && usb_start()) {
 		flush_log();
 		usb_command_loop();
 	}
 
-	/*
-	 * One-shot mode: run the kernel that came with the image, then reset -- or, when iOS was turned
-	 * off ("slide to power off"), turn the phone off.
-	 */
+	/* y2s: the boot menu (Boot iOS by itself after 3 s, Log access over USB, Download Mode) */
+	if (have_payload && PLAT == &platform_y2s && SCREEN.base != 0 && !pi.usb_mode) {
+		y2s_menu_loop();
+	}
+	/* One-shot mode: run the kernel that came with the image, then reset. */
 	if (have_payload) {
 		run_kernel(0, 0);
-		if (kernel_power == KERNEL_POWER_OFF) {
-			power_off();
-		}
 	}
-	reboot();
-	return 0;
+	/* Keep the result on screen: a reboot loop would hide the panic. */
+	print("\nloader: done, holding. Hold Power+VolDown to reset.\n");
+	for (;;) {
+		BS->stall(1000000);
+	}
 }

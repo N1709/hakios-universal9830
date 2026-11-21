@@ -9,7 +9,7 @@
  * against the standards' own examples and against Python's hashlib and "cryptography".
  * Nothing here is written for speed, and nothing here says a key in a message.
  */
-#ifdef _KERNEL
+#if defined(_KERNEL) || defined(KERNEL)
 #include <sys/param.h>
 #include <sys/systm.h>
 #else
@@ -326,6 +326,67 @@ aes_unwrap(const uint8_t kek[16], const uint8_t *wrapped, unsigned length, uint8
 	return (good == 0 ? 0 : -1);
 }
 
+/* FIPS 197, 5.1: the cipher on one block (the access point wraps the group key with it). */
+static void
+aes_encrypt(const uint8_t round_keys[176], uint8_t s[16])
+{
+	for (unsigned i = 0; i < 16; i++) {
+		s[i] ^= round_keys[i];
+	}
+	for (unsigned round = 1; round <= 10; round++) {
+		uint8_t t[16];
+
+		for (unsigned c = 0; c < 4; c++) {		/* the bytes substituted, the rows shifted */
+			for (unsigned r = 0; r < 4; r++) {
+				t[4 * c + r] = sbox[s[4 * ((c + r) % 4) + r]];
+			}
+		}
+		if (round == 10) {
+			memcpy(s, t, 16);
+		} else {
+			for (unsigned c = 0; c < 4; c++) {	/* the columns mixed */
+				const uint8_t *a = t + 4 * c;
+
+				s[4 * c + 0] = times(a[0], 2) ^ times(a[1], 3) ^ a[2] ^ a[3];
+				s[4 * c + 1] = a[0] ^ times(a[1], 2) ^ times(a[2], 3) ^ a[3];
+				s[4 * c + 2] = a[0] ^ a[1] ^ times(a[2], 2) ^ times(a[3], 3);
+				s[4 * c + 3] = times(a[0], 3) ^ a[1] ^ a[2] ^ times(a[3], 2);
+			}
+		}
+		for (unsigned i = 0; i < 16; i++) {
+			s[i] ^= round_keys[16 * round + i];
+		}
+	}
+}
+
+/* RFC 3394, 2.2.1: `plain` (a multiple of 8 bytes, at least 16) wrapped into `wrapped`, 8 bytes longer. */
+static void
+aes_wrap(const uint8_t kek[16], const uint8_t *plain, unsigned length, uint8_t *wrapped)
+{
+	unsigned n = length / 8;
+	uint8_t round_keys[176], block[16];
+
+	aes_keys(kek, round_keys);
+	memset(wrapped, 0xa6, 8);
+	memcpy(wrapped + 8, plain, length);
+	for (unsigned j = 0; j <= 5; j++) {
+		for (unsigned i = 1; i <= n; i++) {
+			uint64_t t = (uint64_t)n * j + i;
+
+			memcpy(block, wrapped, 8);
+			memcpy(block + 8, wrapped + 8 * i, 8);
+			aes_encrypt(round_keys, block);
+			memcpy(wrapped, block, 8);
+			for (unsigned k = 0; k < 8; k++) {
+				wrapped[7 - k] ^= (uint8_t)(t >> (8 * k));
+			}
+			memcpy(wrapped + 8 * i, block + 8, 8);
+		}
+	}
+	memset(round_keys, 0, sizeof(round_keys));
+	memset(block, 0, sizeof(block));
+}
+
 /* ---- the handshake -------------------------------------------------------------------------------- */
 
 /*
@@ -353,33 +414,47 @@ aes_unwrap(const uint8_t kek[16], const uint8_t *wrapped, unsigned length, uint8
 #define INFO_ENCRYPTED	0x1000
 
 static void
-mic_of(const struct lx_wpa *wpa, const uint8_t *message, unsigned length, uint8_t mic[16])
+mic_with(const uint8_t kck[16], const uint8_t *message, unsigned length, uint8_t mic[16])
 {
 	const uint8_t zeros[16] = { 0 };
 	const uint8_t *pieces[3] = { message, zeros, message + AT_MIC + 16 };
 	const unsigned lengths[3] = { AT_MIC, 16, length - AT_MIC - 16 };
 	uint8_t digest[20];
 
-	hmac_sha1(wpa->kck, 16, pieces, lengths, 3, digest);
+	hmac_sha1(kck, 16, pieces, lengths, 3, digest);
 	memcpy(mic, digest, 16);
+}
+
+static void
+mic_of(const struct lx_wpa *wpa, const uint8_t *message, unsigned length, uint8_t mic[16])
+{
+	mic_with(wpa->kck, message, length, mic);
+}
+
+/* the PTK of a PMK, two addresses and two nonces (IEEE 802.11-2020, 12.7.1.3): KCK, KEK, TK */
+static void
+expand(const uint8_t pmk[32], const uint8_t a1[6], const uint8_t a2[6], const uint8_t n1[32], const uint8_t n2[32],
+    uint8_t kck[16], uint8_t kek[16], uint8_t tk[16])
+{
+	uint8_t data[76], keys[48];
+	int a_first = memcmp(a1, a2, 6) < 0, n_first = memcmp(n1, n2, 32) < 0;
+
+	memcpy(data, a_first ? a1 : a2, 6);
+	memcpy(data + 6, a_first ? a2 : a1, 6);
+	memcpy(data + 12, n_first ? n1 : n2, 32);
+	memcpy(data + 44, n_first ? n2 : n1, 32);
+	prf(pmk, 32, "Pairwise key expansion", data, sizeof(data), keys, sizeof(keys));
+	memcpy(kck, keys, 16);
+	memcpy(kek, keys + 16, 16);
+	memcpy(tk, keys + 32, 16);
+	memset(keys, 0, sizeof(keys));
 }
 
 /* The keys of the handshake and the pairwise key, from the PMK, both addresses and both nonces. */
 static void
 derive(struct lx_wpa *wpa)
 {
-	uint8_t data[76], keys[48];
-	int own_first = memcmp(wpa->own, wpa->peer, 6) < 0, own_nonce_first = memcmp(wpa->own_nonce, wpa->peer_nonce, 32) < 0;
-
-	memcpy(data, own_first ? wpa->own : wpa->peer, 6);
-	memcpy(data + 6, own_first ? wpa->peer : wpa->own, 6);
-	memcpy(data + 12, own_nonce_first ? wpa->own_nonce : wpa->peer_nonce, 32);
-	memcpy(data + 44, own_nonce_first ? wpa->peer_nonce : wpa->own_nonce, 32);
-	prf(wpa->pmk, 32, "Pairwise key expansion", data, sizeof(data), keys, sizeof(keys));
-	memcpy(wpa->kck, keys, 16);
-	memcpy(wpa->kek, keys + 16, 16);
-	memcpy(wpa->pairwise, keys + 32, 16);
-	memset(keys, 0, sizeof(keys));
+	expand(wpa->pmk, wpa->own, wpa->peer, wpa->own_nonce, wpa->peer_nonce, wpa->kck, wpa->kek, wpa->pairwise);
 	wpa->have_keys = 1;
 }
 
@@ -520,4 +595,174 @@ lx_wpa_message(struct lx_wpa *wpa, const unsigned char *message, unsigned length
 	}
 	answer(wpa, message, 2 | INFO_MIC | INFO_SECURE, NULL, NULL, 0, reply, reply_length);
 	return (LX_WPA_GROUP);
+}
+
+/* ---- the access point's side (Personal Hotspot; IEEE 802.11-2020, 12.7.6.2 to 12.7.6.5) -------------- */
+
+/* a message of ours: version 2, RSN descriptor, `info`, key length 16 (CCMP), the counter, a nonce, key data */
+static unsigned
+ap_build(const struct lx_wpa_ap *ap, unsigned info, const uint8_t *nonce, const uint8_t *data, unsigned data_length,
+    uint8_t *out)
+{
+	unsigned length = AT_DATA + data_length;
+
+	memset(out, 0, length);
+	out[0] = 2;
+	out[1] = 3;
+	out[2] = (uint8_t)((length - 4) >> 8);
+	out[3] = (uint8_t)(length - 4);
+	out[AT_KIND] = 2;
+	out[AT_INFO] = (uint8_t)(info >> 8);
+	out[AT_INFO + 1] = (uint8_t)info;
+	out[AT_INFO + 3] = 16;				/* key length (7, 8) */
+	for (unsigned k = 0; k < 8; k++) {
+		out[AT_REPLAY + 7 - k] = (uint8_t)(ap->replay >> (8 * k));
+	}
+	if (nonce != NULL) {
+		memcpy(out + AT_NONCE, nonce, 32);
+	}
+	out[AT_DATA_LENGTH] = (uint8_t)(data_length >> 8);
+	out[AT_DATA_LENGTH + 1] = (uint8_t)data_length;
+	if (data_length != 0) {
+		memcpy(out + AT_DATA, data, data_length);
+	}
+	if (info & INFO_MIC) {
+		mic_with(ap->kck, out, length, out + AT_MIC);
+	}
+	return (length);
+}
+
+static unsigned
+ap_message3(struct lx_wpa_ap *ap, uint8_t *out)
+{
+	uint8_t plain[MESSAGE_MOST / 2], wrapped[MESSAGE_MOST / 2 + 8];
+	unsigned n = 0;
+
+	memcpy(plain, ap->rsn, ap->rsn_length);		/* our RSN element, as the beacon has it */
+	n = ap->rsn_length;
+	plain[n++] = 0xdd;				/* the GTK KDE: 00-0f-ac:1, key id, the key */
+	plain[n++] = (uint8_t)(6 + ap->group_length);
+	plain[n++] = 0x00;
+	plain[n++] = 0x0f;
+	plain[n++] = 0xac;
+	plain[n++] = 1;
+	plain[n++] = (uint8_t)(ap->group_index & 3);
+	plain[n++] = 0;
+	memcpy(plain + n, ap->group, ap->group_length);
+	n += ap->group_length;
+	if (n % 8 != 0 || n < 16) {			/* padding: 0xdd, then zeros (12.7.2) */
+		plain[n++] = 0xdd;
+		while (n % 8 != 0 || n < 16) {
+			plain[n++] = 0;
+		}
+	}
+	aes_wrap(ap->kek, plain, n, wrapped);
+	memset(plain, 0, sizeof(plain));
+	ap->replay++;
+	n = ap_build(ap, 2 | INFO_PAIRWISE | INFO_INSTALL | INFO_ACK | INFO_MIC | INFO_SECURE | INFO_ENCRYPTED, ap->own_nonce,
+	    wrapped, n + 8, out);
+	memset(wrapped, 0, sizeof(wrapped));
+	return (n);
+}
+
+int
+lx_wpa_ap_first(struct lx_wpa_ap *ap, unsigned char *message, unsigned *length)
+{
+	if (ap->rsn_length > 64 || ap->group_length == 0 || ap->group_length > 32) {
+		return (LX_WPA_BAD);
+	}
+	ap->stage = 1;
+	ap->replay++;
+	*length = ap_build(ap, 2 | INFO_PAIRWISE | INFO_ACK, ap->own_nonce, NULL, 0, message);
+	return (LX_WPA_ANSWER);
+}
+
+int
+lx_wpa_ap_again(struct lx_wpa_ap *ap, unsigned char *message, unsigned *length)
+{
+	if (ap->stage == 1) {
+		return (lx_wpa_ap_first(ap, message, length));
+	}
+	if (ap->stage == 3) {
+		*length = ap_message3(ap, message);
+		return (LX_WPA_ANSWER);
+	}
+	*length = 0;
+	return (LX_WPA_NOTHING);
+}
+
+int
+lx_wpa_ap_message(struct lx_wpa_ap *ap, const unsigned char *message, unsigned length, unsigned char *reply,
+    unsigned *reply_length, const char **why)
+{
+	uint8_t mic[16], kck[16], kek[16], tk[16];
+	unsigned info, body, difference = 0;
+	const char *nothing;
+
+	why = why != NULL ? why : &nothing;
+	*why = "";
+	*reply_length = 0;
+	if (length < 4 || message[1] != 3) {
+		return (LX_WPA_NOTHING);
+	}
+	body = (unsigned)message[2] << 8 | message[3];
+	if (length < AT_DATA || 4 + body > length || 4 + body < AT_DATA || 4 + body > MESSAGE_MOST) {
+		*why = "its length is not a key message's";
+		return (LX_WPA_BAD);
+	}
+	length = 4 + body;
+	info = (unsigned)message[AT_INFO] << 8 | message[AT_INFO + 1];
+	if (message[AT_KIND] != 2 || (info & INFO_VERSION) != 2 || !(info & INFO_MIC) || (info & INFO_ACK) ||
+	    !(info & INFO_PAIRWISE)) {
+		*why = "it is not message 2 or 4 of a WPA2 four-way handshake";
+		return (LX_WPA_BAD);
+	}
+	for (unsigned k = 0; k < 8; k++) {
+		difference |= message[AT_REPLAY + 7 - k] ^ (uint8_t)(ap->replay >> (8 * k));
+	}
+	if (difference != 0) {
+		*why = "its counter is not our last message's";
+		return (LX_WPA_BAD);
+	}
+
+	/* message 2: the station's nonce; the keys follow from it, and its signature proves the passphrase */
+	if (ap->stage == 1 && !(info & INFO_SECURE)) {
+		expand(ap->pmk, ap->own, ap->peer, ap->own_nonce, message + AT_NONCE, kck, kek, tk);
+		mic_with(kck, message, length, mic);
+		for (unsigned i = 0; i < 16; i++) {
+			difference |= mic[i] ^ message[AT_MIC + i];
+		}
+		if (difference != 0) {
+			memset(kck, 0, 16);
+			memset(kek, 0, 16);
+			memset(tk, 0, 16);
+			*why = "its signature is not right (the station has another passphrase)";
+			return (LX_WPA_BAD);
+		}
+		memcpy(ap->peer_nonce, message + AT_NONCE, 32);
+		memcpy(ap->kck, kck, 16);
+		memcpy(ap->kek, kek, 16);
+		memcpy(ap->pairwise, tk, 16);
+		memset(kck, 0, 16);
+		memset(kek, 0, 16);
+		memset(tk, 0, 16);
+		ap->stage = 3;
+		*reply_length = ap_message3(ap, reply);
+		return (LX_WPA_ANSWER);
+	}
+
+	/* message 4: signed with the keys just made; then both sides use them */
+	if (ap->stage == 3 && (info & INFO_SECURE)) {
+		mic_with(ap->kck, message, length, mic);
+		for (unsigned i = 0; i < 16; i++) {
+			difference |= mic[i] ^ message[AT_MIC + i];
+		}
+		if (difference != 0) {
+			*why = "message 4's signature is not right";
+			return (LX_WPA_BAD);
+		}
+		ap->stage = 4;
+		return (LX_WPA_KEYS);
+	}
+	return (LX_WPA_NOTHING);
 }

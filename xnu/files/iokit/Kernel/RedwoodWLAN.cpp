@@ -135,3 +135,51 @@ RedwoodWLANStart(const char * interface, const uint8_t * address)
 	}
 	controller->release();
 }
+
+/*
+ * The S20+'s Bluetooth (bsd/dev/redwood_exynos_bt.c): an IOService named "bluetooth", which is what iOS's bluetoothd
+ * looks for before anything else ("No bluetooth on this device." without it), with what it reads of it:
+ * local-mac-address (its BD address, as BT_DEVICE_ADDRESS), transport-encoding (1: H4) and transport-speed.
+ */
+class RedwoodBluetooth : public IOService
+{
+	OSDeclareDefaultStructors(RedwoodBluetooth);
+};
+
+OSDefineMetaClassAndStructors(RedwoodBluetooth, IOService);
+
+extern "C" void RedwoodBluetoothStart(const uint8_t * address, uint32_t speed);
+
+void
+RedwoodBluetoothStart(const uint8_t * address, uint32_t speed)
+{
+	IOService * platform = IOService::getPlatform();
+	RedwoodBluetooth * bt = OSTypeAlloc(RedwoodBluetooth);
+	OSData * data;
+	uint32_t encoding = 1;
+
+	if (platform == NULL || bt == NULL || !bt->init()) {
+		OSSafeReleaseNULL(bt);
+		IOLog("RedwoodBluetooth: cannot create the service\n");
+		return;
+	}
+	if ((data = OSData::withBytes(address, 6)) != NULL) {
+		bt->setProperty("local-mac-address", data);
+		data->release();
+	}
+	if ((data = OSData::withBytes(&encoding, sizeof(encoding))) != NULL) {
+		bt->setProperty("transport-encoding", data);
+		data->release();
+	}
+	if ((data = OSData::withBytes(&speed, sizeof(speed))) != NULL) {
+		bt->setProperty("transport-speed", data);
+		data->release();
+	}
+	bt->setProperty("IOBuiltin", true);
+	if (publish(bt, platform, "bluetooth") == NULL) {
+		IOLog("RedwoodBluetooth: the service did not start\n");
+	} else {
+		bt->release();
+		IOLog("RedwoodBluetooth: \"bluetooth\" published (H4, %u baud)\n", speed);
+	}
+}

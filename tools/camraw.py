@@ -2,7 +2,7 @@
 """Make pictures of the frames the kernel's camera driver left in memory (boot-arg cam=3 and up;
 bsd/dev/redwood_camera.c), as the loader hands them over ("xl camera").
 
-usage: camraw.py CAMERA.raw PREFIX [--bayer N]
+usage: camraw.py CAMERA.raw PREFIX [--bayer N] [--black N]
 
 CAMERA.raw is a header { "RWCAM001", width, height, stride, format, bayer, frames, frame_bytes,
 source, sensor[16], last } in its first 4096 bytes (last: which place holds the last frame written), then the frames, frame_bytes each. Format 1 is MIPI
@@ -13,6 +13,9 @@ interpolation -- with a plain grey-world white balance and a gamma of 2.2: a fir
 finished photograph; PREFIX-N-raw.png is the frame's raw values as they are (grey, 8 bits).
 Formats 2 and 3 are a picture iOS made of a frame (cam=5): NV12 (full-range YCbCr 4:2:0, the chroma plane
 after the luma one, both of the stride) or BGRA, which becomes PREFIX.png as it is.
+--black N subtracts an explicit RAW pedestal only for the RGB preview; default0
+preserves earlier behavior. The raw-intensity image and capture bytes are unchanged.
+This is a diagnostic development option, not a dark calibration.
 --bayer N takes the frames for that order instead of the header's. The header's is the one each
 sensor's module file gives (tools/camsensor.py lists it): the OV02B10's and the OV16A1Q's picture is
 BGGR, the S5KHM2SD's and the S5K4H7's GRBG. The OV02B10's own colour bars (cam_pattern=1) are taken
@@ -51,7 +54,14 @@ def unpack_raw10(line, width):
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
+    black = 0
+    if '--black' in sys.argv:
+        black = int(sys.argv[sys.argv.index('--black') + 1])
+        if not 0 <= black <= 1023:
+            sys.exit('camraw.py: black must be 0..1023')
     data = open(sys.argv[1], 'rb').read()
+    if len(data) < 4096:
+        sys.exit('camraw.py: incomplete camera header')
     magic, width, height, stride, fmt, bayer, frames, frame_bytes, source = struct.unpack_from('<8s8I', data, 0)
     sensor = data[40:56].split(b'\0')[0].decode(errors='replace')
     last = struct.unpack_from('<I', data, 56)[0]
@@ -98,9 +108,9 @@ def main():
         for y in range(0, height - 1, 2):
             row = []
             for x in range(0, width - 1, 2):
-                r = lines[y + ry][x + rx]
-                g = (lines[y + g1y][x + g1x] + lines[y + g2y][x + g2x]) / 2
-                b = lines[y + by][x + bx]
+                r = max(0, lines[y + ry][x + rx] - black)
+                g = (max(0, lines[y + g1y][x + g1x] - black) + max(0, lines[y + g2y][x + g2x] - black)) / 2
+                b = max(0, lines[y + by][x + bx] - black)
                 row.append((r, g, b))
                 sums[0] += r
                 sums[1] += g

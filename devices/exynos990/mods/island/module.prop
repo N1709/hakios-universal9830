@@ -1,0 +1,4 @@
+id=island
+name=Dynamic Island
+description=Island pill around the front camera cut-out (docs/devices/x1slte/dynamic-island.md)
+requires=TARGET_DISPLAY_CUTOUT

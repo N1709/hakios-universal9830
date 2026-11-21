@@ -27,7 +27,7 @@ those); this counts the LENGTHS, which that census does not look at.
 
 A `.metallib` container counts as one FILE and all of its functions' sets, which
 is why the count is files and not modules: every library of Resident Evil 4 holds
-exactly one function (docs/air.md section 8) and Apple's hold several.
+exactly one function (docs/dev/air.md section 8) and Apple's hold several.
 
 Every count whose value is the point when it is zero is printed as a zero rather
 than left out: "no set disagrees" and "no counter was reached" are different
@@ -67,7 +67,7 @@ def module_lengths(ll, counts):
         # A set node, which is any node that declares `air.indirect_buffer` with
         # a struct type info. The ICB kernel's NESTED set is one of these too --
         # one of 7 858 in Resident Evil 4 -- and is counted here like the rest;
-        # docs/air.md 8.2.1 says why that count differs by one from the census's.
+        # docs/dev/air.md 8.2.1 says why that count differs by one from the census's.
         if '!"air.indirect_buffer"' not in ops or '!"air.struct_type_info"' not in ops:
             continue
         counts["sets"] += 1

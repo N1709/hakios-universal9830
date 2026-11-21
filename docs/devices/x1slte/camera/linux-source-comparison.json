@@ -1,0 +1,26 @@
+{
+  "repo": "https://github.com/Sota4Ever/linux-android-samsung-exynos990",
+  "commit": "08d22bb2265640392ac945fc83d17388544a4840",
+  "files": [
+    {
+      "path": "drivers/media/platform/exynos/camera/sensor/module_framework/cis/is-cis-2ld.c",
+      "sha256": "173e61be8405946064c99f8092e055bf698c2c6d73ca957281410fa027c07f4b",
+      "same_as_local_ExtremeXT": true
+    },
+    {
+      "path": "drivers/media/platform/exynos/camera/sensor/module_framework/cis/is-cis-2ld-setA.h",
+      "sha256": "f03b29fd43c19370299be642a4b7eb78e50f4c563dcb38e8d8705974ab0c3631",
+      "same_as_local_ExtremeXT": true
+    },
+    {
+      "path": "drivers/media/platform/exynos/camera/sensor/csi2/is-hw-csi-v5_3.c",
+      "sha256": "b8d4ca6d60a6b60cad7084007c7c87c48f5bac894136487ed7c821d30945c125",
+      "same_as_local_ExtremeXT": true
+    },
+    {
+      "path": "arch/arm64/configs/exynos9830-y2s_defconfig",
+      "sha256": "1a1ee5424ccda75080c9b000990892a2f2677c64cce9ca45b0bfc2d27d22ad39",
+      "same_as_local_ExtremeXT": false
+    }
+  ]
+}

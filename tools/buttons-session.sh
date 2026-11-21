@@ -24,18 +24,18 @@ mkdir -p "$out"
 flock -n "$PHONE.run" true 2>/dev/null || { echo "buttons-session.sh: a run is in progress (started from $(cat "$PHONE.who" 2>/dev/null)): not now"; exit 1; }
 grep -q swipe userland/root/etc/rc.jobs 2>/dev/null ||
 	echo "buttons-session.sh: note: the small image was not built with RC_JOBS=rc.jobs.unlock: nothing will swipe the lock screen away"
-before=$(./xl state)
+before=$(./xnu/xl state)
 echo "buttons-session.sh: the phone is in: $before"
-./xl enter || exit 1
+./xnu/xl enter || exit 1
 if [ "$before" != loader ] || [ -n "$RAMDISK" ]; then
 	echo "buttons-session.sh: uploading the system image (about 70 s)"
-	./xl ramdisk || exit 1
+	./xnu/xl ramdisk || exit 1
 fi
 
 record="rec_start=30 rec_secs=$((secs - 45)) rec_mb=640"
 [ "$RECORD" = 0 ] && record=
 export XL_SECS=$secs
-XL_CMDLINE="touchscreen=1 cpufreq=1 bootcpu=7 cpus=4 buttons=1 $record $XL_CMDLINE_MORE" ./xl run > "$out/run.out" 2>&1 &
+XL_CMDLINE="touchscreen=1 cpufreq=1 bootcpu=7 cpus=4 buttons=1 $record $XL_CMDLINE_MORE" ./xnu/xl run > "$out/run.out" 2>&1 &
 echo
 echo "=== $(date +%T): the run has started; it lasts $secs seconds."
 echo "=== In about 20 s the lock screen appears, at about 35 s it is swiped away by a script."
@@ -49,7 +49,7 @@ log=$(sed -n 's/.*\[\(logs\/[^]]*\)\].*/\1/p' "$out/run.out" | tail -1)
 [ -f "$log" ] || { echo "buttons-session.sh: the run left no log"; exit 1; }
 cp "$log" "$out/run.log"
 
-if [ -n "$record" ] && ./xl recording "$out/recording.mp4" >/dev/null 2>&1; then
+if [ -n "$record" ] && ./xnu/xl recording "$out/recording.mp4" >/dev/null 2>&1; then
 	echo "screen recording: $out/recording.mp4"
 fi
 

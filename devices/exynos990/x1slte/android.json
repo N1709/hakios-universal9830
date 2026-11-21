@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "source": "slot 0 of the phone's original super LP metadata (G980FXXSNHYB7), dumped 2026-11-05 before iOS",
+  "android_stash_offset": 9435086848,
+  "android_super": {
+    "metadata_max_size": 65536,
+    "metadata_slots": 2,
+    "logical_block_size": 4096,
+    "alignment": 524288,
+    "first_logical_sector": 2048,
+    "groups": [{"name": "group_basic", "max_size": 9432989696}]
+  }
+}

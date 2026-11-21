@@ -13,7 +13,7 @@
  * What each name means is not guessed: it is read off Apple's own compiler.
  * AGXCompilerCore carries the whole vocabulary as a table of names at
  * 0x16d082..0x16d400 of the library in this device's shared cache (the list is
- * in docs/air.md section 3.2), and that table distinguishes exactly the
+ * in docs/dev/air.md section 3.2), and that table distinguishes exactly the
  * functions the Metal Shading Language Specification defines -- round from
  * rint, exp from exp2, fmod from mod, pow from powr. Two of this file's
  * handlers were guesses before that table was read; one of them was wrong.
@@ -134,7 +134,7 @@ is_signed_part(const char *s)
  * difference, that difference reaches 253 for two normal floats, so twelve
  * passes of about ten instructions each would be the price, and its exactness
  * ON THE ADRENO could not be established from this machine at all for the
- * frcp reason above. It is not done here; section 4 of docs/air.md carries
+ * frcp reason above. It is not done here; section 4 of docs/dev/air.md carries
  * the condition and the measurement.
  *
  * Over the reference pool this leaves 7 of 264 cases differing, every one of
@@ -550,6 +550,21 @@ math_op(struct air_ctx *c, const struct air_inst *in, const struct air_name *n, 
       r = nir_unpack_unorm_4x8(&c->b, a[0]);
       if (air_nir_bit_size(c, in->base.type) == 16)
          r = nir_f2f16(&c->b, r);
+   } else if (!strcmp(op, "pack") && n->num >= 2 &&
+              (!strcmp(n->part[1], "unorm4x8") || !strcmp(n->part[1], "snorm4x8") ||
+               !strcmp(n->part[1], "unorm2x16") || !strcmp(n->part[1], "snorm2x16"))) {
+      /* air.pack.<unorm|snorm><4x8|2x16>.<v4f16|v4f32|v2f..>: Metal's pack_float_to_*,
+       * GLSL's packUnorm4x8 and friends, component 0 in the low bits. NIR's opcodes
+       * take 32-bit floats, so a half vector is widened first (exact).
+       */
+      nir_def *x = a[0];
+      if (x->bit_size != 32)
+         x = nir_f2f32(&c->b, x);
+      const char *k = n->part[1];
+      r = !strcmp(k, "unorm4x8") ? nir_pack_unorm_4x8(&c->b, x)
+        : !strcmp(k, "snorm4x8") ? nir_pack_snorm_4x8(&c->b, x)
+        : !strcmp(k, "unorm2x16") ? nir_pack_unorm_2x16(&c->b, x)
+                                  : nir_pack_snorm_2x16(&c->b, x);
    } else if (!strcmp(op, "convert")) {
       /* air.convert.<dst sign>.<dst type>.<src sign>.<src type> */
       if (n->num < 5) {
@@ -604,9 +619,9 @@ math_op(struct air_ctx *c, const struct air_inst *in, const struct air_name *n, 
  *
  * Metal's companion to `[[function_constant(n)]]`: a shader may ask whether
  * the pipeline supplied a value for a constant, and guard the code that reads
- * it. The answer is known at translation time -- it is exactly whether the
- * caller passed a value for that index in air_to_nir_options -- so this folds
- * to a constant and the guarded branch folds away with it.
+ * it. The answer is known at translation time -- it is whether the caller passed
+ * that index in air_to_nir_options without marking it `undefined` -- so this
+ * folds to a constant and the guarded branch folds away with it.
  *
  * It is handled here, before math_op, because its argument is a POINTER and
  * math_op resolves every argument as a number: the four fixed_vert_* modules
@@ -628,7 +643,7 @@ fc_defined_op(struct air_ctx *c, const struct air_inst *in)
    bool defined = false;
    for (unsigned i = 0; c->options && i < c->options->num_constants; i++)
       if (c->options->constants[i].index == p->ptr.binding)
-         defined = true;
+         defined = !c->options->constants[i].undefined;
    air_set(c, &in->base, air_val_ssa(c, nir_imm_bool(&c->b, defined)));
    return true;
 }
@@ -756,7 +771,7 @@ atomic_op(struct air_ctx *c, const struct air_inst *in, const struct air_name *n
 /* -- barriers ----------------------------------------------------------- */
 
 static bool
-barrier_op(struct air_ctx *c, const struct air_inst *in)
+barrier_op(struct air_ctx *c, const struct air_inst *in, mesa_scope exec_scope)
 {
    /* air.wg.barrier(i32 flags, i32 scope): the flags say which memory is
     * ordered. 2 is threadgroup memory, 1 device, 4 texture; the corpus only
@@ -776,7 +791,25 @@ barrier_op(struct air_ctx *c, const struct air_inst *in)
    if (!modes)
       modes = nir_var_mem_shared;
 
-   nir_barrier(&c->b, .execution_scope = SCOPE_WORKGROUP,
+   /* air.simdgroup.barrier takes the same two words and orders the same memory, but
+    * only the lanes of one SIMD group wait for each other: Panfrost turns a subgroup
+    * execution scope into a scheduling fence alone, which is all a lock-step warp needs.
+    */
+   /* Apple's SIMD group is 32 lanes and Apple's kernels are written for that: MPS's
+    * compute_final_mean_float_statistics adds slots 16..31 of its threadgroup buffer to
+    * 0..15 across a simdgroup_barrier, which on the Mali's 16-lane warps is two warps
+    * that do not wait for each other. The driver reports a threadExecutionWidth of 32 so
+    * such a kernel is given 32 threads; in a kernel, a barrier at the top level of the
+    * function (reached by every thread of the group, so it cannot hang) is then made a
+    * threadgroup barrier, which is what "the 32 lanes wait" means on this GPU. One inside
+    * an if or a loop keeps the subgroup scope: lanes elsewhere may never reach it.
+    */
+   if (exec_scope == SCOPE_SUBGROUP && c->nir->info.stage == MESA_SHADER_COMPUTE) {
+      nir_block *here = nir_cursor_current_block(c->b.cursor);
+      if (here && here->cf_node.parent == &c->b.impl->cf_node)
+         exec_scope = SCOPE_WORKGROUP;
+   }
+   nir_barrier(&c->b, .execution_scope = exec_scope,
                .memory_scope = SCOPE_WORKGROUP, .memory_semantics = NIR_MEMORY_ACQ_REL,
                .memory_modes = modes);
    return true;
@@ -1163,7 +1196,7 @@ llvm_op(struct air_ctx *c, const struct air_inst *in, const char *name)
  *
  * The largest family and the one with the long tail. Its vocabulary is
  * Apple's, read off AGXCompilerCore the same way the arithmetic was
- * (docs/air.md section 3.2): the names there end in an underscore --
+ * (docs/dev/air.md section 3.2): the names there end in an underscore --
  * air.sample_texture_, air.gather_compare_depth_, air.get_num_mip_levels_texture_
  * -- because the dimensionality is appended to them. That is why the earlier
  * survey counted "about 117 get_*_texture_* variants": it is some twenty
@@ -1267,6 +1300,8 @@ parse_tex_name(const char *name, struct air_tex_name *t)
       t->op = "write";
    } else if (eat(&s, "calculate_clamped_lod_") || eat(&s, "calculate_unclamped_lod_")) {
       t->op = "lod";
+   } else if (eat(&s, "is_null_")) {
+      t->op = "is_null";
    } else if (eat(&s, "get_")) {
       t->op = "get";
       static const char *queries[] = {
@@ -1547,6 +1582,48 @@ tex_coord_and_layer(struct air_ctx *c, const struct air_inst *in,
    return coord;
 }
 
+/*
+ * air.is_null_texture_* / air.is_null_depth_*: whether a texture is bound at the slot,
+ * which only the runtime knows. Answered from a word the runtime fills per draw or
+ * dispatch (air_shader_info.null_query_ubo, one bit per bound slot) at a constant-buffer
+ * index this shader's own `constant` arguments leave free. Below 15, because Panfrost has
+ * 16 constant buffers and appends its own after the shader's.
+ */
+static bool
+null_texture_query(struct air_ctx *c, const struct air_inst *in, const struct air_name *n,
+                   const struct air_ptr *tex)
+{
+   if (tex->binding >= 32)
+      return air_error(c, "intrinsic: air.%s on texture %u (the bound-slot word has 32 bits)",
+                       n->part[0], tex->binding);
+   if (!c->info->null_query_ubo) {
+      uint32_t used = 0;
+      for (unsigned i = 0; i < c->info->num_resources; i++) {
+         const struct air_resource *r = &c->info->resources[i];
+         if (r->kind == AIR_RESOURCE_CONSTANT_BUFFER && r->index < 32)
+            used |= 1u << r->index;
+      }
+      unsigned free_index = 0;
+      while (free_index < 15 && (used & (1u << free_index)))
+         free_index++;
+      if (free_index == 15)
+         return air_error(c, "intrinsic: air.%s, and constant buffers 0-14 are all the "
+                             "shader's own: there is no index left for the bound-slot word",
+                          n->part[0]);
+      c->info->null_query_ubo = free_index + 1;
+   }
+   c->info->null_query_textures |= 1u << tex->binding;
+
+   nir_def *word = nir_load_ubo(&c->b, 1, 32, nir_imm_int(&c->b, c->info->null_query_ubo - 1),
+                                nir_imm_int(&c->b, 0), .align_mul = 4, .align_offset = 0,
+                                .range_base = 0, .range = 4);
+   nir_def *bound = nir_iand_imm(&c->b, nir_ushr_imm(&c->b, word, tex->binding), 1);
+   nir_def *is_null = nir_ieq_imm(&c->b, bound, 0);
+   unsigned bits = air_nir_bit_size(c, in->base.type);
+   air_set(c, &in->base, air_val_ssa(c, bits == 1 ? is_null : nir_b2iN(&c->b, is_null, bits)));
+   return true;
+}
+
 static bool
 texture_op(struct air_ctx *c, const struct air_inst *in, const struct air_name *n)
 {
@@ -1581,6 +1658,9 @@ texture_op(struct air_ctx *c, const struct air_inst *in, const struct air_name *
    struct air_ptr tex;
    if (!tex_handle(c, in, 1, AIR_PTR_TEXTURE, &tex))
       return false;
+
+   if (!strcmp(t.op, "is_null"))
+      return null_texture_query(c, in, n, &tex);
 
    unsigned arg = 2;   /* operands[0] is the callee, [1] the texture */
    struct air_ptr samp = { 0 };
@@ -1924,7 +2004,9 @@ air_translate_call(struct air_ctx *c, const struct air_inst *in, const char *nam
    if (!strcmp(n.part[0], "is_function_constant_defined"))
       return fc_defined_op(c, in);
    if (n.num >= 2 && !strcmp(n.part[0], "wg") && !strcmp(n.part[1], "barrier"))
-      return barrier_op(c, in);
+      return barrier_op(c, in, SCOPE_WORKGROUP);
+   if (n.num >= 2 && !strcmp(n.part[0], "simdgroup") && !strcmp(n.part[1], "barrier"))
+      return barrier_op(c, in, SCOPE_SUBGROUP);
    if (!strcmp(n.part[0], "atomic"))
       return atomic_op(c, in, &n);
    if (!strcmp(n.part[0], "discard_fragment"))

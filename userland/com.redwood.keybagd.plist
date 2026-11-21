@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.apple.mobile.keybagd</string>
+<key>ProgramArguments</key><array><string>/usr/libexec/keybagd</string><string>-t</string><string>15</string></array>
+<key>MachServices</key><dict>
+<key>com.apple.mobile.keybagd.xpc</key><true/>
+<key>com.apple.mobile.keybagd.mach</key><true/>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>EnablePressuredExit</key><true/>
+<key>POSIXSpawnType</key><string>Interactive</string>
+<key>Umask</key><integer>63</integer>
+<key>EnvironmentVariables</key><dict>
+<key>__CF_USER_TEXT_ENCODING</key><string>0x0:0:0</string>
+<key>__CFPREFERENCES_AVOID_DAEMON</key><string>1</string>
+</dict>
+<key>LaunchEvents</key><dict><key>com.apple.notifyd.matching</key><dict>
+<key>com.apple.mobile.keybagd.first_unlock</key><dict>
+<key>Notification</key><string>com.apple.mobile.keybagd.first_unlock</string>
+</dict></dict></dict>
+</dict></plist>

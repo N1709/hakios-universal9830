@@ -208,11 +208,99 @@ whole(void)
 	}
 }
 
+/*
+ * The access point's side (Personal Hotspot): AES encryption and the key wrap against their standards'
+ * examples, then whole handshakes between our access point and our station (the station's side is the one
+ * the reference above vouches for, and real access points too): both arrive at the same key, the station
+ * gets the group key, and a station with another passphrase is turned away at message 2.
+ */
+static void
+access_point(void)
+{
+	uint8_t rk[176], block[16], wrapped[24];
+	static const uint8_t k128[16] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+	static const uint8_t p128[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+		0xdd, 0xee, 0xff };
+
+	/* FIPS 197, appendix C.1 */
+	aes_keys(k128, rk);
+	memcpy(block, p128, 16);
+	aes_encrypt(rk, block);
+	check(hex_is(block, 16, "69c4e0d86a7b0430d8cdb78070b4c55a"), "AES-128 encrypts FIPS 197 C.1", 0);
+	aes_decrypt(rk, block);
+	check(memcmp(block, p128, 16) == 0, "AES-128 decrypts what it encrypted", 0);
+	/* RFC 3394, 4.1 */
+	aes_wrap(k128, p128, 16, wrapped);
+	check(hex_is(wrapped, 24, "1fa68b0a8112b447aef34bd8fb5a7b829d3e862371d2cfe5"), "the key wrap of RFC 3394 4.1", 0);
+	uint8_t back[16];
+	check(aes_unwrap(k128, wrapped, 24, back) == 0 && memcmp(back, p128, 16) == 0, "the key wrap unwraps", 0);
+
+	static const uint8_t rsn[22] = { 0x30, 0x14, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
+		0x01, 0x00, 0x00, 0x0f, 0xac, 0x02, 0x0c, 0x00 };
+	for (int n = 0; n < 40; n++) {
+		struct lx_wpa_ap ap;
+		struct lx_wpa sta;
+		uint8_t gtk[16], m[MESSAGE_MOST], r[LX_WPA_REPLY_MOST], r2[MESSAGE_MOST];
+		unsigned ml, rl, r2l;
+		const char *why = "";
+		int wrong = n % 5 == 4;
+
+		memset(&ap, 0, sizeof(ap));
+		memset(&sta, 0, sizeof(sta));
+		for (unsigned i = 0; i < 16; i++) {
+			gtk[i] = (uint8_t)rand();
+		}
+		for (unsigned i = 0; i < 32; i++) {
+			ap.own_nonce[i] = (uint8_t)rand();
+			sta.own_nonce[i] = (uint8_t)rand();
+		}
+		for (unsigned i = 0; i < 6; i++) {
+			ap.own[i] = sta.peer[i] = (uint8_t)rand();
+			ap.peer[i] = sta.own[i] = (uint8_t)rand();
+		}
+		lx_wpa_pmk((const unsigned char *)"hotspot pass", 12, (const unsigned char *)"Jesvi", 5, ap.pmk);
+		lx_wpa_pmk((const unsigned char *)(wrong ? "hotspot pasS" : "hotspot pass"), 12, (const unsigned char *)"Jesvi", 5,
+		    sta.pmk);
+		ap.rsn = rsn;
+		ap.rsn_length = sizeof(rsn);
+		ap.group = gtk;
+		ap.group_length = 16;
+		ap.group_index = 1;
+		sta.rsn = rsn;
+		sta.rsn_length = sizeof(rsn);
+
+		check(lx_wpa_ap_first(&ap, m, &ml) == LX_WPA_ANSWER, "AP: message 1", n);
+		if (n % 7 == 3) {               /* message 1 lost: the access point says it again, a new counter */
+			check(lx_wpa_ap_again(&ap, m, &ml) == LX_WPA_ANSWER, "AP: message 1 again", n);
+		}
+		check(lx_wpa_message(&sta, m, ml, r, &rl, &why) == LX_WPA_ANSWER, "station answers our message 1", n);
+		int a2 = lx_wpa_ap_message(&ap, r, rl, r2, &r2l, &why);
+		if (wrong) {
+			check(a2 == LX_WPA_BAD && ap.stage == 1, "AP: another passphrase is turned away at message 2", n);
+			continue;
+		}
+		check(a2 == LX_WPA_ANSWER, "AP: message 2 accepted, message 3 made", n);
+		if (n % 7 == 5) {               /* message 3 lost */
+			check(lx_wpa_ap_again(&ap, r2, &r2l) == LX_WPA_ANSWER, "AP: message 3 again", n);
+		}
+		check(lx_wpa_message(&sta, r2, r2l, r, &rl, &why) == LX_WPA_KEYS, "station takes our message 3", n);
+		if (why[0]) {
+			printf("  station: %s\n", why);
+		}
+		check(lx_wpa_ap_message(&ap, r, rl, m, &ml, &why) == LX_WPA_KEYS, "AP: message 4 accepted", n);
+		check(memcmp(ap.pairwise, sta.pairwise, 16) == 0, "both have the same pairwise key", n);
+		check(sta.group_length == 16 && memcmp(sta.group, gtk, 16) == 0 && sta.group_index == 1,
+		    "the station has our group key and its number", n);
+		check(lx_wpa_ap_message(&ap, r, rl, m, &ml, &why) != LX_WPA_KEYS, "AP: message 4 played again installs nothing", n);
+	}
+}
+
 int
 main(void)
 {
 	pieces();
 	whole();
+	access_point();
 	printf("%u checks, %u failed\n", checks, failed);
 	return failed != 0;
 }

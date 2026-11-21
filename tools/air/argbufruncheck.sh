@@ -8,7 +8,7 @@
 # What it cannot check is what this does, and it says so itself:
 #
 #   "nothing about the runtime's half. There is no argument buffer to write
-#    (docs/air.md section 8.2): the frontend resolved every descriptor, so
+#    (docs/dev/air.md section 8.2): the frontend resolved every descriptor, so
 #    MTLArgumentEncoder has to RECORD rather than write, and no part of that is
 #    exercised or even present here."
 #

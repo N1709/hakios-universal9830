@@ -5,7 +5,7 @@
  *
  *   MiniIOSurface.cpp              IOSurface: pixel buffers shared between processes
  *   MiniIOMobileFramebuffer.cpp    IOMobileFramebuffer: the display (the boot framebuffer)
- *   MiniAppleKeyStore.cpp          AppleKeyStore: the keybag of a device without a passcode
+ *   MiniAppleKeyStore.cpp          AppleKeyStore: no-passcode default; optional experimental software bags
  *   MiniIONetworkStack.cpp         IONetworkStack: what configd's interface namer waits for
  */
 #ifndef _IOKIT_MINIDRIVERS_H

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.redwood.account-store</string>
+  <key>ProgramArguments</key><array>
+    <string>/var/jb/bin/sh</string>
+    <string>/var/jb/usr/bin/redwood-account-boot.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/var/mobile/Library/RedwoodAppleAccountLab/boot.log</string>
+  <key>StandardErrorPath</key><string>/var/mobile/Library/RedwoodAppleAccountLab/boot.log</string>
+</dict></plist>

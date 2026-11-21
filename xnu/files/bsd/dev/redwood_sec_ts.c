@@ -1,1168 +1,785 @@
 /*
- * The touch screen of the Samsung Galaxy S20+ 5G (y2q): a Samsung LSI controller of the kind
- * Samsung's kernels call "sec_ts" (firmware tsp_sec/y79a_y2.bin), at address 0x48 on the I2C bus
- * of the SoC's serial engine 5 of the first QUP wrapper, as a source of touches for
- * /dev/redwood-touch (sys/redwood_input.h). Only with boot-arg touchscreen=1, and only on the
- * platform the loader calls "y2q": every address below belongs to this phone.
+ * The touchscreen of the Galaxy S20+ (y2s, Exynos 990): a Samsung System LSI
+ * touch controller (S6SY79A, Samsung's "sec_ts" driver, firmware
+ * "tsp_sec/y79a_y2.bin") at I2C address 0x48 on the pins of HSI2C_15.
  *
- * What the chip needs, from the phone's own device tree (i2c@994000/touchscreen@48):
- *   power    its two supplies, LDO2 (1.8 V) and LDO3 (3.0 V) of the S2DOS05 display PMIC, are
- *            "boot on" for Android. Whether they still are after our UEFI is what step 2 reads:
- *            the PMIC is at 0x60 on a bus of two GPIOs (62 SDA, 63 SCL, south tile, pulled up on
- *            the board), driven by hand. The same PMIC makes the panel's supplies, so nothing is
- *            written to it but the register number a read starts with
- *   clocks   the serial engine's clock and the wrapper's four (two AHB ports, core, core 2x),
- *            by vote in the global clock controller
- *   pins     GPIO12 (SDA) and GPIO13 (SCL) to the serial engine ("qup5"), GPIO15 the interrupt
- *            line, an input (low = the chip has events); all three in the TLMM's north tile
- *   I2C      the serial engine ("GENI") in FIFO mode, polled
- *   chip     the protocol of Linux's drivers/input/touchscreen/s6sy761.c, the same family
+ * It is NOT an STMicroelectronics FingerTipS part: the stock kernel runs
+ * drivers/input/touchscreen/sec_ts/y79a (Samsung's open-source Exynos 990
+ * kernel), and the command set and the 16-byte event records below are that
+ * driver's.
  *
- * The bring-up is made in steps, each said in the log before it is made. Boot-arg
- * touch_steps=N stops after the first N:
- *   1  read how the clocks and the pins are left, and, if every clock of the serial engine is on,
- *      what the engine says it is                                        (reads only)
- *   2  read the S2DOS05: which of its outputs are on, at what voltage   (its two bus lines driven)
- *   3  switch LDO2 and LDO3 on: the two bits of its enable register, the others written as they
- *      were read; read back, then watch the touch chip's lines come up   (the first write to it)
- *   4  vote for the clocks and give the two bus pins to the serial engine (writes: GCC, TLMM)
- *   5  set the engine up for I2C and read the chip's identity            (the first transfers)
- *   6  read the panel's size, clear the chip's events and switch its sensing on
- *   7  watch the interrupt line, read the events and post the touches    (the default)
- * A finger's report: byte 0 its state (7:6, 1 press, 2 move, 3 release), its number from 1 (5:2)
- * and the kind of event (1:0, 0 = a coordinate); x is byte 1 and the high nibble of byte 3, y
- * byte 2 and the low nibble; byte 7 (5:0) how many events are still waiting.
+ * Its two supplies come from the S2DOS05 display PMIC (I2C 0x60 on the pins of
+ * HSI2C_4): LDO2 "tsp_io" (1.8 V) and LDO3 "tsp_avdd" (3.0 V). They are marked
+ * regulator-boot-on, but the bootloader does not leave them on in our boot path:
+ * with them off the controller clamps its bus low. So the rails are turned on
+ * first.
  *
- * A read of a block whose clock is off can stop the whole SoC on this chip: the serial engine is
- * read only when the clock controller says all of its clocks run.
+ * Both buses are bit-banged on their GPIOs. The HSI2C controllers are not used:
+ * HSI2C_15 sits in reset with its clock gated in CMU_PERIC1, and the pinctrl
+ * blocks are always on. Lines are driven open-drain (low = output 0,
+ * high = input, the board's pull-ups raise it), so a slave may stretch the clock
+ * and nothing ever fights a slave that holds a line low.
  *
- * Register layouts: Linux drivers/clk/qcom/gcc-sm8250.c, drivers/pinctrl/qcom/pinctrl-sm8250.c,
- * include/linux/soc/qcom/geni-se.h, drivers/i2c/busses/i2c-qcom-geni.c, and Samsung's
- * include/linux/regulator/s2dos05.h (its SM8250 kernels).
+ * From the phone's device tree (dtb.img + dtbo.img):
+ *
+ *   hsi2c_4  @ 0x10590000  pins gpp1-0 (SCL) / gpp1-1 (SDA)  PERIC0 pinctrl 0x10430000, bank +0x20
+ *            s2dos05_pmic@60: ldo2 = tsp_io 1.8 V, ldo3 = tsp_avdd 3.0 V
+ *   hsi2c_15 @ 0x108D0000  pins gpp5-6 (SCL) / gpp5-7 (SDA)  PERIC1 pinctrl 0x10730000, bank +0x00
+ *            touchscreen@48: "sec,sec_ts", attention gpa1-0 (low = events pending)
+ *   gpa1                   ALIVE pinctrl 0x15850000, bank +0x20
+ *
+ * Boot arguments (nothing is touched unless touch_ts is given):
+ *
+ *   touch_ts=1       power, probe, then poll and post touches (redwood_touch_post)
+ *   touch_ts=2       power and probe, then panic with a one-line summary of what
+ *                    was found (the panic is what saves the log on this phone)
+ *   touch_ts=3       power and probe only, no polling, no panic
+ *   touch_pwr=N      0 leave the PMIC alone, 1 turn the two rails on (default),
+ *                    2 power-cycle them first (forces a fresh controller boot)
+ *   touch_attn=0     ignore the attention pin and read the event stack every poll
+ *   touch_pullup=1   also enable the SoC's internal pull-ups on the bus pins
+ *   touch_poll_us=N  how often the attention pin is looked at with no finger down (default 8000 us)
+ *   touch_active_us=N  ... and while a finger is down or events are coming (default 2000 us). At 8 ms the
+ *                    controller's reports piled up between looks (27 October: 1.45 events a read), were
+ *                    posted together with one timestamp, and iOS's velocity of a swipe -- flicks, momentum
+ *                    -- is computed from those timestamps
+ *   touch_flip=N     bit 0 mirrors X, bit 1 mirrors Y
+ *   touch_trace=1    print every raw event
+ *   touch_irq=0      no interrupt: poll only (default 1: the attention line's falling edge wakes the thread at
+ *                    once -- gpa1-0 as a wake-up EINT, GIC SPI 8; B 2026-11-06). The polls stay as a fallback; once
+ *                    interrupts are seen, the idle poll is touch_irq_poll_us (default 50000). A storm (over 2000 in a
+ *                    second) masks the EINT and goes back to polling.
  */
+
 #include <kern/clock.h>
 #include <kern/thread.h>
+#include <kern/sched_prim.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
+#include <stdarg.h>
+#include <sys/redwood_bbi2c.h>
 #include <sys/redwood_input.h>
+#include <sys/redwood_m2m.h>
 #include <sys/systm.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern kern_return_t thread_terminate(thread_t thread);
+/* ------------------------------------------------------------------------ */
+/* GPIO (Exynos 990 pinctrl, bsd/sys/redwood_bbi2c.h)                        */
 
-/*
- * Every line goes to the loader's log directly as well (as in redwood_buttons.c): without -v the
- * kernel's own messages reach that log only at the end of a run, and "xl log" during a run is to
- * show how far this driver has come.
- */
-extern void loader_log_putc(char c);
-static int say(const char *format, ...) __printflike(1, 2);
+#define BANK_GPP1           0x20U       /* PERIC0 */
+#define BANK_GPP5           0x00U       /* PERIC1 */
+#define BANK_GPA1           0x20U       /* ALIVE  */
+#define ATTN_PIN            0U          /* gpa1-0 */
 
-static int
-say(const char *format, ...)
-{
-	char line[400];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
-	return printf("%s", line);
-}
-#define printf say
-
-static vm_offset_t gcc, tlmm, tlmm_south, se;
-
-static inline uint32_t
-rd(vm_offset_t address)
-{
-	return *(volatile uint32_t *)address;
-}
-
-static inline void
-wr(vm_offset_t address, uint32_t value)
-{
-	*(volatile uint32_t *)address = value;
-}
-
-/*
- * The bits of a bus driven by hand are timed by spinning on the clock. delay() may put the thread
- * to sleep until a timer wakes it, and then 5 us become most of a millisecond: an event of eight
- * bytes took a fifth of a second to read, and a tap came out as a long press.
- */
 static void
-spin_us(uint32_t us)
+sleep_us(uint32_t us)
 {
-	uint64_t interval, deadline;
+	delay_for_interval(us, NSEC_PER_USEC);
+}
 
-	nanoseconds_to_absolutetime((uint64_t)us * NSEC_PER_USEC, &interval);
-	deadline = mach_absolute_time() + interval;
-	while (mach_absolute_time() < deadline) {
+/* ------------------------------------------------------------------------ */
+/* What was found, kept for the panic message (the only reliable log here)   */
+
+static char summary[1024];
+
+static void note(const char *format, ...) __printflike(1, 2);
+
+static void
+note(const char *format, ...)
+{
+	char line[192];
+	va_list ap;
+	size_t used;
+
+	va_start(ap, format);
+	vsnprintf(line, sizeof(line), format, ap);
+	va_end(ap);
+	printf("sec_ts: %s\n", line);
+	m2m_klog('I', "DEV", "sec_ts: %s", line);
+
+	used = strlen(summary);
+	if (used + 4 < sizeof(summary)) {
+		snprintf(summary + used, sizeof(summary) - used, "%s%s", used ? " | " : "", line);
 	}
 }
 
-/* ---- the global clock controller ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------------ */
+/* Bit-banged, open-drain I2C (bsd/dev/redwood_bbi2c.c)                       */
 
-#define GCC_PHYS                0x00100000UL
-#define GCC_SIZE                0x60000UL
-#define GCC_VOTE                (gcc + 0x52008)         /* the application processor's votes */
-#define VOTE_QUP0_M_AHB         (1u << 6)
-#define VOTE_QUP0_S_AHB         (1u << 7)
-#define VOTE_QUP0_CORE          (1u << 8)
-#define VOTE_QUP0_CORE_2X       (1u << 9)
-#define VOTE_QUP0_SE5           (1u << 15)
-#define GCC_QUP0_M_AHB_CBCR     (gcc + 0x17004)         /* bit 31: the clock is off */
-#define GCC_QUP0_S_AHB_CBCR     (gcc + 0x17008)
-#define GCC_QUP0_SE5_CBCR       (gcc + 0x175fc)
-#define GCC_QUP0_SE5_CMD        (gcc + 0x17600)         /* the serial engine's clock source; bit 0: take the new configuration */
-#define GCC_QUP0_SE5_CFG        (gcc + 0x17604)         /* [4:0] 2*divider-1, [10:8] source, [13:12] mode */
-#define GCC_QUP0_SE5_DFSR       (gcc + 0x17614)         /* bit 0: the engine chooses among preset rates itself */
-#define GCC_QUP0_SE5_PERF_CFG(l) (gcc + 0x1761c + 4 * (l))
-#define GCC_QUP0_SE5_PERF_M(l)  (gcc + 0x1765c + 4 * (l))
-#define GCC_QUP0_SE5_PERF_N(l)  (gcc + 0x1769c + 4 * (l))
-#define CLOCK_HW_CONTROL        (1u << 1)               /* in a branch: on when the hardware needs it, "off" when idle */
-#define XO_HZ                   19200000
-#define GCC_QUP0_CORE_CBCR      (gcc + 0x23000)
-#define GCC_QUP0_CORE_2X_CBCR   (gcc + 0x23008)
-#define CLOCK_OFF               (1u << 31)
-
-/* ---- the pins ------------------------------------------------------------------------------------- */
-
-#define TLMM_NORTH_PHYS         0x0f900000UL
-#define TLMM_SIZE               0x100000UL
-#define GPIO_CFG(n)             (tlmm + 0x1000UL * (n))         /* [1:0] pull, [5:2] function, [8:6] drive, [9] output */
-#define GPIO_IO(n)              (tlmm + 0x1000UL * (n) + 4)     /* bit 0 in, bit 1 out */
-#define PIN_SDA                 12
-#define PIN_SCL                 13
-#define PIN_INT                 15      /* low = the chip has events */
-#define PIN_FUNCTION_QUP5       1
-
-/* ---- the serial engine ---------------------------------------------------------------------------- */
-
-#define SE_PHYS                 0x00994000UL
-#define SE_SIZE                 0x4000UL
-#define GENI_FORCE_DEFAULT      (se + 0x020)
-#define GENI_OUTPUT_CTRL        (se + 0x024)
-#define GENI_CGC_CTRL           (se + 0x028)
-#define GENI_STATUS             (se + 0x040)    /* bit 0: a command is running */
-#define GENI_SER_M_CLK_CFG      (se + 0x048)    /* bit 0 enable, [15:4] divider */
-#define GENI_IF_DISABLE_RO      (se + 0x064)    /* bit 0: no FIFO interface */
-#define GENI_FW_REVISION_RO     (se + 0x068)    /* [15:8] protocol: 3 = I2C */
-#define GENI_CLK_SEL            (se + 0x07c)
-#define GENI_DMA_MODE_EN        (se + 0x258)
-#define GENI_TX_PACKING_CFG0    (se + 0x260)
-#define GENI_TX_PACKING_CFG1    (se + 0x264)
-#define I2C_TX_TRANS_LEN        (se + 0x26c)
-#define I2C_RX_TRANS_LEN        (se + 0x270)
-#define I2C_SCL_COUNTERS        (se + 0x278)    /* [29:20] high, [19:10] low, [9:0] cycle, in source clocks / divider */
-#define GENI_RX_PACKING_CFG0    (se + 0x284)
-#define GENI_RX_PACKING_CFG1    (se + 0x288)
-#define GENI_M_CMD0             (se + 0x600)    /* [31:27] operation, [15:9] address, [2] no stop after it */
-#define GENI_M_CMD_CTRL         (se + 0x604)    /* bit 2 cancel, bit 1 abort */
-#define GENI_M_IRQ_STATUS       (se + 0x610)
-#define GENI_M_IRQ_EN           (se + 0x614)
-#define GENI_M_IRQ_CLEAR        (se + 0x618)
-#define GENI_S_IRQ_CLEAR        (se + 0x648)
-#define GENI_TX_FIFO            (se + 0x700)
-#define GENI_RX_FIFO            (se + 0x780)
-#define GENI_TX_FIFO_STATUS     (se + 0x800)    /* [27:0] words */
-#define GENI_RX_FIFO_STATUS     (se + 0x804)    /* bit 31 last, [30:28] bytes of the last word, [24:0] words */
-#define GENI_TX_WATERMARK       (se + 0x80c)
-#define GENI_RX_WATERMARK       (se + 0x810)
-#define GENI_RX_RFR_WATERMARK   (se + 0x814)
-#define SE_DMA_TX_IRQ_CLR       (se + 0xc44)
-#define SE_DMA_RX_IRQ_CLR       (se + 0xd44)
-#define SE_GSI_EVENT_EN         (se + 0xe18)
-#define SE_IRQ_EN               (se + 0xe1c)
-#define SE_HW_PARAM_0           (se + 0xe24)    /* [21:16] FIFO depth in words */
-#define SE_DMA_GENERAL_CFG      (se + 0xe30)
-#define GENI_PROTOCOL_I2C       3
-
-#define I2C_OP_WRITE            1u
-#define I2C_OP_READ             2u
-#define I2C_STOP_STRETCH        (1u << 2)       /* keep the bus: a repeated start follows */
-#define M_CMD_DONE              (1u << 0)
-#define M_CMD_OVERRUN           (1u << 1)
-#define M_ILLEGAL_CMD           (1u << 2)
-#define M_CMD_FAILURE           (1u << 3)
-#define M_CMD_CANCEL            (1u << 4)
-#define M_CMD_ABORT             (1u << 5)
-#define M_GP_NACK               (1u << 10)      /* "GP IRQ 1": nobody acknowledged */
-#define M_GP_BUS_PROTO          (1u << 12)
-#define M_GP_ARB_LOST           (1u << 13)
-#define M_I2C_ERRORS            (M_CMD_OVERRUN | M_ILLEGAL_CMD | M_CMD_FAILURE | M_GP_NACK | M_GP_BUS_PROTO | M_GP_ARB_LOST)
-/* 100 kHz from the 19.2 MHz crystal: Linux's geni_i2c_clk_map */
-#define I2C_100K_DIVIDER        7
-#define I2C_100K_COUNTERS       (10u << 20 | 11u << 10 | 26u)
-#define SEC_TS_ADDRESS          0x48
-
-static const char *
-pull_name(uint32_t cfg)
+static bool
+bus_setup(struct redwood_bbi2c *b, bool pullup)
 {
-	static const char *const names[] = { "none", "down", "keeper", "up" };
+	char line[192];
+	bool ok = redwood_bbi2c_setup(b, pullup, line, sizeof(line));
 
-	return names[cfg & 3];
-}
-
-static void
-say_pin(const char *what, unsigned pin)
-{
-	uint32_t cfg = rd(GPIO_CFG(pin)), io = rd(GPIO_IO(pin));
-
-	printf("touch: GPIO%u (%s): config %#x -- function %u, pull %s, %u mA, %s; level %s\n", pin, what, cfg,
-	    (cfg >> 2) & 0xf, pull_name(cfg), 2 * (((cfg >> 6) & 7) + 1), (cfg & (1u << 9)) ? "OUTPUT" : "input",
-	    (io & 1) ? "high" : "low");
+	note("%s", line);
+	return ok;
 }
 
 static bool
-say_clock(const char *what, vm_offset_t cbcr, uint32_t vote_bit, uint32_t votes)
+i2c_xfer(struct redwood_bbi2c *b, uint8_t addr, const uint8_t *wbuf, uint32_t wlen, uint8_t *rbuf, uint32_t rlen)
 {
-	uint32_t value = rd(cbcr);
-	bool on = !(value & CLOCK_OFF);
-
-	printf("touch: clock %s: %s (branch %#x), %svoted for by this processor\n", what, on ? "on" : "OFF", value,
-	    (votes & vote_bit) ? "" : "not ");
-	return on;
+	return redwood_bbi2c_xfer(b, addr, wbuf, wlen, rbuf, rlen);
 }
 
-/* Step 1: what the firmware has left, read only. */
-static void
-step_survey(void)
-{
-	uint32_t votes, cfg, param, revision;
-	bool all_on = true;
+/* ------------------------------------------------------------------------ */
+/* The S2DOS05 display PMIC: the touch controller's two rails                */
+/* (Samsung drivers/regulator/s2dos05.c, include/linux/regulator/s2dos05.h)  */
 
-	printf("touch: step 1: read the clocks of serial engine 5 (QUP wrapper 0) and the pins (reads only)\n");
-	gcc = ml_io_map(GCC_PHYS, GCC_SIZE);
-	tlmm = ml_io_map(TLMM_NORTH_PHYS, TLMM_SIZE);
-	votes = rd(GCC_VOTE);
-	printf("touch: clock votes of this processor %#x\n", votes);
-	all_on &= say_clock("wrapper 0 master AHB", GCC_QUP0_M_AHB_CBCR, VOTE_QUP0_M_AHB, votes);
-	all_on &= say_clock("wrapper 0 slave AHB", GCC_QUP0_S_AHB_CBCR, VOTE_QUP0_S_AHB, votes);
-	all_on &= say_clock("wrapper 0 core", GCC_QUP0_CORE_CBCR, VOTE_QUP0_CORE, votes);
-	all_on &= say_clock("wrapper 0 core 2x", GCC_QUP0_CORE_2X_CBCR, VOTE_QUP0_CORE_2X, votes);
-	all_on &= say_clock("serial engine 5", GCC_QUP0_SE5_CBCR, VOTE_QUP0_SE5, votes);
-	cfg = rd(GCC_QUP0_SE5_CFG);
-	printf("touch: serial engine 5's clock source: command %#x, config %#x (source %u, divider %u.%u)\n",
-	    rd(GCC_QUP0_SE5_CMD), cfg, (cfg >> 8) & 7, ((cfg & 0x1f) + 1) / 2, ((cfg & 0x1f) + 1) % 2 ? 5 : 0);
-	say_pin("SDA", PIN_SDA);
-	say_pin("SCL", PIN_SCL);
-	say_pin("interrupt", PIN_INT);
-	if (!all_on) {
-		printf("touch: not every clock of the serial engine runs: its registers are not read\n");
+#define S2DOS05_ADDR          0x60U
+#define S2DOS05_REG_DEV_ID    0x00U
+#define S2DOS05_REG_EN        0x03U
+#define S2DOS05_REG_LDO2_CFG  0x05U
+#define S2DOS05_REG_LDO3_CFG  0x06U
+#define S2DOS05_REG_ID_PGM    0x61U
+#define S2DOS05_EN_LDO2       (1U << 1)  /* tsp_io   */
+#define S2DOS05_EN_LDO3       (1U << 2)  /* tsp_avdd */
+#define S2DOS05_VSEL_MASK     0x7fU
+#define S2DOS05_LDO2_1V8      0x0cU      /* 1.5 V + 12 x 25 mV */
+#define S2DOS05_LDO3_3V0      0x0cU      /* 2.7 V + 12 x 25 mV */
+
+static struct redwood_bbi2c pmic_bus = { .name = "pmic bus gpp1-0/1", .scl = 0, .sda = 1, .half_us = 4 };
+
+static bool
+pmic_rd(uint8_t reg, uint8_t *value)
+{
+	return i2c_xfer(&pmic_bus, S2DOS05_ADDR, &reg, 1, value, 1);
+}
+
+static bool
+pmic_wr(uint8_t reg, uint8_t value)
+{
+	uint8_t buf[2] = { reg, value };
+
+	return i2c_xfer(&pmic_bus, S2DOS05_ADDR, buf, 2, NULL, 0);
+}
+
+/* Only bits are ever set or cleared in EN: its other rails feed the display. */
+static bool
+pmic_en_update(uint8_t set, uint8_t clear)
+{
+	uint8_t en;
+
+	if (!pmic_rd(S2DOS05_REG_EN, &en)) {
+		return false;
+	}
+	return pmic_wr(S2DOS05_REG_EN, (uint8_t)((en | set) & ~clear));
+}
+
+static bool
+touch_power(uint32_t how, bool pullup)
+{
+	uint8_t id = 0, pgm = 0, en = 0, l2 = 0, l3 = 0;
+	bool ok;
+
+	pmic_bus.bank = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC0, BANK_GPP1);
+	if (!bus_setup(&pmic_bus, pullup)) {
+		note("pmic bus is not usable");
+		redwood_bbi2c_restore(&pmic_bus);
+		return false;
+	}
+
+	ok = pmic_rd(S2DOS05_REG_DEV_ID, &id) && pmic_rd(S2DOS05_REG_ID_PGM, &pgm) &&
+	    pmic_rd(S2DOS05_REG_EN, &en) && pmic_rd(S2DOS05_REG_LDO2_CFG, &l2) &&
+	    pmic_rd(S2DOS05_REG_LDO3_CFG, &l3);
+	note("s2dos05: %s, id %#x pgm %#x EN %#x LDO2 %#x LDO3 %#x",
+	    ok ? "answers" : "NO ANSWER", id, pgm, en, l2, l3);
+	if (!ok) {
+		redwood_bbi2c_restore(&pmic_bus);
+		return false;
+	}
+
+	if (how == 2 && (en & (S2DOS05_EN_LDO2 | S2DOS05_EN_LDO3))) {
+		/* off in the reverse order of sec_ts_power(), so the controller boots afresh */
+		pmic_en_update(0, S2DOS05_EN_LDO3);
+		sleep_us(4000);
+		pmic_en_update(0, S2DOS05_EN_LDO2);
+		sleep_us(30000);
+		pmic_rd(S2DOS05_REG_EN, &en);
+	}
+
+	/* A rail's voltage is only ever set while it is off. */
+	if (!(en & S2DOS05_EN_LDO2) && (l2 & S2DOS05_VSEL_MASK) != S2DOS05_LDO2_1V8) {
+		pmic_wr(S2DOS05_REG_LDO2_CFG, (uint8_t)((l2 & ~S2DOS05_VSEL_MASK) | S2DOS05_LDO2_1V8));
+	}
+	if (!(en & S2DOS05_EN_LDO3) && (l3 & S2DOS05_VSEL_MASK) != S2DOS05_LDO3_3V0) {
+		pmic_wr(S2DOS05_REG_LDO3_CFG, (uint8_t)((l3 & ~S2DOS05_VSEL_MASK) | S2DOS05_LDO3_3V0));
+	}
+
+	/* tsp_io first, then tsp_avdd 1 ms later (sec_ts_power()) */
+	if (!(en & S2DOS05_EN_LDO2)) {
+		pmic_en_update(S2DOS05_EN_LDO2, 0);
+		sleep_us(1000);
+	}
+	if (!(en & S2DOS05_EN_LDO3)) {
+		pmic_en_update(S2DOS05_EN_LDO3, 0);
+	}
+
+	pmic_rd(S2DOS05_REG_EN, &en);
+	pmic_rd(S2DOS05_REG_LDO2_CFG, &l2);
+	pmic_rd(S2DOS05_REG_LDO3_CFG, &l3);
+	ok = (en & (S2DOS05_EN_LDO2 | S2DOS05_EN_LDO3)) == (S2DOS05_EN_LDO2 | S2DOS05_EN_LDO3);
+	note("s2dos05: now EN %#x LDO2 %#x LDO3 %#x: rails %s", en, l2, l3, ok ? "on" : "NOT ON");
+	redwood_bbi2c_restore(&pmic_bus);
+	return ok;
+}
+
+/* ------------------------------------------------------------------------ */
+/* The controller (Samsung drivers/input/touchscreen/sec_ts/y79a/sec_ts.h)   */
+
+#define TS_ADDR                   0x48U
+#define TS_CMD_SENSE_ON           0x10U
+#define TS_READ_FW_INTEGRITY      0x21U
+#define TS_READ_DEVICE_ID         0x22U
+#define TS_READ_PANEL_INFO        0x23U
+#define TS_CMD_SET_TOUCHFUNCTION  0x30U
+#define TS_READ_ID                0x52U
+#define TS_READ_BOOT_STATUS       0x55U
+#define TS_READ_ONE_EVENT         0x60U
+#define TS_READ_ALL_EVENT         0x61U
+#define TS_CMD_CLEAR_EVENT_STACK  0x62U
+#define TS_READ_FW_VERSION        0xa3U
+#define TS_READ_TS_STATUS         0xafU
+
+#define TS_EVENT_SIZE             16U
+#define TS_MAX_EVENTS             32U
+
+/* byte 0: eid in bits 1:0, tid / status type in bits 5:2, touch state in bits 7:6 */
+#define TS_EID_COORDINATE         0U
+#define TS_EID_STATUS             1U
+#define TS_EID_EMPTY              3U
+
+#define TS_STYPE_ERR              1U
+#define TS_STYPE_INFO             2U
+#define TS_STYPE_VENDOR_INFO      7U
+#define TS_ACK_BOOT_COMPLETE      0x00U
+
+#define TS_STATUS_BOOT_MODE       0x10U
+#define TS_STATUS_APP_MODE        0x20U
+
+#define TS_ACTION_PRESS           1U
+#define TS_ACTION_MOVE            2U
+#define TS_ACTION_RELEASE         3U
+
+#define TS_TOUCHTYPE_NORMAL       0U
+#define TS_TOUCHTYPE_GLOVE        3U
+#define TS_TOUCHTYPE_PALM         5U
+#define TS_TOUCHTYPE_WET          6U
+
+/* SEC_TS_DEFAULT_ENABLE_BIT_SETFUNC: touch | palm | wet, a little-endian u16 */
+#define TS_DEFAULT_FUNCTIONS      0x0061U
+
+#define TS_MAX_FINGERS            10U
+
+static struct redwood_bbi2c ts_bus = { .name = "touch bus gpp5-6/7", .scl = 6, .sda = 7, .half_us = 2 };
+static volatile uint8_t *attn_bank;
+static uint32_t use_attn = 1;
+static uint32_t touch_trace;
+
+/* the attention line as an interrupt (touch_irq=1): ALIVE pinctrl wake-up EINT of gpa1 (exynos9830_pin_banks0: eint
+ * offset 0x04, fltcon 0x08; Exynos7-style wake-up chip: CON 0x700, MASK 0x900, PEND 0xA00) -> GIC SPI 8 (dts gpa1) */
+#define EINT_CON_GPA1       0x704U
+#define EINT_MASK_GPA1      0x904U
+#define EINT_PEND_GPA1      0xA04U
+#define EINT_EDGE_FALLING   2U
+#define TS_IRQ_INTID        (32U + 8U)
+static uint32_t touch_irq = 1, irq_poll_us = 50000;
+static volatile uint8_t *alive_block;
+static volatile bool ts_irq_on;
+static volatile uint32_t ts_irqs, ts_irq_storm, ts_irq_window;
+static uint64_t ts_irq_window_at;
+static int ts_wake;
+extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid),
+    void *context);
+
+static void
+ts_irq(__unused void *context, __unused uint32_t intid)
+{
+	uint64_t now = mach_absolute_time(), second;
+
+	*(volatile uint32_t *)(alive_block + EINT_PEND_GPA1) = 1u << ATTN_PIN;          /* write 1 to clear */
+	ts_irqs++;
+	nanoseconds_to_absolutetime(NSEC_PER_SEC, &second);
+	if (now - ts_irq_window_at > second) {
+		ts_irq_window_at = now;
+		ts_irq_window = 0;
+	}
+	if (++ts_irq_window > 2000) {
+		/* a storm: masked for good, the thread polls as before */
+		*(volatile uint32_t *)(alive_block + EINT_MASK_GPA1) |= 1u << ATTN_PIN;
+		ts_irq_on = false;
+		ts_irq_storm++;
+	}
+	thread_wakeup((event_t)&ts_wake);
+}
+
+static void
+ts_irq_setup(volatile uint8_t *bank)
+{
+	volatile uint32_t *con, *mask;
+
+	alive_block = bank - BANK_GPA1;
+	con = (volatile uint32_t *)(alive_block + EINT_CON_GPA1);
+	mask = (volatile uint32_t *)(alive_block + EINT_MASK_GPA1);
+	*mask |= 1u << ATTN_PIN;
+	*con = (*con & ~(0x7u << (ATTN_PIN * 4))) | (EINT_EDGE_FALLING << (ATTN_PIN * 4));
+	*(volatile uint32_t *)(alive_block + EINT_PEND_GPA1) = 1u << ATTN_PIN;
+	redwood_gpio_func(bank, ATTN_PIN, 0xf);                 /* EXT_INT (the level still reads in DAT) */
+	if (gic_v3_spi_attach(TS_IRQ_INTID, false, ts_irq, NULL) != KERN_SUCCESS) {
+		redwood_gpio_func(bank, ATTN_PIN, REDWOOD_GPIO_INPUT);
+		m2m_klog('W', "DEV", "sec_ts: interrupt %u not attached: polling only", TS_IRQ_INTID);
 		return;
 	}
-	se = ml_io_map(SE_PHYS, SE_SIZE);
-	revision = rd(GENI_FW_REVISION_RO);
-	param = rd(SE_HW_PARAM_0);
-	printf("touch: serial engine 5: firmware %#x (protocol %u%s), status %#x, clock config %#x, clock select %#x, "
-	    "FIFO interface %s, FIFO depth %u words\n", revision, (revision >> 8) & 0xff,
-	    ((revision >> 8) & 0xff) == GENI_PROTOCOL_I2C ? ", I2C" : "", rd(GENI_STATUS), rd(GENI_SER_M_CLK_CFG),
-	    rd(GENI_CLK_SEL), (rd(GENI_IF_DISABLE_RO) & 1) ? "DISABLED" : "there", (param >> 16) & 0x3f);
+	ts_irq_on = true;
+	*mask &= ~(1u << ATTN_PIN);
+	m2m_klog('I', "DEV", "sec_ts: attention line as an interrupt (gpa1-0 falling edge, INTID %u); idle poll %u us once "
+	    "interrupts come", TS_IRQ_INTID, irq_poll_us);
 }
-
-/* ---- the S2DOS05, on two GPIOs ------------------------------------------------------------------ */
-
-#define TLMM_SOUTH_PHYS         0x0f500000UL
-#define BB_CFG(n)               (bb->tlmm + 0x1000UL * (n))
-#define BB_IO(n)                (bb->tlmm + 0x1000UL * (n) + 4)
-#define PIN_PMIC_SDA            62
-#define PIN_PMIC_SCL            63
-#define CFG_OUTPUT_ENABLE       (1u << 9)
-#define IO_OUT                  (1u << 1)
-#define S2DOS05_ADDRESS         0x60
-#define S2DOS05_REG_DEV_ID      0x00
-#define S2DOS05_REG_EN          0x03    /* bit 0 LDO1, 1 LDO2, 2 LDO3, 3 LDO4, 4 buck */
-#define S2DOS05_REG_LDO1_CFG    0x04    /* [6:0] voltage, [7] fast discharge */
-#define S2DOS05_READ_COUNT      10      /* 0x00 to 0x09: identity, status, enables, voltages (not 0x11, which a read clears) */
-#define HALF_BIT_US             5       /* 100 kHz */
-#define STRETCH_US              1000    /* how long a device may hold the clock low */
-
-/*
- * The lines are open drain, as on any I2C bus: a line is pulled low by making its pin an output
- * at 0, and let go by making it an input again -- the board's pull-up makes it high. Nothing else
- * of the pins' configuration changes.
- */
-struct bitbang {
-	vm_offset_t     tlmm;           /* the TLMM tile of both pins */
-	unsigned        sda, scl;
-	uint32_t        cfg_sda, cfg_scl;       /* their configuration, as inputs */
-	uint8_t         address;
-};
-static struct bitbang pmic_bus = { .sda = PIN_PMIC_SDA, .scl = PIN_PMIC_SCL, .address = S2DOS05_ADDRESS };
-static struct bitbang touch_bus = { .sda = PIN_SDA, .scl = PIN_SCL, .address = 0x48 };
-static struct bitbang *bb = &pmic_bus;  /* the bus the functions below drive */
-
-static void
-line(unsigned pin, uint32_t cfg, bool high)
-{
-	if (high) {
-		wr(BB_CFG(pin), cfg & ~CFG_OUTPUT_ENABLE);
-	} else {
-		wr(BB_IO(pin), 0);
-		wr(BB_CFG(pin), cfg | CFG_OUTPUT_ENABLE);
-	}
-	spin_us(HALF_BIT_US);
-}
-
-static bool
-level(unsigned pin)
-{
-	return rd(BB_IO(pin)) & 1;
-}
-
-static void sda(bool high) { line(bb->sda, bb->cfg_sda, high); }
-
-/* Let go of the clock and wait for it to be high: a device may hold it low while it gets ready. */
-static bool
-scl_release(void)
-{
-	line(bb->scl, bb->cfg_scl, true);
-	for (unsigned waited = 0; !level(bb->scl); waited++) {
-		if (waited >= STRETCH_US) {
-			return false;
-		}
-		spin_us(1);
-	}
-	return true;
-}
-
-static void scl_low(void) { line(bb->scl, bb->cfg_scl, false); }
-
-static void
-bus_start(void)
-{
-	sda(true);
-	scl_release();
-	sda(false);
-	scl_low();
-}
-
-static void
-bus_stop(void)
-{
-	sda(false);
-	scl_release();
-	sda(true);
-}
-
-/*
- * A bus left in the middle of a read -- a run that ended while a transfer was going on, the chip
- * still powered -- has the device holding SDA low for the bit it was sending. As Linux's
- * i2c_generic_scl_recovery(): clock it out, at most nine times, then a stop. True if the bus is
- * idle (both lines high) after that.
- */
-static bool
-bb_recover(const char *name)
-{
-	unsigned pulses = 0;
-
-	if (level(bb->sda) && level(bb->scl)) {
-		return true;
-	}
-	if (!level(bb->scl)) {
-		printf("touch: %s: the clock line is held low: not driven\n", name);
-		return false;
-	}
-	while (!level(bb->sda) && pulses < 9) {
-		scl_low();
-		scl_release();
-		pulses++;
-	}
-	bus_stop();
-	printf("touch: %s: SDA was held low; %u clock pulses and a stop: SDA %s, SCL %s now\n", name, pulses,
-	    level(bb->sda) ? "high" : "low", level(bb->scl) ? "high" : "low");
-	return level(bb->sda) && level(bb->scl);
-}
-
-/* One byte out; true if the device acknowledged it. */
-static bool
-bus_put(uint8_t byte)
-{
-	bool ack;
-
-	for (int bit = 7; bit >= 0; bit--) {
-		sda((byte >> bit) & 1);
-		if (!scl_release()) {
-			return false;
-		}
-		scl_low();
-	}
-	sda(true);
-	if (!scl_release()) {
-		return false;
-	}
-	ack = !level(bb->sda);
-	scl_low();
-	return ack;
-}
-
-static uint8_t
-bus_get(bool last)
-{
-	uint8_t byte = 0;
-
-	sda(true);
-	for (int bit = 7; bit >= 0; bit--) {
-		scl_release();
-		byte |= (uint8_t)(level(bb->sda) << bit);
-		scl_low();
-	}
-	sda(last);      /* acknowledge all but the last */
-	scl_release();
-	scl_low();
-	sda(true);
-	return byte;
-}
-
-/* Read `count` registers from `reg` on: the register number written, then a repeated start to read. */
-static const char *
-bb_read(uint8_t reg, uint8_t *bytes, unsigned count)
-{
-	const char *problem = NULL;
-
-	bus_start();
-	if (!bus_put(bb->address << 1)) {
-		problem = "no acknowledge of its address";
-	} else if (!bus_put(reg)) {
-		problem = "no acknowledge of the register number";
-	} else {
-		bus_start();
-		if (!bus_put(bb->address << 1 | 1)) {
-			problem = "no acknowledge of its address for the read";
-		} else {
-			for (unsigned i = 0; i < count; i++) {
-				bytes[i] = bus_get(i + 1 == count);
-			}
-		}
-	}
-	bus_stop();
-	return problem;
-}
-
-/* Write one register. */
-static const char *
-bb_write(uint8_t reg, uint8_t value)
-{
-	const char *problem = NULL;
-
-	bus_start();
-	if (!bus_put(bb->address << 1)) {
-		problem = "no acknowledge of its address";
-	} else if (!bus_put(reg)) {
-		problem = "no acknowledge of the register number";
-	} else if (!bus_put(value)) {
-		problem = "no acknowledge of the value";
-	}
-	bus_stop();
-	return problem;
-}
-
-/* A command alone: the address, one byte, stop. */
-static const char *
-bb_command(uint8_t command)
-{
-	const char *problem = NULL;
-
-	bus_start();
-	if (!bus_put(bb->address << 1)) {
-		problem = "no acknowledge of its address";
-	} else if (!bus_put(command)) {
-		problem = "no acknowledge of the command";
-	}
-	bus_stop();
-	return problem;
-}
-
-static const char *
-pmic_read(uint8_t reg, uint8_t *bytes, unsigned count)
-{
-	bb = &pmic_bus;
-	return bb_read(reg, bytes, count);
-}
-
-static const char *
-pmic_write(uint8_t reg, uint8_t value)
-{
-	bb = &pmic_bus;
-	return bb_write(reg, value);
-}
-
-/* LDO voltage from its configuration: LDO1 and LDO2 from 1.5 V, LDO3 and LDO4 from 2.7 V, 25 mV a step */
-static unsigned
-ldo_millivolts(unsigned ldo, uint8_t cfg)
-{
-	return (ldo <= 2 ? 1500 : 2700) + 25 * (cfg & 0x7f);
-}
-
-/* Step 2: what the display PMIC says, read only. */
-static bool
-step_pmic(void)
-{
-	uint8_t r[S2DOS05_READ_COUNT];
-	const char *problem;
-	uint32_t function_sda, function_scl;
-
-	printf("touch: step 2: read the S2DOS05 (address %#x on GPIO%u/GPIO%u), registers 0x00 to 0x%02x\n", S2DOS05_ADDRESS,
-	    PIN_PMIC_SDA, PIN_PMIC_SCL, S2DOS05_READ_COUNT - 1);
-	tlmm_south = ml_io_map(TLMM_SOUTH_PHYS, TLMM_SIZE);
-	pmic_bus.tlmm = tlmm_south;
-	bb = &pmic_bus;
-	pmic_bus.cfg_sda = rd(BB_CFG(PIN_PMIC_SDA));
-	pmic_bus.cfg_scl = rd(BB_CFG(PIN_PMIC_SCL));
-	function_sda = (pmic_bus.cfg_sda >> 2) & 0xf;
-	function_scl = (pmic_bus.cfg_scl >> 2) & 0xf;
-	printf("touch: the PMIC's bus: SDA config %#x (function %u, pull %s, %s, level %s), SCL config %#x (function %u, pull %s, "
-	    "%s, level %s)\n", pmic_bus.cfg_sda, function_sda, pull_name(pmic_bus.cfg_sda),
-	    (pmic_bus.cfg_sda & CFG_OUTPUT_ENABLE) ? "OUTPUT" : "input", level(PIN_PMIC_SDA) ? "high" : "low", pmic_bus.cfg_scl,
-	    function_scl, pull_name(pmic_bus.cfg_scl), (pmic_bus.cfg_scl & CFG_OUTPUT_ENABLE) ? "OUTPUT" : "input",
-	    level(PIN_PMIC_SCL) ? "high" : "low");
-	if (function_sda != 0 || function_scl != 0) {
-		printf("touch: those pins are not plain GPIOs: somebody else has them, left alone\n");
-		return false;
-	}
-	/* (as inputs, so that nothing is driven before the bus is seen idle) */
-	pmic_bus.cfg_sda &= ~CFG_OUTPUT_ENABLE;
-	pmic_bus.cfg_scl &= ~CFG_OUTPUT_ENABLE;
-	wr(BB_CFG(PIN_PMIC_SDA), pmic_bus.cfg_sda);
-	wr(BB_CFG(PIN_PMIC_SCL), pmic_bus.cfg_scl);
-	delay(20);
-	if (!bb_recover("the PMIC's bus")) {
-		printf("touch: the bus is not idle (SDA %s, SCL %s): nothing more is driven on it\n", level(PIN_PMIC_SDA) ? "high" : "low",
-		    level(PIN_PMIC_SCL) ? "high" : "low");
-		return false;
-	}
-	problem = pmic_read(S2DOS05_REG_DEV_ID, r, S2DOS05_READ_COUNT);
-	wr(BB_CFG(PIN_PMIC_SDA), pmic_bus.cfg_sda);
-	wr(BB_CFG(PIN_PMIC_SCL), pmic_bus.cfg_scl);
-	if (problem != NULL) {
-		printf("touch: S2DOS05: %s\n", problem);
-		return false;
-	}
-	printf("touch: S2DOS05: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x (id, topsys, status, enable, LDO1-4, buck, buck vout)\n",
-	    r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]);
-	for (unsigned ldo = 1; ldo <= 4; ldo++) {
-		uint8_t cfg = r[S2DOS05_REG_LDO1_CFG + ldo - 1];
-
-		printf("touch: S2DOS05 LDO%u: %s, %u mV%s\n", ldo, (r[S2DOS05_REG_EN] & (1u << (ldo - 1))) ? "ON" : "off",
-		    ldo_millivolts(ldo, cfg), ldo == 2 ? " (the touch chip's 1.8 V)" : ldo == 3 ? " (the touch chip's 3.0 V)" : "");
-	}
-	printf("touch: S2DOS05 buck: %s\n", (r[S2DOS05_REG_EN] & (1u << 4)) ? "ON" : "off");
-	return true;
-}
-
-#define S2DOS05_EN_TOUCH        ((1u << 1) | (1u << 2))  /* LDO2 and LDO3 */
-
-/* The touch chip's three lines, as step 1 reads them: high once its I/O supply is up. */
-static void
-say_touch_lines(const char *when)
-{
-	printf("touch: %s: SDA %s, SCL %s, interrupt %s\n", when, (rd(GPIO_IO(PIN_SDA)) & 1) ? "high" : "low",
-	    (rd(GPIO_IO(PIN_SCL)) & 1) ? "high" : "low", (rd(GPIO_IO(PIN_INT)) & 1) ? "high" : "low");
-}
-
-/* Step 3: the touch chip's two supplies on, and nothing else changed. */
-static bool
-step_power(void)
-{
-	static const unsigned after_ms[] = { 1, 10, 50, 100, 300 };
-	uint8_t en, now[S2DOS05_READ_COUNT];
-	const char *problem;
-	unsigned waited = 0;
-
-	printf("touch: step 3: switch the S2DOS05's LDO2 and LDO3 on\n");
-	problem = pmic_read(S2DOS05_REG_EN, &en, 1);
-	if (problem != NULL) {
-		printf("touch: S2DOS05: reading the enable register: %s\n", problem);
-		return false;
-	}
-	if ((en & S2DOS05_EN_TOUCH) == S2DOS05_EN_TOUCH) {
-		printf("touch: S2DOS05: enable register %#x: both are on already\n", en);
-	} else {
-		printf("touch: S2DOS05: enable register %#x; next: write %#x to it (LDO2 and LDO3 added, the rest as read)\n", en,
-		    en | S2DOS05_EN_TOUCH);
-		say_touch_lines("before");
-		problem = pmic_write(S2DOS05_REG_EN, en | S2DOS05_EN_TOUCH);
-		if (problem != NULL) {
-			printf("touch: S2DOS05: writing the enable register: %s\n", problem);
-			return false;
-		}
-	}
-	/* (Samsung's driver waits 50 us for an LDO to come up) */
-	delay(1000);
-	problem = pmic_read(S2DOS05_REG_DEV_ID, now, S2DOS05_READ_COUNT);
-	if (problem != NULL) {
-		printf("touch: S2DOS05: reading back: %s\n", problem);
-		return false;
-	}
-	printf("touch: S2DOS05 read back: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x; LDO2 %s, LDO3 %s, the others %s\n",
-	    now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9],
-	    (now[S2DOS05_REG_EN] & (1u << 1)) ? "ON" : "off", (now[S2DOS05_REG_EN] & (1u << 2)) ? "ON" : "off",
-	    (now[S2DOS05_REG_EN] & ~S2DOS05_EN_TOUCH) == (en & ~S2DOS05_EN_TOUCH) ? "as they were" : "CHANGED");
-	for (unsigned i = 0; i < sizeof(after_ms) / sizeof(after_ms[0]); i++) {
-		delay((after_ms[i] - waited) * 1000);
-		waited = after_ms[i];
-		char when[24];
-		snprintf(when, sizeof(when), "%u ms after", after_ms[i]);
-		say_touch_lines(when);
-	}
-	return (now[S2DOS05_REG_EN] & S2DOS05_EN_TOUCH) == S2DOS05_EN_TOUCH;
-}
-
-/* ---- step 4: the serial engine's clocks and pins --------------------------------------------------- */
-
-static uint32_t
-rcg_rate(uint32_t cfg, uint32_t m, uint32_t not_n_minus_m)
-{
-	/* SM8250's parents of these sources: 0 the crystal, 1 GPLL0 (600 MHz), 6 GPLL0 even (300 MHz) */
-	static const uint32_t parent[8] = { XO_HZ, 600000000, 0, 0, 0, 0, 300000000, 0 };
-	uint64_t hz = parent[cfg >> 8 & 7];
-	uint32_t divider = cfg & 0x1f, mode = cfg >> 12 & 3;
-
-	if (divider) {
-		hz = hz * 2 / (divider + 1);
-	}
-	if (mode) {
-		uint32_t n = (~not_n_minus_m & 0xffff) + (m & 0xffff);
-
-		if (n) {
-			hz = hz * (m & 0xffff) / n;
-		}
-	}
-	return (uint32_t)hz;
-}
-
-static uint32_t se_clock_select;
-static bool bitbang;            /* the touch bus driven by hand (the engine has no FIFO interface) */
-
-/* a branch runs: not "off", or under hardware control (which reads as off while nothing asks for it) */
-static bool
-branch_runs(vm_offset_t cbcr)
-{
-	uint32_t value = rd(cbcr);
-
-	return !(value & CLOCK_OFF) || (value & CLOCK_HW_CONTROL);
-}
-
-static bool
-step_clocks_pins(void)
-{
-	printf("touch: step 4: vote for serial engine 5's clocks and give GPIO12/GPIO13 to it\n");
-	wr(GCC_VOTE, rd(GCC_VOTE) | VOTE_QUP0_M_AHB | VOTE_QUP0_S_AHB | VOTE_QUP0_CORE | VOTE_QUP0_CORE_2X);
-	if (rd(GCC_QUP0_SE5_DFSR) & 1) {
-		/* preset rates: the I2C timings below are for the 19.2 MHz crystal, so that one */
-		bool found = false;
-
-		for (uint32_t level = 0; level < 8; level++) {
-			uint32_t hz = rcg_rate(rd(GCC_QUP0_SE5_PERF_CFG(level)), rd(GCC_QUP0_SE5_PERF_M(level)),
-			    rd(GCC_QUP0_SE5_PERF_N(level)));
-
-			printf("touch: preset rate %u: %u Hz\n", level, hz);
-			if (hz == XO_HZ && !found) {
-				found = true;
-				se_clock_select = level;
-			}
-		}
-		if (!found) {
-			printf("touch: no preset rate is the crystal's: the engine is left alone\n");
-			return false;
-		}
-		printf("touch: the engine chooses its rate itself (DFS): preset %u, 19.2 MHz\n", se_clock_select);
-	} else {
-		wr(GCC_QUP0_SE5_CFG, (rd(GCC_QUP0_SE5_CFG) & ~0x371fu) | 1);   /* the crystal, undivided */
-		wr(GCC_QUP0_SE5_CMD, rd(GCC_QUP0_SE5_CMD) | 1);
-		for (int i = 0; i < 500 && (rd(GCC_QUP0_SE5_CMD) & 1); i++) {
-			delay(10);
-		}
-		if (rd(GCC_QUP0_SE5_CMD) & 1) {
-			printf("touch: the engine's clock source does not take its configuration (%#x)\n", rd(GCC_QUP0_SE5_CMD));
-			return false;
-		}
-		se_clock_select = 0;
-		printf("touch: the engine's clock source set to the crystal (config %#x)\n", rd(GCC_QUP0_SE5_CFG));
-	}
-	wr(GCC_VOTE, rd(GCC_VOTE) | VOTE_QUP0_SE5);
-	for (int i = 0; !(branch_runs(GCC_QUP0_M_AHB_CBCR) && branch_runs(GCC_QUP0_S_AHB_CBCR) && branch_runs(GCC_QUP0_SE5_CBCR)); i++) {
-		if (i >= 1000) {
-			printf("touch: the clocks stay off: master AHB %#x, slave AHB %#x, engine %#x\n", rd(GCC_QUP0_M_AHB_CBCR),
-			    rd(GCC_QUP0_S_AHB_CBCR), rd(GCC_QUP0_SE5_CBCR));
-			return false;
-		}
-		delay(10);
-	}
-	printf("touch: clocks: votes %#x; master AHB %#x, slave AHB %#x, engine %#x\n", rd(GCC_VOTE), rd(GCC_QUP0_M_AHB_CBCR),
-	    rd(GCC_QUP0_S_AHB_CBCR), rd(GCC_QUP0_SE5_CBCR));
-
-	/* the device tree's qupv3_se5_tsp_i2c_active: function qup5, 2 mA, no pull (the board pulls up); the interrupt an input */
-	wr(GPIO_CFG(PIN_SDA), PIN_FUNCTION_QUP5 << 2);
-	wr(GPIO_CFG(PIN_SCL), PIN_FUNCTION_QUP5 << 2);
-	wr(GPIO_CFG(PIN_INT), 0);
-	say_pin("SDA", PIN_SDA);
-	say_pin("SCL", PIN_SCL);
-	say_pin("interrupt", PIN_INT);
-
-	se = ml_io_map(SE_PHYS, SE_SIZE);
-	uint32_t revision = rd(GENI_FW_REVISION_RO);
-	printf("touch: serial engine 5: firmware %#x (protocol %u), FIFO interface %s, FIFO depth %u words\n", revision,
-	    (revision >> 8) & 0xff, (rd(GENI_IF_DISABLE_RO) & 1) ? "DISABLED" : "there", (rd(SE_HW_PARAM_0) >> 16) & 0x3f);
-	if (((revision >> 8) & 0xff) != GENI_PROTOCOL_I2C) {
-		printf("touch: the engine's firmware is not I2C's: left alone\n");
-		return false;
-	}
-	if (rd(GENI_IF_DISABLE_RO) & 1) {
-		/*
-		 * The firmware has given this engine to the GSI DMA engine alone (Linux then talks to it
-		 * through GPI DMA). Without that, the bus is driven by hand on the same two pins, as the
-		 * PMIC's is: the engine's clock is let go again and the pins become plain GPIOs.
-		 */
-		printf("touch: the engine's FIFO interface is disabled (GSI DMA only): the bus is driven by hand instead\n");
-		wr(GCC_VOTE, rd(GCC_VOTE) & ~VOTE_QUP0_SE5);
-		touch_bus.tlmm = tlmm;
-		touch_bus.cfg_sda = 0;  /* function 0 (GPIO), no pull, 2 mA, input */
-		touch_bus.cfg_scl = 0;
-		wr(GPIO_CFG(PIN_SDA), touch_bus.cfg_sda);
-		wr(GPIO_CFG(PIN_SCL), touch_bus.cfg_scl);
-		delay(20);
-		say_pin("SDA", PIN_SDA);
-		say_pin("SCL", PIN_SCL);
-		bb = &touch_bus;
-		if (!bb_recover("the touch bus")) {
-			printf("touch: the touch bus is not idle: nothing more is driven on it\n");
-			return false;
-		}
-		bitbang = true;
-	}
-	return true;
-}
-
-/* ---- step 5: I2C through the serial engine, and the chip's identity ------------------------------- */
-
-static uint32_t fifo_depth;
-
-static void
-geni_i2c_init(void)
-{
-	fifo_depth = rd(SE_HW_PARAM_0) >> 16 & 0x3f;
-	wr(SE_GSI_EVENT_EN, 0);
-	wr(GENI_M_IRQ_CLEAR, 0xffffffff);
-	wr(GENI_S_IRQ_CLEAR, 0xffffffff);
-	wr(SE_DMA_TX_IRQ_CLR, 0xffffffff);
-	wr(SE_DMA_RX_IRQ_CLR, 0xffffffff);
-	wr(GENI_CGC_CTRL, rd(GENI_CGC_CTRL) | 0x7f);
-	wr(SE_DMA_GENERAL_CFG, rd(SE_DMA_GENERAL_CFG) | 0xf);
-	wr(GENI_OUTPUT_CTRL, 0x7f);
-	wr(GENI_FORCE_DEFAULT, 1);
-	wr(GENI_DMA_MODE_EN, rd(GENI_DMA_MODE_EN) & ~1u);
-	wr(GENI_RX_WATERMARK, fifo_depth - 3);
-	wr(GENI_RX_RFR_WATERMARK, fifo_depth - 2);
-	wr(GENI_TX_WATERMARK, 0);
-	/* the status bits we poll follow these enables (the general purpose ones say NACK and bus errors) */
-	wr(SE_IRQ_EN, rd(SE_IRQ_EN) | 0xf);
-	wr(GENI_M_IRQ_EN, rd(GENI_M_IRQ_EN) | 0x7fc07fff);
-	/* 8 bits, four bytes in a FIFO word, as Linux's geni_se_config_packing(8, 4, true) */
-	wr(GENI_TX_PACKING_CFG0, 0x0007f8fe);
-	wr(GENI_TX_PACKING_CFG1, 0x000ffefe);
-	wr(GENI_RX_PACKING_CFG0, 0x0007f8fe);
-	wr(GENI_RX_PACKING_CFG1, 0x000ffefe);
-	wr(GENI_CLK_SEL, se_clock_select & 7);
-	wr(GENI_SER_M_CLK_CFG, I2C_100K_DIVIDER << 4 | 1);
-	wr(I2C_SCL_COUNTERS, I2C_100K_COUNTERS);
-}
-
-static void
-geni_recover(void)
-{
-	wr(GENI_M_CMD_CTRL, 1u << 2);
-	for (int i = 0; i < 2000 && !(rd(GENI_M_IRQ_STATUS) & M_CMD_CANCEL); i++) {
-		delay(100);
-	}
-	if (!(rd(GENI_M_IRQ_STATUS) & M_CMD_CANCEL)) {
-		wr(GENI_M_CMD_CTRL, 1u << 1);
-		for (int i = 0; i < 2000 && !(rd(GENI_M_IRQ_STATUS) & M_CMD_ABORT); i++) {
-			delay(100);
-		}
-	}
-	for (int i = 0; i < 64 && (rd(GENI_RX_FIFO_STATUS) & 0x01ffffff); i++) {
-		(void)rd(GENI_RX_FIFO);
-	}
-	wr(GENI_M_IRQ_CLEAR, 0xffffffff);
-}
-
-/* Wait for the command to end; NULL, or what went wrong. */
-static const char *
-geni_wait(uint8_t *rx, uint32_t length, uint32_t *received)
-{
-	uint64_t deadline;
-	uint32_t status = 0;
-
-	clock_interval_to_deadline(100, NSEC_PER_MSEC, &deadline);
-	while (mach_absolute_time() < deadline) {
-		status = rd(GENI_M_IRQ_STATUS);
-		if (rx != NULL) {
-			uint32_t fifo = rd(GENI_RX_FIFO_STATUS), words = fifo & 0x01ffffff, bytes = words * 4;
-
-			if ((fifo & 0x80000000u) && ((fifo >> 28) & 7) && ((fifo >> 28) & 7) < 4) {
-				bytes -= 4 - ((fifo >> 28) & 7);
-			}
-			for (uint32_t i = 0; i < words; i++) {
-				uint32_t word = rd(GENI_RX_FIFO);
-
-				for (int j = 0; j < 4 && bytes; j++, bytes--) {
-					if (*received < length) {
-						rx[(*received)++] = (uint8_t)(word >> (8 * j));
-					}
-				}
-			}
-		}
-		if (status & M_I2C_ERRORS) {
-			wr(GENI_M_IRQ_CLEAR, status);
-			geni_recover();
-			return (status & M_GP_NACK) ? "no acknowledge (NACK)" : (status & M_GP_ARB_LOST) ? "arbitration lost" :
-			       (status & M_GP_BUS_PROTO) ? "bus protocol error" : "the engine reports an error";
-		}
-		if (status & M_CMD_DONE) {
-			wr(GENI_M_IRQ_CLEAR, status);
-			return NULL;
-		}
-	}
-	geni_recover();
-	return "no end of the command in 100 ms";
-}
-
-/* Write the command byte, then (repeated start) read `length` bytes. NULL, or what went wrong. */
-static const char *
-sec_ts_read(uint8_t command, uint8_t *rx, uint32_t length)
-{
-	const char *problem;
-	uint32_t received = 0;
-
-	if (bitbang) {
-		bb = &touch_bus;
-		return bb_read(command, rx, length);
-	}
-	for (int i = 0; rd(GENI_STATUS) & 1; i++) {
-		if (i > 100) {
-			geni_recover();
-			break;
-		}
-		delay(100);
-	}
-	wr(GENI_M_IRQ_CLEAR, 0xffffffff);
-	wr(I2C_TX_TRANS_LEN, 1);
-	wr(GENI_M_CMD0, I2C_OP_WRITE << 27 | SEC_TS_ADDRESS << 9 | I2C_STOP_STRETCH);
-	wr(GENI_TX_FIFO, command);
-	problem = geni_wait(NULL, 0, NULL);
-	if (problem != NULL) {
-		return problem;
-	}
-	wr(I2C_RX_TRANS_LEN, length);
-	wr(GENI_M_CMD0, I2C_OP_READ << 27 | SEC_TS_ADDRESS << 9);
-	problem = geni_wait(rx, length, &received);
-	if (problem == NULL && received != length) {
-		return "fewer bytes than asked for";
-	}
-	return problem;
-}
-
-#define SEC_TS_DEVICE_ID        0x52    /* 3 bytes */
-#define SEC_TS_BOOT_STATUS      0x55    /* 0x10 boot loader, 0x20 application */
-#define SEC_TS_READ_ONE_EVENT   0x60    /* 8 bytes */
-#define SEC_TS_EVENT_SIZE       8
-
-static bool
-step_identity(void)
-{
-	uint8_t id[3], boot, event[SEC_TS_EVENT_SIZE];
-	const char *problem;
-
-	if (bitbang) {
-		printf("touch: step 5: read the chip (address %#x) over the bus driven by hand, 100 kHz\n", SEC_TS_ADDRESS);
-	} else {
-		printf("touch: step 5: set the engine up for I2C at 100 kHz and read the chip (address %#x)\n", SEC_TS_ADDRESS);
-		geni_i2c_init();
-		printf("touch: engine: clock config %#x, SCL counters %#x, status %#x\n", rd(GENI_SER_M_CLK_CFG), rd(I2C_SCL_COUNTERS),
-		    rd(GENI_STATUS));
-	}
-	problem = sec_ts_read(SEC_TS_DEVICE_ID, id, sizeof(id));
-	if (problem != NULL) {
-		printf("touch: reading the device identity (%#x): %s\n", SEC_TS_DEVICE_ID, problem);
-		return false;
-	}
-	printf("touch: device identity %02x %02x %02x\n", id[0], id[1], id[2]);
-	problem = sec_ts_read(SEC_TS_BOOT_STATUS, &boot, 1);
-	if (problem != NULL) {
-		printf("touch: reading the boot status (%#x): %s\n", SEC_TS_BOOT_STATUS, problem);
-		return false;
-	}
-	printf("touch: boot status %#x (%s)\n", boot, boot == 0x20 ? "the application runs" : boot == 0x10 ? "BOOT LOADER only" : "?");
-	problem = sec_ts_read(SEC_TS_READ_ONE_EVENT, event, sizeof(event));
-	if (problem != NULL) {
-		printf("touch: reading an event (%#x): %s\n", SEC_TS_READ_ONE_EVENT, problem);
-		return false;
-	}
-	printf("touch: first event %02x %02x %02x %02x %02x %02x %02x %02x; the interrupt line is now %s\n", event[0], event[1],
-	    event[2], event[3], event[4], event[5], event[6], event[7], (rd(GPIO_IO(PIN_INT)) & 1) ? "high" : "low");
-	return boot == 0x20;
-}
-
-/* A command byte alone. */
-static const char *
-sec_ts_command(uint8_t command)
-{
-	if (bitbang) {
-		bb = &touch_bus;
-		return bb_command(command);
-	}
-	wr(GENI_M_IRQ_CLEAR, 0xffffffff);
-	wr(I2C_TX_TRANS_LEN, 1);
-	wr(GENI_M_CMD0, I2C_OP_WRITE << 27 | SEC_TS_ADDRESS << 9);
-	wr(GENI_TX_FIFO, command);
-	return geni_wait(NULL, 0, NULL);
-}
-
-/* ---- steps 6 and 7: sensing, and the touches ------------------------------------------------------ */
-
-#define SEC_TS_SENSE_ON         0x10
-#define SEC_TS_PANEL_INFO       0x23    /* 11 bytes: [0..1] x range, [2..3] y range (big endian) */
-#define SEC_TS_READ_ALL_EVENT   0x61    /* the waiting events, 8 bytes each */
-#define SEC_TS_CLEAR_EVENTS     0x62
-#define SEC_TS_EVENT_COUNT      32
-#define SEC_TS_FINGERS          10
-#define POLL_US                 8000    /* 125 times a second, as the redwood driver */
-
-static uint32_t max_x, max_y;
-
-static bool
-step_sense(void)
-{
-	uint8_t panel[11];
-	const char *problem;
-
-	printf("touch: step 6: read the panel's size, clear the chip's events and switch sensing on\n");
-	problem = sec_ts_read(SEC_TS_PANEL_INFO, panel, sizeof(panel));
-	if (problem != NULL) {
-		printf("touch: reading the panel information (%#x): %s\n", SEC_TS_PANEL_INFO, problem);
-		return false;
-	}
-	max_x = (uint32_t)panel[0] << 8 | panel[1];
-	max_y = (uint32_t)panel[2] << 8 | panel[3];
-	printf("touch: panel information %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x: x up to %u, y up to %u\n",
-	    panel[0], panel[1], panel[2], panel[3], panel[4], panel[5], panel[6], panel[7], panel[8], panel[9], panel[10],
-	    max_x, max_y);
-	if (max_x < 100 || max_y < 100) {
-		max_x = max_y = 4096;   /* the device tree's sec,max_coords */
-		printf("touch: ... which does not look like a size: 4096 x 4096 instead (the device tree's)\n");
-	}
-	problem = sec_ts_command(SEC_TS_CLEAR_EVENTS);
-	if (problem == NULL) {
-		delay(10000);
-		problem = sec_ts_command(SEC_TS_SENSE_ON);
-	}
-	if (problem != NULL) {
-		printf("touch: clearing the events or switching sensing on: %s\n", problem);
-		return false;
-	}
-	delay(10000);
-	printf("touch: sensing is on; the interrupt line is %s\n", (rd(GPIO_IO(PIN_INT)) & 1) ? "high" : "low");
-	return true;
-}
+static uint32_t flip;
+static uint32_t max_x = 4095, max_y = 4095;  /* sec,max_coords; replaced by the panel info */
 
 static struct {
-	bool down;
+	bool     down;
 	uint32_t x, y;
-	uint64_t since;         /* when it landed */
-	unsigned moves;
-} finger[SEC_TS_FINGERS];
+} finger[TS_MAX_FINGERS];
+
+/* for the touch line in mali2metal's channel (sec_ts_thread): whether the controller is still heard */
+static uint32_t note_resets, note_presses, note_failed_reads;
+
+static bool
+ts_read(uint8_t cmd, uint8_t *buf, uint32_t len)
+{
+	return i2c_xfer(&ts_bus, TS_ADDR, &cmd, 1, buf, len);
+}
+
+static bool
+ts_write(uint8_t cmd, const uint8_t *data, uint32_t len)
+{
+	uint8_t buf[8];
+	uint32_t i;
+
+	if (len + 1 > sizeof(buf)) {
+		return false;
+	}
+	buf[0] = cmd;
+	for (i = 0; i < len; i++) {
+		buf[i + 1] = data[i];
+	}
+	return i2c_xfer(&ts_bus, TS_ADDR, buf, len + 1, NULL, 0);
+}
+
+/* The controller pulls its attention line low while it has events queued. */
+static bool
+attn_pending(void)
+{
+	return !use_attn || redwood_gpio_get(attn_bank, ATTN_PIN) == 0;
+}
+
+static uint32_t
+scale(uint32_t v, uint32_t max, uint32_t axis)
+{
+	uint32_t out = v >= max ? 65535 : v * 65535 / max;
+
+	if (flip & (axis == 0 ? 1 : 2)) {
+		out = 65535 - out;
+	}
+	return out;
+}
+
+static void
+release_all(void)
+{
+	uint32_t i;
+
+	for (i = 0; i < TS_MAX_FINGERS; i++) {
+		if (finger[i].down) {
+			finger[i].down = false;
+			redwood_touch_post(REDWOOD_TOUCH_UP, i, finger[i].x, finger[i].y);
+		}
+	}
+}
+
 /*
- * boot-arg touch_log=1: a line for each touch and for the first events. Off by default: under -v
- * a line is drawn on the screen, and that takes long enough (the whole framebuffer scrolls) for a
- * tap to be read late and taken for a long press.
+ * The scan rate (A, 2026-11-14). The controller scans at its default 60 Hz unless told otherwise; Android tells it
+ * (sec_ts y79a set_scan_rate: SEC_TS_CMD_SET_SCANRATE 0x94, { 1 = in step with the panel's vsync, 0 normal 60 / 1 HS60
+ * / 2 HS120 / 3 48 / 4 96 }) when the panel changes mode. Measured with the panel at 720x1600 120 Hz: 255 events in
+ * 4.1 s of fingers down, 62 a second -- iOS got a new finger position every other frame (a stepping scroll).
+ * Boot-arg touch_scan=N: the mode byte (default from fb_mode: 1 and 3 run the panel at 120 Hz -> 2; else 0); 255 off.
  */
-static uint32_t touch_log;
-static unsigned said_events, said_touches;
-static uint64_t touches_down, events_read, read_errors, reads, read_ns, read_longest_ns;
+static uint32_t ts_scan = 0xffff;
+
+static void
+ts_set_scan_rate(void)
+{
+	uint8_t want[2] = { 1, 0 }, got[2] = { 0, 0 };
+	uint32_t mode = 0;
+
+	if (ts_scan == 0xffff) {
+		if (!PE_parse_boot_argn("touch_scan", &ts_scan, sizeof(ts_scan))) {
+			ts_scan = PE_parse_boot_argn("fb_mode", &mode, sizeof(mode)) && (mode == 1 || mode == 3) ? 2 : 0;
+		}
+	}
+	if (ts_scan > 4) {
+		return;
+	}
+	want[1] = (uint8_t)ts_scan;
+	if (!ts_write(0x94, want, sizeof(want))) {
+		note("scan rate %u: not written", ts_scan);
+		return;
+	}
+	(void)ts_read(0x94, got, sizeof(got));
+	note("scan rate: asked %u %u, the controller has %u %u", want[0], want[1], got[0], got[1]);
+}
+
+static bool
+ts_start_sensing(void)
+{
+	uint8_t functions[2] = { TS_DEFAULT_FUNCTIONS & 0xff, TS_DEFAULT_FUNCTIONS >> 8 };
+	bool ok;
+
+	ok = ts_write(TS_CMD_SET_TOUCHFUNCTION, functions, sizeof(functions));
+	ok = ts_write(TS_CMD_SENSE_ON, NULL, 0) && ok;
+	ts_set_scan_rate();
+	return ok;
+}
 
 static void
 handle_event(const uint8_t *e)
 {
-	unsigned kind = e[0] & 3, state = e[0] >> 6, id = (e[0] >> 2) & 0xf;
-	uint32_t x, y;
+	uint32_t eid = e[0] & 0x3;
+	uint32_t kind = (e[0] >> 2) & 0xf;
+	uint32_t slot, action, ttype, x, y;
 
-	events_read++;
-	if (touch_log && said_events < 40) {
-		said_events++;
-		printf("touch: event %02x %02x %02x %02x %02x %02x %02x %02x\n", e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
+	if (touch_trace) {
+		printf("sec_ts: event %02x %02x %02x %02x %02x %02x %02x %02x\n",
+		    e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
 	}
-	if (kind != 0 || id == 0 || id > SEC_TS_FINGERS) {
-		return;         /* a status or vendor event, or no finger */
+
+	if (eid == TS_EID_STATUS) {
+		/* a watchdog reset: the controller rebooted and must be told to sense again */
+		if (kind == TS_STYPE_INFO && e[1] == TS_ACK_BOOT_COMPLETE && e[2] == 0x20) {
+			note_resets++;
+			m2m_klog('W', "DEV", "sec_ts: the controller reset itself, sensing again");
+			release_all();
+			ts_start_sensing();
+		} else if (kind == TS_STYPE_ERR) {
+			m2m_klog('W', "DEV", "sec_ts: error status %02x %02x %02x %02x", e[1], e[2], e[3], e[4]);
+			release_all();
+		}
+		return;
 	}
-	id--;
-	x = (uint32_t)e[1] << 4 | e[3] >> 4;
-	y = (uint32_t)e[2] << 4 | (e[3] & 0xf);
-	/* to the display's 0..65535, left/top to right/bottom */
-	x = x >= max_x ? 65535 : x * 65535 / max_x;
-	y = y >= max_y ? 65535 : y * 65535 / max_y;
-	if (state == 1 || state == 2) {
-		bool landed = !finger[id].down;
+	if (eid != TS_EID_COORDINATE || kind == 0) {
+		return;
+	}
 
-		finger[id].down = true;
-		finger[id].x = x;
-		finger[id].y = y;
-		if (landed) {
-			touches_down++;
-			finger[id].since = mach_absolute_time();
-			finger[id].moves = 0;
-		} else {
-			finger[id].moves++;
-		}
-		redwood_touch_post(landed ? REDWOOD_TOUCH_DOWN : REDWOOD_TOUCH_MOVE, id, x, y);
-		if (touch_log && landed && said_touches < 200) {
-			said_touches++;
-			printf("touch: finger %u DOWN at %u, %u (of 65535); event %02x %02x %02x %02x %02x %02x %02x %02x\n", id, x, y,
-			    e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
-		}
-	} else if (state == 3 && finger[id].down) {
-		uint64_t held;
+	slot = kind - 1;
+	if (slot >= TS_MAX_FINGERS) {
+		return;
+	}
+	action = e[0] >> 6;
+	ttype = ((uint32_t)(e[6] >> 6) << 2) | (e[7] >> 6);
+	if (ttype != TS_TOUCHTYPE_NORMAL && ttype != TS_TOUCHTYPE_GLOVE &&
+	    ttype != TS_TOUCHTYPE_PALM && ttype != TS_TOUCHTYPE_WET) {
+		return;
+	}
+	x = scale(((uint32_t)e[1] << 4) | (e[3] >> 4), max_x, 0);
+	y = scale(((uint32_t)e[2] << 4) | (e[3] & 0xf), max_y, 1);
 
-		finger[id].down = false;
-		redwood_touch_post(REDWOOD_TOUCH_UP, id, finger[id].x, finger[id].y);
-		absolutetime_to_nanoseconds(mach_absolute_time() - finger[id].since, &held);
-		if (touch_log && said_touches < 200) {
-			said_touches++;
-			printf("touch: finger %u up at %u, %u after %llu ms and %u moves; event %02x %02x %02x %02x %02x %02x %02x %02x\n",
-			    id, finger[id].x, finger[id].y, held / NSEC_PER_MSEC, finger[id].moves, e[0], e[1], e[2], e[3], e[4], e[5],
-			    e[6], e[7]);
+	switch (action) {
+	case TS_ACTION_PRESS:
+	case TS_ACTION_MOVE:
+		if (!finger[slot].down) {
+			finger[slot].down = true;
+			finger[slot].x = x;
+			finger[slot].y = y;
+			note_presses++;
+			redwood_touch_post(REDWOOD_TOUCH_DOWN, slot, x, y);
+		} else if (finger[slot].x != x || finger[slot].y != y) {
+			finger[slot].x = x;
+			finger[slot].y = y;
+			redwood_touch_post(REDWOOD_TOUCH_MOVE, slot, x, y);
 		}
+		break;
+	case TS_ACTION_RELEASE:
+		if (finger[slot].down) {
+			finger[slot].down = false;
+			redwood_touch_post(REDWOOD_TOUCH_UP, slot, finger[slot].x, finger[slot].y);
+		}
+		break;
+	default:
+		break;
 	}
 }
 
-/* Whether any finger is down, as far as the events have said. */
-static bool
-any_finger_down(void)
+/* sec_ts_read_event(): one event, which says how many more to read at once. */
+static uint32_t
+read_events(void)
 {
-	for (unsigned i = 0; i < SEC_TS_FINGERS; i++) {
-		if (finger[i].down) {
-			return true;
+	static uint8_t rest[TS_EVENT_SIZE * (TS_MAX_EVENTS - 1)];
+	uint8_t first[TS_EVENT_SIZE];
+	uint32_t left, i;
+
+	if (!ts_read(TS_READ_ONE_EVENT, first, sizeof(first))) {
+		note_failed_reads++;
+		return 0;
+	}
+	if (first[0] == 0) {
+		return 0;
+	}
+	if ((first[0] & 0x3) == TS_EID_EMPTY) {
+		ts_write(TS_CMD_CLEAR_EVENT_STACK, NULL, 0);
+		release_all();
+		return 0;
+	}
+	left = first[7] & 0x1f;
+	if (left > TS_MAX_EVENTS - 1) {
+		ts_write(TS_CMD_CLEAR_EVENT_STACK, NULL, 0);
+		release_all();
+		return 0;
+	}
+	if (left != 0 && !ts_read(TS_READ_ALL_EVENT, rest, left * TS_EVENT_SIZE)) {
+		left = 0;
+	}
+	handle_event(first);
+	for (i = 0; i < left; i++) {
+		handle_event(rest + i * TS_EVENT_SIZE);
+	}
+	return left + 1;
+}
+
+/* sec_ts_wait_for_ready(SEC_TS_ACK_BOOT_COMPLETE): up to 2 s. */
+static bool
+wait_for_boot(uint8_t last[TS_EVENT_SIZE])
+{
+	uint32_t i, kind;
+
+	for (i = 0; i <= 100; i++) {
+		if (attn_pending() && ts_read(TS_READ_ONE_EVENT, last, TS_EVENT_SIZE)) {
+			kind = (last[0] >> 2) & 0xf;
+			if ((kind == TS_STYPE_INFO || kind == TS_STYPE_VENDOR_INFO) &&
+			    last[1] == TS_ACK_BOOT_COMPLETE) {
+				return true;
+			}
 		}
+		sleep_us(20000);
 	}
 	return false;
 }
 
-/*
- * Step 7: whenever the interrupt line is low, read what is waiting -- and while a finger is down,
- * every time whatever the line says. A lift was missed now and then (seen with touch_trace=1:
- * a quick tap's landing, then nothing until the next touch, which came as a move of the same
- * finger), so that iOS held the finger down and made a long press of the tap: the line says so
- * for less than the 8 ms between two looks, it seems. Asked when nothing waits, the chip
- * answers an event of zeroes.
- */
-static void
-step_watch(void)
+static bool
+ts_probe(void)
 {
-	static uint8_t events[SEC_TS_EVENT_COUNT * SEC_TS_EVENT_SIZE];
-	unsigned left, ticks = 0;
-	const char *problem;
+	uint8_t ev[TS_EVENT_SIZE] = { 0 }, devid[5] = { 0 }, integrity = 0, boot = 0;
+	uint8_t status[4] = { 0 }, id[3] = { 0 }, panel[11] = { 0 }, fw[4] = { 0 };
+	uint32_t px, py;
+	bool ready, ok;
 
-	printf("touch: step 7: watching the interrupt line every %u us, posting the touches\n", POLL_US);
-	for (;;) {
-		if (!(rd(GPIO_IO(PIN_INT)) & 1) || any_finger_down()) {
-			uint64_t start = mach_absolute_time(), taken;
+	ready = wait_for_boot(ev);
+	note("boot event %s: %02x %02x %02x %02x, attn %u",
+	    ready ? "seen" : "NOT seen", ev[0], ev[1], ev[2], ev[3], redwood_gpio_get(attn_bank, ATTN_PIN));
 
-			problem = sec_ts_read(SEC_TS_READ_ONE_EVENT, events, SEC_TS_EVENT_SIZE);
-			if (problem == NULL && events[0] != 0) {
-				/*
-				 * How many more wait: the low five bits (Linux's sec_ts_event_coordinate:
-				 * left_event:5, max_energy:1, ttype_1_0:2). Read as six, the max_energy bit
-				 * that this chip sets in nearly every event made it 32 -- 31 events asked for
-				 * that were not there, and now and then a lift lost with them.
-				 */
-				left = events[7] & 0x1f;
-				if (left > SEC_TS_EVENT_COUNT - 1) {
-					left = SEC_TS_EVENT_COUNT - 1;
-				}
-				if (left != 0) {
-					problem = sec_ts_read(SEC_TS_READ_ALL_EVENT, events + SEC_TS_EVENT_SIZE, left * SEC_TS_EVENT_SIZE);
-				}
-			}
-			absolutetime_to_nanoseconds(mach_absolute_time() - start, &taken);
-			reads++;
-			read_ns += taken;
-			if (taken > read_longest_ns) {
-				read_longest_ns = taken;
-			}
-			if (reads == 10) {
-				printf("touch: the first 10 reads of events took %llu us each (the longest %llu)\n", read_ns / reads / 1000,
-				    read_longest_ns / 1000);
-			}
-			if (problem == NULL && events[0] != 0) {
-				for (unsigned i = 0; problem == NULL && i <= left && events[i * SEC_TS_EVENT_SIZE] != 0; i++) {
-					handle_event(events + i * SEC_TS_EVENT_SIZE);
-				}
-			}
-			if (problem != NULL && read_errors++ < 8) {
-				printf("touch: reading events: %s\n", problem);
-			}
-		}
-		/* once in a while a line about what has happened */
-		if (++ticks % (60 * 1000000 / POLL_US) == 10 * 1000000 / POLL_US) {
-			printf("touch: so far %llu events, %llu touches, %llu failed reads; a read takes %llu us (the longest %llu)\n",
-			    events_read, touches_down, read_errors, reads ? read_ns / reads / 1000 : 0, read_longest_ns / 1000);
-		}
-		delay(POLL_US);
+	ok = ts_read(TS_READ_DEVICE_ID, devid, sizeof(devid));
+	ok = ts_read(TS_READ_FW_INTEGRITY, &integrity, 1) && ok;
+	ok = ts_read(TS_READ_BOOT_STATUS, &boot, 1) && ok;
+	ok = ts_read(TS_READ_TS_STATUS, status, sizeof(status)) && ok;
+	ok = ts_read(TS_READ_ID, id, sizeof(id)) && ok;
+	ok = ts_read(TS_READ_FW_VERSION, fw, sizeof(fw)) && ok;
+	ok = ts_read(TS_READ_PANEL_INFO, panel, sizeof(panel)) && ok;
+	note("%s: dev %02x%02x%02x%02x%02x id %02x%02x%02x fw %02x.%02x.%02x.%02x integrity %#x boot %#x status %02x %02x %02x %02x; "
+	    "%u stretched clocks given up on so far", ok ? "answers" : "NO ANSWER", devid[0], devid[1], devid[2], devid[3], devid[4], id[0], id[1], id[2],
+	    fw[0], fw[1], fw[2], fw[3], integrity, boot, status[0], status[1], status[2], status[3], ts_bus.stretch_timeouts);
+	if (!ok) {
+		return false;
 	}
+
+	px = ((uint32_t)panel[0] << 8) | panel[1];
+	py = ((uint32_t)panel[2] << 8) | panel[3];
+	if (px > 1 && py > 1) {
+		max_x = px - 1;
+		max_y = py - 1;
+	}
+	note("panel %ux%u (display %ux%u, %u tx x %u rx)", max_x + 1, max_y + 1,
+	    ((uint32_t)panel[4] << 8) | panel[5], ((uint32_t)panel[6] << 8) | panel[7], panel[8], panel[9]);
+
+	if (boot == TS_STATUS_BOOT_MODE || !(integrity & 0x80)) {
+		note("the controller is in its bootloader / has no valid firmware: not sensing");
+		return false;
+	}
+	ok = ts_start_sensing();
+	note("sense on -> %d", ok);
+	return ok;
 }
 
-static void
-sec_ts_thread(void *parameter, __unused wait_result_t result)
-{
-	uint32_t steps = (uint32_t)(uintptr_t)parameter;
-	unsigned done = 1;
+/* ------------------------------------------------------------------------ */
 
-	step_survey();
-	if (steps >= 2 && step_pmic()) {
-		done = 2;
-		if (steps >= 3 && step_power()) {
-			done = 3;
-			if (steps >= 4 && step_clocks_pins()) {
-				done = 4;
-				if (steps >= 5 && step_identity()) {
-					done = 5;
-					if (steps >= 6 && step_sense()) {
-						done = 6;
-						if (steps >= 7) {
-							step_watch();
-						}
-					}
+static void
+sec_ts_thread(__unused void *parameter, __unused wait_result_t result)
+{
+	uint32_t poll_us = 8000, active_us = 2000, mode = 0, pwr = 1, pullup = 0;
+	uint64_t reads = 0, events = 0;
+
+	PE_parse_boot_argn("touch_ts", &mode, sizeof(mode));
+	PE_parse_boot_argn("touch_pwr", &pwr, sizeof(pwr));
+	PE_parse_boot_argn("touch_attn", &use_attn, sizeof(use_attn));
+	PE_parse_boot_argn("touch_pullup", &pullup, sizeof(pullup));
+	PE_parse_boot_argn("touch_poll_us", &poll_us, sizeof(poll_us));
+	PE_parse_boot_argn("touch_active_us", &active_us, sizeof(active_us));
+	PE_parse_boot_argn("touch_irq", &touch_irq, sizeof(touch_irq));
+	PE_parse_boot_argn("touch_irq_poll_us", &irq_poll_us, sizeof(irq_poll_us));
+	if (irq_poll_us < 1000 || irq_poll_us > 1000000) {
+		irq_poll_us = 50000;
+	}
+	if (active_us < 500 || active_us > poll_us) {
+		active_us = poll_us;
+	}
+	if (poll_us < 1000 || poll_us > 100000) {
+		poll_us = 8000;
+	}
+
+	attn_bank = redwood_gpio_bank(REDWOOD_PINCTRL_ALIVE, BANK_GPA1);
+	ts_bus.bank = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC1, BANK_GPP5);
+
+	/* The attention line as a plain input; the board pulls it up to tsp_io. */
+	redwood_gpio_func(attn_bank, ATTN_PIN, REDWOOD_GPIO_INPUT);
+	redwood_gpio_pull(attn_bank, ATTN_PIN, REDWOOD_GPIO_PULL_NONE);
+
+	/*
+	 * A few tries: a bit-banged transfer that is held up (by whatever else the boot is doing on the
+	 * other cores) can go unanswered once -- seen 24 Oct, the S2DOS05 silent for one boot. Only in
+	 * the diagnostic mode (touch_ts=2) does a failure end the run with the summary.
+	 */
+	const char *failed = NULL;
+
+	for (unsigned attempt = 1; attempt <= 5; attempt++) {
+		failed = NULL;
+		if (pwr != 0 && !touch_power(pwr, pullup != 0)) {
+			failed = "could not power the touch controller";
+		} else {
+			sleep_us(100000);   /* TOUCH_POWER_ON_DWORK_TIME */
+			if (!bus_setup(&ts_bus, pullup != 0)) {
+				failed = "the touch bus is held low (no power?)";
+			} else if (!ts_probe()) {
+				failed = "probe failed";
+			}
+		}
+		if (failed == NULL) {
+			break;
+		}
+		m2m_klog('W', "DEV", "sec_ts: attempt %u: %s", attempt, failed);
+		summary[0] = 0;
+		sleep_us(200000);
+	}
+	if (failed != NULL) {
+		if (mode == 2) {
+			panic("sec_ts: %s: %s", failed, summary);
+		}
+		m2m_klog('E', "DEV", "sec_ts: %s after 5 attempts: no touch screen this run", failed);
+		return;
+	}
+	if (mode == 2) {
+		panic("sec_ts: probe ok (touch_ts=2): %s", summary);
+	}
+	if (mode == 3) {
+		return;
+	}
+	m2m_klog('I', "DEV", "sec_ts: polling every %u us, %u us while touched (%s)", poll_us, active_us,
+	    use_attn ? "when the attention line is low" : "always");
+	if (touch_irq && use_attn) {
+		ts_irq_setup(attn_bank);
+	}
+
+	/*
+	 * Every 30 s a line in mali2metal's channel: whether the controller is still heard (reads,
+	 * events, presses), and how often its attention line was low. A line held
+	 * low with nothing to read is a controller that has stopped: its event stack is cleared, and
+	 * if that does not let the line go, it is told to sense again (as after its own reset).
+	 */
+	uint64_t period_abs, report_at, looks = 0, low = 0, stuck = 0, last_reads = 0, last_events = 0, active_until = 0;
+	uint64_t active_abs;
+	uint32_t last_presses = 0, last_failed = 0, last_resets = 0;
+
+	nanoseconds_to_absolutetime(30ULL * NSEC_PER_SEC, &period_abs);
+	nanoseconds_to_absolutetime(100ULL * NSEC_PER_MSEC, &active_abs);
+	report_at = mach_absolute_time() + period_abs;
+	for (;;) {
+		looks++;
+		if (attn_pending()) {
+			uint32_t n = read_events();
+
+			low++;
+			reads++;
+			events += n;
+			if (n != 0) {
+				active_until = mach_absolute_time() + active_abs;
+			}
+			stuck = n == 0 ? stuck + 1 : 0;
+			if (stuck == 1000000 / poll_us) {
+				m2m_klog('W', "DEV", "sec_ts: attention held low for 1 s with nothing to read (%u failed reads): "
+				    "clearing the event stack", note_failed_reads);
+				ts_write(TS_CMD_CLEAR_EVENT_STACK, NULL, 0);
+				release_all();
+			} else if (stuck == 5000000 / poll_us) {
+				m2m_klog('W', "DEV", "sec_ts: attention still held low after 5 s: sensing on again -> %d",
+				    ts_start_sensing());
+				stuck = 0;
+			}
+			if (touch_trace && (reads % 500) == 0) {
+				printf("sec_ts: %llu reads, %llu events, %u stretch timeouts\n",
+				    reads, events, ts_bus.stretch_timeouts);
+			}
+		}
+		if (mach_absolute_time() >= report_at) {
+			{
+				m2m_klog('I', "DEV", "sec_ts: 30 s: %llu reads (%u failed), %llu events, %u presses, %u controller "
+				    "resets; attention low %llu of %llu looks, now %s; %u bus stretch timeouts; interrupts %u (%s%s)",
+				    reads - last_reads,
+				    note_failed_reads - last_failed, events - last_events, note_presses - last_presses,
+				    note_resets - last_resets, low, looks, attn_pending() ? "low" : "high",
+				    ts_bus.stretch_timeouts, ts_irqs, ts_irq_on ? "on" : "off", ts_irq_storm ? ", masked after a storm" : "");
+			}
+			last_reads = reads;
+			last_events = events;
+			last_presses = note_presses;
+			last_failed = note_failed_reads;
+			last_resets = note_resets;
+			looks = low = 0;
+			report_at = mach_absolute_time() + period_abs;
+		}
+		/* quick while a finger is down or events came in the last 100 ms */
+		{
+			bool touched = mach_absolute_time() < active_until;
+
+			for (unsigned i = 0; !touched && i < TS_MAX_FINGERS; i++) {
+				touched = finger[i].down;
+			}
+			if (touched || !ts_irq_on || stuck != 0) {
+				sleep_us(touched ? active_us : poll_us);
+			} else {
+				/* idle: until the attention line falls (the interrupt), at most the fallback poll */
+				assert_wait_timeout((event_t)&ts_wake, THREAD_UNINT, ts_irqs != 0 ? irq_poll_us : poll_us,
+				    NSEC_PER_USEC);
+				if (attn_pending()) {
+					clear_wait(current_thread(), THREAD_AWAKENED);  /* fell meanwhile: no edge to wait for */
+				} else {
+					thread_block(THREAD_CONTINUE_NULL);
 				}
 			}
 		}
 	}
-	printf("touch: stopping here (touch_steps=%u, %u done)\n", steps, done);
-	thread_terminate(current_thread());
 }
 
 void
 redwood_sec_ts_init(void)
 {
-	uint32_t enabled = 0, steps = 7;
+	uint32_t mode = 0;
 	thread_t thread;
 
-	if (!PE_parse_boot_argn("touchscreen", &enabled, sizeof(enabled)) || !enabled) {
+	if (!PE_parse_boot_argn("touch_ts", &mode, sizeof(mode)) || mode == 0) {
 		return;
 	}
-	if (!redwood_platform_is("y2q")) {
-		return;
-	}
-	PE_parse_boot_argn("touch_steps", &steps, sizeof(steps));
-	PE_parse_boot_argn("touch_log", &touch_log, sizeof(touch_log));
-	if (steps == 0) {
-		return;
-	}
-	if (kernel_thread_start(sec_ts_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
+	PE_parse_boot_argn("touch_flip", &flip, sizeof(flip));
+	PE_parse_boot_argn("touch_trace", &touch_trace, sizeof(touch_trace));
+	if (kernel_thread_start(sec_ts_thread, NULL, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}
 }

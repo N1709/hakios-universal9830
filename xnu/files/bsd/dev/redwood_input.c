@@ -3,6 +3,7 @@
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
+#include <kern/sched_prim.h>
 #include <kern/thread_call.h>
 #include <libkern/libkern.h>
 #include <miscfs/devfs/devfs.h>
@@ -13,7 +14,6 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <pexpert/pexpert.h>
-#include <pexpert/device_tree.h>
 
 #define TOUCH_QUEUE     512             /* records; a power of two */
 
@@ -25,8 +25,20 @@
  * tools/latency.py.
  */
 static uint32_t touch_lat = 2;          /* 2: not yet looked up */
+/* the same, live (A, 2026-11-14; the boot line is full): sysctl -w kern.redwood.touch_lat=1. The kernel's "tl:" lines then
+ * also go to its own log (curl /log), next to the window server's, so a measurement needs no Log access */
+uint32_t redwood_touch_lat_live = 0;
 
 extern void loader_log_line(const char *line);
+extern void redwood_sec_ts_init(void);
+extern void redwood_sdcard_init(void);
+extern void redwood_kextload_init(void);
+extern void redwood_exynos_keys_init(void);
+extern void redwood_perf_init(void);
+extern void redwood_max77705_init(void);
+extern void redwood_mali_init(void);
+extern void redwood_exynos_pcie_init(void);
+extern void redwood_exynos_acpm_init(void);
 
 /*
  * A "tl:" line, for the kernel's drivers: into the loader's log as it is written -- the kernel's own
@@ -44,6 +56,9 @@ redwood_tl(const char *format, ...)
 	vsnprintf(line, sizeof(line), format, list);
 	va_end(list);
 	loader_log_line(line);
+	if (redwood_touch_lat_live) {
+		printf("%s", line);
+	}
 }
 
 static bool
@@ -54,7 +69,7 @@ latency_lines(void)
 
 		touch_lat = PE_parse_boot_argn("touch_lat", &on, sizeof(on)) && on != 0;
 	}
-	return touch_lat != 0;
+	return touch_lat != 0 || redwood_touch_lat_live != 0;
 }
 
 static LCK_GRP_DECLARE(touch_lck_grp, "redwood-touch");
@@ -71,7 +86,6 @@ static uint32_t touch_head, touch_tail;        /* read from head, add at tail */
 #define EXIT_HOLD_MS    1500
 
 extern void loader_return(void);
-extern void redwood_var_save_on_return(void);   /* bsd/dev/redwood_ufs.c: the data volume into the flash */
 
 static thread_call_t exit_call;
 static uint32_t fingers_down;           /* one bit for each finger a driver says is down */
@@ -80,7 +94,6 @@ static void
 exit_hold_elapsed(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 {
 	printf("\n--- %d fingers held on the screen for %d ms: back to the loader ---\n", EXIT_FINGERS, EXIT_HOLD_MS);
-	redwood_var_save_on_return();           /* the way out of a boot without the computer: keep what iOS wrote */
 	redwood_adreno_stop();
 	loader_return();
 }
@@ -109,10 +122,28 @@ count_fingers(uint32_t type, uint32_t finger)
 	}
 }
 
+/* when a finger last came down, and the last touch event of any kind: the clocks' touch boost (redwood_exynos_acpm.c) */
+uint64_t redwood_touch_down_at, redwood_touch_last_at;
+extern int redwood_gov_wake;            /* the clock governor's wake-up (redwood_exynos_acpm.c) */
+
+/* the touch panel's fingers right now (bit per slot) and the last one's place, 0-65535: the fingerprint sensor's
+ * finger-on-display trigger (bsd/dev/redwood_teegris.c fp_run) */
+volatile uint32_t redwood_touch_mask, redwood_touch_x, redwood_touch_y;
+
 static void
 touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, bool from_driver)
 {
 	struct redwood_touch *t;
+
+	if (from_driver && finger < 32) {
+		if (type == REDWOOD_TOUCH_DOWN || type == REDWOOD_TOUCH_MOVE) {
+			redwood_touch_x = x;
+			redwood_touch_y = y;
+			redwood_touch_mask |= 1u << finger;
+		} else if (type == REDWOOD_TOUCH_UP) {
+			redwood_touch_mask &= ~(1u << finger);
+		}
+	}
 
 	lck_mtx_lock(&touch_lock);
 	if (touch_tail - touch_head == TOUCH_QUEUE) {
@@ -135,6 +166,13 @@ touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, bool from_dri
 	}
 	lck_mtx_unlock(&touch_lock);
 	wakeup(&touch_queue);
+	if (type <= REDWOOD_TOUCH_UP) {
+		redwood_touch_last_at = mach_absolute_time();
+		if (type == REDWOOD_TOUCH_DOWN) {
+			redwood_touch_down_at = redwood_touch_last_at;
+			thread_wakeup((event_t)&redwood_gov_wake);
+		}
+	}
 }
 
 void
@@ -208,39 +246,19 @@ static const struct cdevsw touch_cdevsw = {
 	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = 0
 };
 
-/*
- * Which phone this is: the loader names its platform in /arm-io's device_type ("redwood",
- * "y2q", "qemu-virt"). A driver that writes to one phone's addresses asks this first.
- */
-bool
-redwood_platform_exact(const char *name)
-{
-	DTEntry entry;
-	void const *type;
-	unsigned int size;
-
-	if (SecureDTLookupEntry(NULL, "/arm-io", &entry) != kSuccess ||
-	    SecureDTGetProperty(entry, "device_type", &type, &size) != kSuccess) {
-		return false;
-	}
-	return strncmp(type, name, size) == 0 && strlen(name) + 1 == size;
-}
-
-/*
- * The Galaxy S20 Ultra (z3q, SM-G988N) is the y2q's twin as far as these drivers go (the same SM8250, the same
- * peripheral addresses, sec_ts, MAX77705, the same framebuffer window; checked against both device trees), so
- * "is it a y2q" is also true on a z3q. A driver that must tell them apart asks redwood_platform_exact.
- */
-bool
-redwood_platform_is(const char *name)
-{
-	return redwood_platform_exact(name) || (strcmp(name, "y2q") == 0 && redwood_platform_exact("z3q"));
-}
+void redwood_hfs_init(void);
+extern void redwood_tcs3407_init(void);
+extern void redwood_ssp_init(void);
+void redwood_exynos_bt_init(void);
+void redwood_m2m_init(void);
 
 void
 redwood_input_init(void)
 {
-	int major = cdevsw_add(-1, &touch_cdevsw);
+	int major;
+
+	redwood_m2m_init();             /* mali2metal's channel (/dev/m2m) first: the GPU's bring-up below reports into it */
+	major = cdevsw_add(-1, &touch_cdevsw);
 
 	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "redwood-touch") == NULL) {
 		printf("redwood-touch: cannot create the device\n");
@@ -250,13 +268,23 @@ redwood_input_init(void)
 	redwood_virtio_input_init();
 	redwood_goodix_init();
 	redwood_sec_ts_init();
+	redwood_exynos_keys_init();
+	redwood_perf_init();
+	redwood_max77705_init();
+	redwood_mali_init();
 	redwood_buttons_init();
 	redwood_battery_init();
-	redwood_max77705_init();
-	redwood_pcie_init();
 	redwood_ufs_init();
+	redwood_sdcard_init();
+	redwood_kextload_init();       /* boot-arg lifs=1: Apple's lifs.kext from the system volume (bsd/dev/redwood_kextload.c) */        /* boot-arg sd=1: the microSD slot, read-only (bsd/dev/redwood_sdcard.c) */
+	redwood_hfs_init();             /* Apple's HFS+ (bsd/hfs): the S20+'s data volume on userdata */
 	redwood_net_init();
 	redwood_adreno_init();
 	redwood_wifi_init();
+	redwood_exynos_pcie_init();     /* boot-arg wifi_pcie=1|2: the BCM4375's PCIe link, W2 of PLANS/06-wireless.md */
+	redwood_exynos_acpm_init();
+	redwood_tcs3407_init();         /* boot-arg als=1..3: the rear light sensor (bsd/dev/redwood_tcs3407.c) */
+	redwood_ssp_init();             /* boot-arg shub=1..6: the sensor hub (bsd/dev/redwood_ssp.c) */     /* boot-arg dvfs=1|2: CPU/GPU/memory clocks and temperatures through ACPM (P5) */
+	redwood_exynos_bt_init();       /* boot-arg bt=1: the BCM4375's Bluetooth on UART1, for iOS's bluetoothd */
 	redwood_adsp_init();
 }

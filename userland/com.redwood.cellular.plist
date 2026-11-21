@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.redwood.cellular</string>
+	<!-- the S20's modem (S5123) kept up: SPI BOOT, PCIe, firmware download, Samsung IPC; what it reports goes
+	     to /var/tmp/redwood-cell/state for SpringBoard's status bar (src/cell_sb.h). Built from the
+	     x1slte-cellular branch (tools/cellular/live-modem.c --stay). The firmware (RADIO) and NV files live in
+	     /var/root (cell-*); without them it ends at once. Not kept alive: a modem fault must not loop.
+	     Boot-arg cellular=0: the modem stays off. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/redwood/bin/redwood-cellulard</string>
+		<string>--reserved-base-verified</string>
+		<string>/var/root/cell-boot.bin</string>
+		<string>/var/root/cell-boot.info</string>
+		<string>--download-all</string>
+		<string>/var/root/cell-toc.bin</string>
+		<string>/var/root/cell-plan.txt</string>
+		<string>--stay</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- (B, 2026-11-19) airplane mode off (SpringBoard, cell_sb.h) writes this file when the service is not
+	     running (after an airplane-mode stop or a failed bring-up): launchd starts a fresh bring-up. Starts only;
+	     never restarts a running or exiting service, so a modem fault still cannot loop. -->
+	<key>WatchPaths</key>
+	<array>
+		<string>/var/tmp/redwood-cell-kick</string>
+	</array>
+	<key>StandardOutPath</key>
+	<string>/var/tmp/redwood-cellular.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/tmp/redwood-cellular.log</string>
+</dict>
+</plist>

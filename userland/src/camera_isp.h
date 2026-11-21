@@ -14,6 +14,26 @@
 #include <stdint.h>
 #include "redwood_camera.h"
 
+struct isp;
+void isp_set_tone(struct isp *isp, float contrast);
+/* Copied with each frame's ISP state; never shared with the next frame's reader. */
+#define BLACK_GRID_W 17
+#define BLACK_GRID_H 13
+#define BLACK_PROFILES 8
+struct isp_black_calibration {
+    uint32_t width, height, bayer, line_ns, frame_lines, exposure_lines, profiles, grid_w, grid_h, gain_unity;
+    struct { uint32_t gain; float grid[4][BLACK_GRID_H][BLACK_GRID_W]; } profile[BLACK_PROFILES];
+};
+bool isp_load_black_calibration(struct isp_black_calibration *cal, const char *path);
+bool isp_apply_black_calibration(struct isp *isp, const struct isp_black_calibration *cal,
+    const struct redwood_camera_frame *f);
+struct isp_black_levels {
+    int site[4], low[4]; /* raw 2x2 site order, above and below band_row */
+    uint32_t band_row;   /* 0: no lower band; otherwise an even raw-image row */
+    bool spatial;
+    float grid[4][BLACK_GRID_H][BLACK_GRID_W]; /* additive RAW pedestal at tile centres */
+};
+
 struct isp_stats {
 	double          mean[3];        /* R, G, B above black, in 10-bit steps */
 	double          bright;         /* the level of green that 1 % of the cells are above */
@@ -69,10 +89,16 @@ struct isp_tuning {
 };
 
 struct isp {
+	struct isp_black_levels black;
 	float           wb[3];          /* the white balance's gains, green 1 */
+	float           trim[3];        /* a fixed correction of the white balance (0: none), per channel */
+	int             awb_fast;       /* frames left of a quick white balance (a stream's start) */
 	float           digital;        /* more gain, for what AE cannot reach with the sensor's */
+	float           digital_next;   /* the digital gain that goes with the exposure asked for, from its first frame */
+	float           bias;           /* the exposure slider's, on the picture at once (0: none); AE does not see it */
 	float           zoom;           /* the picture is the middle 1/zoom of the sensor each way (1: the whole of it) */
 	bool            turned;         /* the picture turned half round (a sensor mounted the other way up) */
+	bool            mirror;         /* ... and/or mirrored left to right (each line from its end) */
 	float           ccm[3][3];      /* the colour matrix, camera RGB (white balanced) to linear sRGB; rows sum to 1 */
 	struct isp_lsc  lsc;
 	uint8_t         gamma[4096];    /* linear (959 above black is 3836) to 8 bits, sRGB's curve */
@@ -88,7 +114,10 @@ void isp_init(struct isp *isp);
  * green's steps between neighbouring blocks of 4x4 cells, over green's level squared -- higher is sharper,
  * the same scene at any exposure the same; and green's mean level there (level, may be NULL).
  */
-float isp_sharpness(const struct redwood_camera_frame *f, const uint8_t *raw, float x0, float y0, float x1, float y1, float *level);
+float isp_sharpness(const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw, float x0, float y0, float x1, float y1, float *level);
+/* Tap meter: sparse green mean above this frame's per-site black (0 cells for an invalid window). */
+uint32_t isp_window_green(const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw,
+    float x0, float y0, float x1, float y1, double *mean);
 /* the levels, from every 4th cell of every 4th pair of lines (with the processor's lens shading and white balance, if isp) */
 void isp_measure(const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw, struct isp_stats *s);
 /* the exposure for the frames to come: true, and the command filled in, when it should change */

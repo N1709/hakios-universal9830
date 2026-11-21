@@ -1,0 +1,27 @@
+name: Bug report
+description: Report a reproducible problem on an exact device/build.
+body:
+  - type: input
+    id: device
+    attributes:
+      label: Exact model code and storage capacity
+      placeholder: SM-G980F, 128 GB
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Release/source commit and bootloader version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps, expected behavior, actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized log excerpt
+      description: Remove phone numbers, IMSI/IMEI, serials, network credentials and tokens. Never upload EFS or full firmware.

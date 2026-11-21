@@ -31,7 +31,7 @@ What is NOT checked, and why:
     has no weights to round, so this says nothing about filtering or
     addressing. That is now a separate check rather than a gap:
     tools/air/sampcheck.py samples with the shader's own constexpr sampler and
-    compares against Apple's rules (docs/air.md section 3.3).
+    compares against Apple's rules (docs/dev/air.md section 3.3).
   - The integer-typed reads and samples (read_texture_2d.s.v4i16,
     sample_texture_2d.u.v4i32 and the rest). air_run binds one
     r32g32b32a32_float texture, and a shader declaring an integer texture

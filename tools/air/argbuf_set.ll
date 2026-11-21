@@ -4,7 +4,7 @@
 ; Why it is hand-written, and why it is a fragment shader and not a kernel:
 ;
 ;   - 0 of the 456 modules of iOS 16.5's corpus declare an `air.indirect_buffer` and
-;     7 620 of Resident Evil 4's 7 879 do (docs/air.md 8.2), and no byte of that game is
+;     7 620 of Resident Evil 4's 7 879 do (docs/dev/air.md 8.2), and no byte of that game is
 ;     in this repository. So a module that declares a set has to be written here, and
 ;     what it declares is then known rather than inferred.
 ;   - tools/air/argbufcheck.py already dispatches one as a KERNEL, and two things cannot

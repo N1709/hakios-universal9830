@@ -1,0 +1,122 @@
+Redwood (the Exynos 990 port): Panfrost's disk shader cache on Mach-O. The cache keys its directory by the
+library's ELF build-id, which a Mach-O image does not have (build_id_find_nhdr_for_addr finds nothing and
+the upstream code reads through NULL); LC_UUID, which ld64 derives from the contents, stands in for it.
+Where: redwood_shader_cache_dir (on; boot-arg metal_cache=0 turns it off); built with -Dshader-cache=enabled -Dshader-cache-default=false.
+
+--- a/src/gallium/drivers/panfrost/pan_disk_cache.c	2026-11-12 15:41:34
++++ b/src/gallium/drivers/panfrost/pan_disk_cache.c	2026-11-12 15:58:01
+@@ -34,6 +34,63 @@
+ 
+ #include "pan_context.h"
+ 
++#ifdef __APPLE__
++#include <dlfcn.h>
++#include <errno.h>
++#include <stdlib.h>
++#include <sys/stat.h>
++#include <sys/sysctl.h>
++#include <unistd.h>
++#include <mach-o/loader.h>
++
++/*
++ * Redwood: where this process keeps compiled shaders, and whether it does (on; boot-arg
++ * metal_cache=0 turns it off). Without it every process compiles every shader's NIR into Mali code again
++ * each time it starts: the window server (CoreAnimation's OpenGL ES through OSMesa) after
++ * every boot, every Metal app at every launch -- upstream hakios measured 66-103 CoreAnimation
++ * stages a boot, the pauses of its first minute. Mesa is built with -Dshader-cache-default=false,
++ * so nothing is written unless this says so:
++ *
++ *   /private/var/db/redwood-metal-cache/<uid>   made 1777 by init: system processes, one
++ *                                               directory per user (backboardd is mobile)
++ *   $HOME/Library/Caches/redwood-metal-cache    a sandboxed app, in its own container
++ *
++ * A process that can write neither compiles as before. 64 MB a directory; Mesa evicts the
++ * oldest past that. MESA_SHADER_CACHE_DIR given in the environment wins.
++ */
++static bool
++redwood_shader_cache_dir(void)
++{
++   char args[1024] = "", dir[1024];
++   size_t size = sizeof(args) - 1;
++   const char *at, *home;
++   struct stat st;
++
++   if (getenv("MESA_SHADER_CACHE_DIR") != NULL)
++      return true;
++   /* on unless metal_cache=0 (the phone's boot line is at its 550-character limit) */
++   if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 &&
++       (at = strstr(args, "metal_cache=0")) != NULL && (at == args || at[-1] == ' '))
++      return false;
++   snprintf(dir, sizeof(dir), "/private/var/db/redwood-metal-cache/%u", (unsigned)getuid());
++   if ((mkdir(dir, 0700) == 0 || errno == EEXIST) && stat(dir, &st) == 0 &&
++       st.st_uid == getuid() && access(dir, W_OK) == 0)
++      goto chosen;
++   home = getenv("HOME");
++   if (home != NULL && *home != '\0') {
++      snprintf(dir, sizeof(dir), "%s/Library/Caches/redwood-metal-cache", home);
++      if ((mkdir(dir, 0700) == 0 || errno == EEXIST) && access(dir, W_OK) == 0)
++         goto chosen;
++   }
++   return false;
++chosen:
++   setenv("MESA_SHADER_CACHE_DIR", dir, 1);
++   setenv("MESA_SHADER_CACHE_DISABLE", "false", 1);
++   setenv("MESA_SHADER_CACHE_MAX_SIZE", "64M", 0);
++   return true;
++}
++#endif
++
+ #ifdef ENABLE_SHADER_CACHE
+ static bool debug = false;
+ #endif
+@@ -163,6 +220,40 @@
+ #ifdef ENABLE_SHADER_CACHE
+    const char *renderer = screen->base.get_name(&screen->base);
+ 
++   char timestamp[41];
++#ifdef __APPLE__
++   /* Redwood (the Exynos 990 port): a Mach-O library has no ELF build-id note, and
++    * build_id_find_nhdr_for_addr() finds nothing (dl_iterate_phdr is ELF-only), so the
++    * upstream code would read through NULL. The linker's LC_UUID is the same thing for
++    * Mach-O: ld64 derives it from the image's contents, so a rebuilt compiler gets a new
++    * identity and never reads binaries the old one wrote. No UUID: no cache. */
++   if (!redwood_shader_cache_dir())
++      return;
++   {
++      Dl_info dl;
++      const struct mach_header_64 *mh;
++      const struct load_command *lc;
++      const uint8_t *uuid = NULL;
++
++      if (dladdr((const void *)panfrost_disk_cache_init, &dl) == 0 || dl.dli_fbase == NULL)
++         return;
++      mh = (const struct mach_header_64 *)dl.dli_fbase;
++      if (mh->magic != MH_MAGIC_64)
++         return;
++      lc = (const struct load_command *)(mh + 1);
++      for (uint32_t i = 0; i < mh->ncmds; i++) {
++         if (lc->cmd == LC_UUID) {
++            uuid = ((const struct uuid_command *)lc)->uuid;
++            break;
++         }
++         lc = (const struct load_command *)((const uint8_t *)lc + lc->cmdsize);
++      }
++      if (uuid == NULL)
++         return;
++      for (unsigned i = 0; i < 16; i++)
++         snprintf(timestamp + 2 * i, 3, "%02x", uuid[i]);
++   }
++#else
+    const struct build_id_note *note =
+       build_id_find_nhdr_for_addr(panfrost_disk_cache_init);
+    assert(note && build_id_length(note) == 20); /* sha1 */
+@@ -170,8 +261,8 @@
+    const uint8_t *id_sha1 = build_id_data(note);
+    assert(id_sha1);
+ 
+-   char timestamp[41];
+    _mesa_sha1_format(timestamp, id_sha1);
++#endif
+ 
+    /* Consider any flags affecting the compile when caching */
+    uint64_t driver_flags = screen->dev.debug;

@@ -174,21 +174,6 @@ def main():
     if len(valid) != segs_main:
         sys.exit(f'userdata-carve.py: segment_info has {len(valid)} segments, the superblock {segs_main}')
     in_tail = [s for s in range(new_segs, segs_main) if valid[s]]
-    if after is None and in_tail:
-        # first pass: the kernel's F2FS_IOC_RESIZE_FS moves what lies past the new end (garbage collection).
-        # Nothing is written to the table until the second pass, which checks the shrunk filesystem.
-        moved = sum(valid[s] for s in in_tail)
-        print(f'f2fs: {len(in_tail)} segments past the new end hold {moved} blocks ({moved * BS / 2**20:.0f} MiB); '
-              f'the kernel moves them during the shrink.')
-        print(f'  1. /data/local/tmp/f2fs-resize /data {new_blocks}')
-        print(f'     then, with no reboot in between: dd if=/dev/block/dm-XX of=sb-after.bin bs={BS} count=1  (dm-XX = what /data is mounted from),')
-        print(f'     cat /proc/fs/f2fs/dm-XX/segment_info > segment_info-after.txt')
-        print(f'  2. run this again with both files in {d}: it checks the shrunk size and makes the table')
-        print(f'(darwin partition would be: lba {new_start}..{ph["last_usable"]}, guid in {d}/darwin-guid.txt)')
-        return 0
-    if after is not None and in_tail:
-        # the superblock says the f2fs is shrunk; the old segment_info is no longer the truth, use the new one
-        in_tail = []
     last_used = max(s for s in valid if valid[s])
     print(f'f2fs: {block_count} blocks, main area from block {main_blkaddr}, {segs_main} segments of {per_seg} blocks; '
           f'the last segment holding data is {last_used}')
@@ -211,13 +196,7 @@ def main():
     struct.pack_into('<Q', table, u * es + 40, part_end - 1)
     e = bytearray(es)
     e[:16] = APFS_CONTAINER.bytes_le
-    gpath = f'{d}/darwin-guid.txt'
-    try:
-        guid = uuid.UUID(open(gpath).read().strip())
-    except FileNotFoundError:
-        guid = uuid.uuid4()
-        open(gpath, 'w').write(str(guid) + '\n')
-    e[16:32] = guid.bytes_le
+    e[16:32] = uuid.uuid4().bytes_le
     struct.pack_into('<QQQ', e, 32, new_first, new_last, 0)
     e[56:56 + 2 * len(name)] = name.encode('utf-16le')
     table[slot * es:(slot + 1) * es] = e

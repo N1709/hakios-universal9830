@@ -21,7 +21,7 @@
 #
 # Everything is compiled as FreeBSD kernel code for an Apple arm64 kernel and tied into one
 # object that shows nothing but its entry points; the kernel links it when it is there
-# (xnu-build.sh).
+# (xnu/xnu-build.sh).
 #
 #   VERSION   of Linux. 7.0.14: LinuxKPI's 802.11 headers follow the mac80211 of Linux 7.0, and
 #             the driver has to be the one they were written for. For the WCN6750 the driver
@@ -127,7 +127,7 @@ DFLAGS="-Isrc/ath11k -Isrc -include $W/include/lx_prelude.h -DCONFIG_ATH11K_AHB 
 	-DKBUILD_MODNAME=\"ath11k\""
 # two headers are the kernel's: what it offers this object (wifi/lx/include/lx_os.h), and its QMI
 # helpers (wifi/lx/include/linux/soc/qcom/qmi.h)
-source "$ROOT/xnu-env.sh"
+source "$ROOT/xnu/xnu-env.sh"
 for h in lx qmi; do
 	[ -f "$XNU_SRC/bsd/sys/redwood_$h.h" ] || { echo "mk-ath11k.sh: the kernel tree has no bsd/sys/redwood_$h.h" >&2; exit 1; }
 done

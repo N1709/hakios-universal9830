@@ -8,7 +8,7 @@
 # `adb pull /sys/firmware/fdt`), it fills in what can be read from it: the GIC addresses, the number of
 # CPU cores and how MPIDR numbers them, and which cores are the small ones. What it cannot read is left
 # as TODO; docs/PORTING.md walks through all of it.
-. "$(dirname "$(readlink -f "$0")")/lib.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 CODE=$1; DTB=$2
 [ -n "$CODE" ] || die "usage: common/new-device.sh <codename> [device.dtb]"
 [[ "$CODE" =~ ^[a-z0-9_-]+$ ]] || die "codename: lower-case letters, digits, - and _ only"

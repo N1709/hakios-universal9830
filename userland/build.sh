@@ -74,18 +74,15 @@
 #   CHECK=1          check every image (every container) as it is made: apfsck has to find it clean and
 #                    the kernel's apfs_lib has to read every volume back as the directory it was made of
 #                    (../tools/apfs/check-image.sh; the system image takes a few minutes more)
-set -e
-set -o pipefail
-# The images keep the modes the files have here, and launchd refuses a job whose plist anyone but
-# root may write ("bad ownership/permissions", error 122): a umask of 002 would give them all g+w.
-umask 022
+set -e -o pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-source ../xnu-env.sh
+source ../xnu/xnu-env.sh
+source ./software-passcode-config.sh
 
 CC="xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra"
 LD="-Wl,-e,_start -Wl,-pagezero_size,0x100000000"
 DYN="xnu-clang -arch arm64 -isysroot ${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk -O1"
-IOS=../ios165
+IOS=${IOS_INPUT_DIR:-../sysimage}
 CACHE=$IOS/20F66__iPhone10,3_6
 # ios165/rootfs and ios165/cryptex must be this copy's own directories of hard links, the way
 # tools/new-workspace.sh makes them. A symlink to another copy's tree makes sysroot a symlink too, because
@@ -95,8 +92,8 @@ CACHE=$IOS/20F66__iPhone10,3_6
 for d in rootfs cryptex cryptex-app; do
 	[ -L $IOS/$d ] || continue
 	echo "build.sh: ios165/$d is a symlink to $(readlink $IOS/$d)" >&2
-	echo "build.sh: it has to be a directory of this copy's own: rm it and cp -al the original over," >&2
-	echo "build.sh: as tools/new-workspace.sh does. Building against a link damages the shared tree." >&2
+	echo "build.sh: use an independent input snapshot (tools/release/copy_tree.py)." >&2
+	echo "build.sh: building against a directory link damages the shared tree." >&2
 	exit 1
 done
 # The stock iOS jobs given to launchd, roughly in the order they were brought up.
@@ -120,6 +117,13 @@ IOS_JOBS=${JOBS-"
 # (Count a QEMU run log with its duplicate lines removed: run-ios.sh prints launchd's log twice.)
 # WIFID=0 leaves it out.
 [ "${WIFID-1}" != 0 ] && IOS_JOBS="$IOS_JOBS com.apple.wifid"
+# The S20+'s Bluetooth (bsd/dev/redwood_exynos_bt.c, bt=1): bluetoothd over the kernel's control
+# com.apple.uart.bluetooth (H4), with BlueTool's stand-in (src/bluetool_stub.c); BT=0 leaves it out.
+if [ "${BT-1}" != 0 ]; then
+	IOS_JOBS="$IOS_JOBS com.apple.bluetoothd"
+	export JOB_ENV="${JOB_ENV:+$JOB_ENV;}com.apple.bluetoothd:BT_HCI_TRANSPORT=H4:POSIX:com.apple.uart.bluetooth"
+	export ALLOW="${ALLOW:-} bluetooth"
+fi
 # The programs (file names) started with a library of ours inside them: "LIBRARY NAME..." per line
 # (src/inject.c is libredwood.dylib, src/inject_sb.c is libredwood-sb.dylib, src/inject_media.c is
 # libredwood-media.dylib).
@@ -129,11 +133,25 @@ SILEO_BIN="chmod cp mkdir mv rm"
 # (libredwood-tweaks is the tweak loader of the package manager's prefix, src/inject_tweaks.c: in
 # SpringBoard the library above opens it, here it is named for the programs that have no library of
 # ours -- Settings, where a tweak's own pane belongs. Add a program's name to have tweaks in it.)
-INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system
+INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system locationd /Applications/ /private/var/containers/Bundle/Application/ /var/containers/Bundle/Application/
 /redwood/lib/libredwood-sb.dylib SpringBoard
+/redwood/lib/libredwood-touchid-ui.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
 /redwood/lib/libredwood-app.dylib Sileo
-/redwood/lib/libredwood-tweaks.dylib Preferences"}
+/redwood/lib/libredwood-tweaks.dylib Preferences imagent Camera
+/redwood/lib/libredwood-files.dylib fileproviderd LocalStorageFileProvider SaveToFiles com.apple.DocumentManager.Service
+/redwood/lib/libredwood-finder.dylib lockdownd
+/redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}
+/var/jb/redwood/lib/libredwood-calls.dylib callservicesd
+/var/jb/usr/lib/libredwood-metalon.dylib PhotosPosterProvider GradientPosterExtension EmojiPosterExtension
+/var/jb/usr/lib/libredwood-duet.dylib duetexpertd
+/redwood/lib/libredwood-mis.dylib misd sharingd
+/redwood/lib/libredwood-mgcell.dylib Preferences"}
+# (libredwood-metaloff is NOT in the boot list (B, 2026-11-14): it only matters while metal_props is on, and its
+#  IORegistry hooks were the common factor of two stack overflows -- mediaserverd SIGBUS at its guard page, and
+#  CollectionsPoster with metalon. Add it live to kern.exec_inject when metal_props is switched on.)
+# libredwood-eagl (src/eagl_app.m): the OpenGL ES games named in EAGL_APPS (their executables' names) draw
+# with Mesa instead of iOS's OpenGL ES on Metal, which hands Metal shaders only Apple's GPU compiler reads.
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
 # list above because it changes what the daemon believes: AMS's account is made to answer with the
 # storefront Apple's bag server returned for this device, which is how the App Store is asked whether
@@ -145,6 +163,10 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 mkdir -p obj
 
 if [ -z "$PREBUILT" ] && ! command -v ld64 >/dev/null; then PREBUILT=1; fi
+if [ "${REQUIRE_SOURCE:-0}" = 1 ] && [ -n "$PREBUILT" ]; then
+	echo "build.sh: release candidate requires source compilation; prebuilt fallback is disabled" >&2
+	exit 1
+fi
 if [ -n "$PREBUILT" ]; then
 	echo "build.sh: not compiling, using the programs in prebuilt/userland"
 	for f in ../prebuilt/userland/*; do
@@ -173,6 +195,8 @@ cp obj/child root/bin/child
 # copies are editing at once.
 [ -f obj/var_store ] && cp obj/var_store root/bin/
 cp com.redwood.varstore.plist root/LaunchDaemons/
+# Normal boot only mounts existing HFS data. The offline installer owns initialization;
+# do not put a format kit beside init or make a missing filesystem authorize formatting.
 echo "Darwin on redwood: image built $(date '+%Y-%m-%d %H:%M')" > root/etc/motd
 # 300000 bytes, byte i = (i*31 + (i>>8)) & 0xff; init verifies it through read() and mmap()
 python3 -c "import sys; sys.stdout.buffer.write(bytes((i*31 + (i>>8)) & 0xff for i in range(300000)))" > root/share/pattern.bin
@@ -201,14 +225,29 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/rwtouch src/rwtouch.c
 		# the kernel's thermal pressure passed on to iOS (src/thermald.c)
 		$DYN -o obj/thermald src/thermald.c
+		# native Touch ID: our fingerprint stack behind RedwoodMesa's bridge (src/redwood-fpd.c; runs only with touchid=1)
+		$DYN -fblocks -Wno-four-char-constants -framework CoreFoundation -framework IOKit -o obj/redwood-fpd src/redwood-fpd.c
+		$DYN -o obj/teetsd ../tools/fingerprint/teetsd.c
+		$DYN -o obj/dsc-exec src/dsc_exec.c
+		# Touch ID's place on screen: Apple's enrolment fingerprint moved onto the sensor, a ring while a capture waits
+		$DYN -dynamiclib -fobjc-arc -fblocks -Wl,-no_fixup_chains -framework UIKit -framework Foundation -framework CoreGraphics \
+			-install_name /redwood/lib/libredwood-touchid-ui.dylib -o obj/libredwood-touchid-ui.dylib src/touchid_ui.m src/fp_ring.m
+		# iOS's Low Power Mode switch passed to the kernel's clock governor (src/lpmd.c)
+		$DYN -o obj/lpmd src/lpmd.c
+		$DYN -framework CoreFoundation -framework IOKit -o obj/softkeybag-init src/software_keybag_init.c
+		$DYN -framework Foundation -framework CoreMotion -o obj/redwood-motiond src/motion_wake.m
+		{ ${LDID:-ldid} -Cadhoc -S obj/redwood-motiond 2>/dev/null || codesign -s - -f obj/redwood-motiond; }
 		$DYN -framework CoreFoundation -framework AudioToolbox -framework AVFoundation -lobjc -o obj/sound_test src/sound_test.c
 		$DYN -framework CoreFoundation -lMobileGestalt -o obj/mg_test src/mg_test.c
+        $DYN -dynamiclib -fobjc-arc -fblocks -Wl,-no_fixup_chains -framework UIKit -framework QuartzCore \
+            -o obj/libredwood-graphics.dylib src/graphics_compat.m
+
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/torch_test src/torch_test.c
 		$DYN -O2 -o obj/camera_test src/camera_test.c src/camera_isp.c
 		$DYN -fobjc-arc -framework Foundation -framework AVFoundation -o obj/camera_avtest src/camera_avtest.m
 		# (the microphone as an application records: allowed to, by an entitlement, if ldid is there)
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/record_test src/record_test.c &&
-			{ ${LDID:-ldid} -Ssrc/record_test.entitlements obj/record_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/record_test.entitlements obj/record_test 2>/dev/null ||
 			  echo "build.sh: no ldid: record_test is unsigned, and the system may not let it record"; }
 		$DYN -o obj/cpu_test src/cpu_test.c
 		$DYN -framework CoreFoundation -framework IOSurface -o obj/cow_test src/cow_test.c
@@ -255,7 +294,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -framework Foundation -framework UIKit -framework QuartzCore \
 			-framework Metal -framework IOSurface -framework IOKit -lobjc \
 			-o obj/RedwoodTriangle src/triangle_app.m &&
-			{ ${LDID:-ldid} -Ssrc/triangle_app.entitlements obj/RedwoodTriangle 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/triangle_app.entitlements obj/RedwoodTriangle 2>/dev/null ||
 			  echo "build.sh: no ldid: RedwoodTriangle is unsigned, which still runs (AMFI here accepts everything) but holds no entitlements"; }
 		# what the device ANSWERS when an application asks what it supports
 		# (src/metal_caps.m). It takes the device from MTLCreateSystemDefaultDevice() so
@@ -277,37 +316,104 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -framework CoreFoundation -framework CoreGraphics -framework ImageIO -o obj/snap_test src/snap_test.c
 		$DYN -framework CoreFoundation -framework CoreGraphics -framework CoreText -o obj/font_test src/font_test.c
 		$DYN -fobjc-arc -framework Foundation -framework SystemConfiguration -o obj/net_test src/net_test.m
+		# (the kernel's log over the network while iOS runs: PLANS/09-standalone.md, P4)
+		$DYN -o obj/rwlogd src/rwlogd.c
+		$DYN -o obj/m2m_mark src/m2m_mark.c
+		$DYN -framework CoreFoundation -o obj/sd-userfs-start src/sd-userfs-start.c
+		${LDID:-ldid} -Cadhoc -S obj/sd-userfs-start
+		$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
+		$DYN -framework CoreFoundation -framework CoreLocation -lobjc -o obj/redwood-defaults src/redwood-defaults.c   # fresh-data-volume defaults, once
+		$DYN -fobjc-arc -framework Foundation -o obj/safari_favourites src/safari_favourites.m
+		${LDID:-ldid} -Cadhoc -S obj/safari_favourites
+		$DYN -o obj/trollstore_once src/trollstore_once.c   # TrollStore on a fresh data volume, once
+		${LDID:-ldid} -S../tools/redwood-defaults.entitlements obj/redwood-defaults
+		${LDID:-ldid} -Cadhoc -S obj/prefset
+		$DYN -framework CoreFoundation -o obj/redwood-cellulard ../tools/cellular/live-modem.c
+		$DYN -o obj/cell-provision ../tools/cellular/cell-provision.c   # modem files from the phone's RADIO/EFS (read-only)
+		$DYN -fblocks -o obj/bluetool_stub src/bluetool_stub.c
+		# launchd panics on a non-platform binary for a system daemon, and in this port an ad hoc
+		# signature is what makes one (bsd/kern/kern_minimac.c): sign the stub, or com.apple.BlueTool
+		# takes the kernel down at ~30 s ("unexpected exec of non-platform binary").
+		{ ${LDID:-ldid} -Cadhoc -S obj/bluetool_stub 2>/dev/null || codesign -s - -f obj/bluetool_stub 2>/dev/null; } ||
+			echo "build.sh: bluetool_stub is unsigned: launchd will panic on com.apple.BlueTool"
 		# (the account database answers only a client with the entitlements its own daemons hold: src/store_test.m)
 		$DYN -fobjc-arc -framework Foundation -framework Accounts -o obj/store_test src/store_test.m &&
-			{ ${LDID:-ldid} -Ssrc/store_test.entitlements obj/store_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/store_test.entitlements obj/store_test 2>/dev/null ||
 			  echo "build.sh: no ldid: store_test is unsigned, and accountsd will not show it the accounts"; }
 		# (with an entitlement for "battery_test open URL", if ldid is there: src/battery_test.c)
 		$DYN -framework CoreFoundation -framework IOKit -lsqlite3 -o obj/battery_test src/battery_test.c &&
-			{ ${LDID:-ldid} -Ssrc/battery_test.entitlements obj/battery_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/battery_test.entitlements obj/battery_test 2>/dev/null ||
 			  echo "build.sh: no ldid: battery_test is unsigned, and SpringBoard will not open URLs for it"; }
 		# (the keychain answers only a program that has a keychain access group: signed with one, if ldid is there)
 		$DYN -framework CoreFoundation -framework Security -o obj/keychain_test src/keychain_test.c &&
-			{ ${LDID:-ldid} -Ssrc/keychain_test.entitlements obj/keychain_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/keychain_test.entitlements obj/keychain_test 2>/dev/null ||
 			  echo "build.sh: no ldid: keychain_test is unsigned, and the keychain will refuse it (-34018)"; }
 		# (and wifid's way of keeping a network's password, by wifid's name: src/wifipw_test.c)
 		$DYN -framework CoreFoundation -framework Security -o obj/wifipw_test src/wifipw_test.c &&
-			{ ${LDID:-ldid} -Ssrc/wifipw_test.entitlements obj/wifipw_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/wifipw_test.entitlements obj/wifipw_test 2>/dev/null ||
 			  echo "build.sh: no ldid: wifipw_test is unsigned, and the keychain will refuse it (-34018)"; }
 		# our library for inside stock iOS programs (the jobs in INJECT are started with it)
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
-			-o obj/libredwood.dylib src/inject.c
+			-o obj/libredwood.dylib src/inject.c src/inject_sensors.c src/inject_location.c
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
-			-o obj/libredwood-sb.dylib src/inject_sb.c
+			-o obj/libredwood-sb.dylib src/inject_sb.c src/inject_location.c
+		# Persistent native AOD: a root-image copy, independent of existing /var/jb tweaks.
+		$DYN -fobjc-arc -fblocks -DRW_ALWAYS_ON_ROOT_IMAGE -dynamiclib \
+			-install_name /redwood/lib/libredwood-alwayson.dylib -framework Foundation -framework UIKit -framework QuartzCore \
+			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework Preferences \
+			-o obj/libredwood-alwayson.dylib ../tools/aod/alwayson.m ../tools/aod/settings.m
+		$DYN -fobjc-arc -fblocks -framework Foundation -framework IOKit \
+			-o obj/aod-preview ../tools/aod/control.m
 		# ... the tweak loader of the package manager's prefix (src/inject_tweaks.c): it goes into a
 		# program either as the one library the kernel inserts or opened by a library of ours
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-tweaks.dylib src/inject_tweaks.c
+		# Personal Hotspot: misd's carrier answers (src/mis_ct.m) and Settings' "cellular-data" (src/mg_cellular.c)
+		$DYN -fobjc-arc -fblocks -dynamiclib -install_name /redwood/lib/libredwood-mis.dylib -framework Foundation -lobjc \
+			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework CoreTelephony \
+			-o obj/libredwood-mis.dylib src/mis_ct.m
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-mgcell.dylib -framework CoreFoundation -lobjc \
+			-o obj/libredwood-mgcell.dylib src/mg_cellular.c
+		# ... and the network behind the access point (tools/hotspot: addresses, NAT, CLAT46; misctl for tests)
+		mkdir -p obj/hotspot-inc/net obj/hotspot-inc/libkern
+		# XNU's headers: the developer tree, or (a release checkout has none) the release kernel's prepared tree
+		xs=../xnu-src/xnu-8796.121.2
+		[ -f $xs/bsd/net/pfvar.h ] || xs=$(ls -td ../.cache/release-kernel/*/ 2>/dev/null | while read -r d; do [ -f "$d/bsd/net/pfvar.h" ] && { echo "${d%/}"; break; }; done)
+		[ -n "$xs" ] && [ -f "$xs/bsd/net/pfvar.h" ] || { echo "hotspot: no XNU headers (run ./build.sh kernel first)"; exit 1; }
+		cp "$xs/bsd/net/pfvar.h" "$xs/bsd/net/radix.h" obj/hotspot-inc/net/
+		cp "$xs/libkern/libkern/tree.h" obj/hotspot-inc/libkern/
+		for p in rwdhcpd rwpf clat-test; do $DYN -Iobj/hotspot-inc -o obj/$p ../tools/hotspot/$p.c; done
+		# rwsys NAME [VALUE] (sysctl strings): the Store account boot job uses it (it was copied below but never built)
+		$DYN -o obj/rwsys src/rwsys.c
+		$DYN -fobjc-arc -framework Foundation -F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" \
+			-framework MobileWiFi -o obj/misctl ../tools/hotspot/misctl.m &&
+			{ ${LDID:-ldid} -S../tools/hotspot/misctl.ent obj/misctl 2>/dev/null || echo "build.sh: no ldid: misctl unsigned"; }
+		# Files on the HFS+ data volume: target only its daemon and local provider.
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-files.dylib -lobjc -lsandbox \
+			-o obj/libredwood-files.dylib src/inject_files.c
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-finder.dylib \
+			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework CoreFoundation -framework MobileActivation \
+			-o obj/libredwood-finder.dylib src/inject_finder.c
+		$DYN -o obj/LocalFilesHost src/local_files_host.c
+		$DYN -fobjc-arc -framework Foundation -framework Security -o obj/register_finder_host src/register_finder_host.m
+		${LDID:-ldid} -S../tools/storage/register-finder-host.entitlements obj/register_finder_host
+		$DYN -framework CoreFoundation -framework SystemConfiguration -o obj/device_name src/device_name.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc \
 			-o obj/libredwood-app.dylib src/inject_app.c
+		# (+ src/h264_encoder.c: a software H.264 encoder for VideoToolbox, the S20 having no AVE; OpenH264 from
+		#  ../../third-party/openh264, built with: make OS=ios ARCH=arm64 SDK_MIN=16.0 SDKROOT=<sdk> libraries)
+		OH=${OPENH264:-../../third-party/openh264}
+		if [ "${DEVICE:-x1slte}" = x1slte ]; then
+			CAMERA_PERMANENT=1 CAMERA_SDK="${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk" CAMERA_OPENH264="$OH" sh ../tools/camera/build-profile-media.sh obj/camera-permanent
+			cp obj/camera-permanent/libredwood-media-dev.dylib obj/libredwood-media.dylib
+			CAMERA_SDK="${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk" ../tools/camera/build-image-hooks.sh obj
+		else
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-media.dylib -framework CoreFoundation -framework CoreMedia \
-			-framework CoreVideo -framework IOSurface -lobjc \
-			-o obj/libredwood-media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c
+			-framework CoreVideo -framework IOSurface -framework VideoToolbox -lobjc -lc++ -I$OH/codec/api \
+			-o obj/libredwood-media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c src/h264_encoder.c \
+			$OH/libopenh264.a
+		fi
 		# ... and inside appstored (STOREFRONT=1), which answers with a storefront and watches for a bag
 		# request being built (src/inject_store.c)
 		# (-lc++abi for __cxa_throw: every C++ exception thrown in the process is watched, which is how
@@ -333,8 +439,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			# the OpenGL ES library, and the table of functions that hands CoreAnimation's calls to it
 			# (Mesa says beside the library what it was built from: one from other patches is built again)
 			M=../xnu-deps/build/mesa/out
+			# (again with the drivers it was built with: softpipe,panfrost for the Exynos phone's Mali)
 			[ "$(cat $M/built-from 2>/dev/null)" = "$(cat ../tools/mesa/*.patch ../tools/mesa/redwood-drm/* | sha256sum)" ] ||
-				../tools/mk-mesa.sh
+				DRIVERS=$(cat $M/drivers 2>/dev/null) ../tools/mk-mesa.sh
 			# ... and the compiler library separately, because the hash above covers the PATCHES
 			# and the library is built from tools/mesa/air/, which they do not mention. Two boots
 			# of 22 October carried a libredwoodair.dylib three hours older than the driver beside
@@ -342,20 +449,26 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			# contract warns about, and nothing in it said so. Silence is what made it expensive:
 			# the library is stripped, so the driver found the symbols it wanted and read a stride
 			# where a pixel format was.
-			[ "$(cat $M/built-from-air 2>/dev/null)" = "$(cat ../tools/mesa/air/* | sha256sum)" ] || {
-				echo "build.sh: tools/mesa/air/ has changed since libredwoodair.dylib was built"
-				AIR=1 ../tools/mk-mesa.sh
+			[ "$(cat $M/built-from-air 2>/dev/null)" = "$(cat ../tools/mesa/air/* ../tools/mesa/redwood-drm/* ../tools/mesa/*.patch | sha256sum)" ] || {
+				echo "build.sh: libredwoodair.dylib is older than what it is built from (mk-mesa.sh's hash)"
+				AIR=1 DRIVERS=$(cat $M/drivers 2>/dev/null) ../tools/mk-mesa.sh
 			}
 			./mkeagl.py src/eagl_slots.txt $M/gl.xml $M/exported-gl.txt src/eagl.c > obj/eagl_gen.h
 			$DYN -dynamiclib -install_name /redwood/lib/libredwood-gl.dylib -Iobj -framework CoreFoundation \
 				-framework IOKit -framework IOSurface -lobjc $M/libOSMesa.8.dylib -o obj/libredwood-gl.dylib \
 				src/eagl.c src/gl_osmesa.c
+			# OpenGL ES for games by Mesa instead of iOS's GL-on-Metal (src/eagl_app.m); no -framework
+			# OpenGLES: its gl* names must bind to Mesa's, or every call loops back into iOS's library
+			./mkeagl.py src/eagl_slots.txt $M/gl.xml $M/exported-gl.txt src/eagl_app.m > obj/eagl_app_gen.h
+			$DYN -fobjc-arc -dynamiclib -install_name /redwood/lib/libredwood-eagl.dylib -Iobj -framework Foundation \
+				-framework QuartzCore -framework IOSurface -lobjc $M/libOSMesa.8.dylib -o obj/libredwood-eagl.dylib \
+				src/eagl_app.m
 			$DYN -framework CoreFoundation -framework IOKit $M/libOSMesa.8.dylib -o obj/gl_test src/gl_test.c
 			# ... and what this GPU makes of an unsigned integer turned into a float (src/u2f_test.c)
 			$DYN $M/libOSMesa.8.dylib -o obj/u2f_test src/u2f_test.c
 			cp $M/libOSMesa.8.dylib obj/
 			# air_run draws with a Metal shader translated by the AIR frontend
-			# and reads the pixels back (docs/air.md). It is built inside the
+			# and reads the pixels back (docs/dev/air.md). It is built inside the
 			# Mesa build, because it needs Gallium itself and not the gl*
 			# entry points this library exports; AIR=1 tools/mk-mesa.sh makes
 			# it, and it is copied in when it is there.
@@ -368,10 +481,42 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		fi
 	fi
 	# (drawable_test is built in the same block as surf_test, so it is copied with it)
-	cp obj/hello_dyn obj/svc_test obj/surf_test obj/rwtouch obj/mg_test root/bin/
-	[ -f obj/drawable_test ] && cp obj/drawable_test root/bin/  # (prebuilt/userland does not ship it)
+	# (a prebuilt/ from before a program has none: copy what is there)
+	for p in hello_dyn svc_test surf_test drawable_test rwtouch mg_test; do
+		if [ -f obj/$p ]; then cp obj/$p root/bin/; fi
+	done
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
+	[ -f obj/redwood-fpd ] && cp obj/redwood-fpd obj/teetsd obj/dsc-exec root/bin/
+	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
+	if [ -n "$PREBUILT" ]; then
+		[ ! -f ../prebuilt/userland/redwood-cellulard ] || cp ../prebuilt/userland/redwood-cellulard root/bin/
+	else
+		cp obj/redwood-cellulard root/bin/
+		[ -f obj/cell-provision ] && cp obj/cell-provision root/bin/
+	fi
+	# The phone's call and text pieces that run from the data volume (B, 2026-11-15): put in place by init on a data
+	# volume that has none (src/init.c seed_phone; a newer one put there by hand is kept). Without this a fresh or wiped
+	# phone booted with the jobs (com.redwood.telephonyd, callservicesd) but not their programs: no calls, no texts.
+	# callservicesd (5 MB, too big for this image) comes from the system image (/System/Library/Redwood/Phone).
+	mkdir -p root/seed; : > root/etc/seed.list
+	for x in redwood-ims:755:/private/var/root/redwood-ims \
+	         redwood-telephonyd:755:/private/var/jb/redwood/bin/redwood-telephonyd \
+	         libredwood-calls.dylib:755:/private/var/jb/redwood/lib/libredwood-calls.dylib \
+	         RedwoodSMS.dylib:755:/private/var/jb/usr/lib/TweakInject/RedwoodSMS.dylib \
+	         RedwoodCellular.dylib:644:/private/var/jb/usr/lib/TweakInject/RedwoodCellular.dylib; do
+		f=${x%%:*}; rest=${x#*:}; mode=${rest%%:*}; dst=${rest#*:}
+		if [ -f ../prebuilt/userland/$f ]; then cp ../prebuilt/userland/$f root/seed/$f; printf '%s\t0\t0\t%s\t/seed/%s\n' $mode $dst $f >> root/etc/seed.list
+		else echo "build.sh: prebuilt/userland/$f missing: a fresh phone will have no calls/texts piece $dst" >&2; fi
+	done
+	for x in RedwoodSMS RedwoodCellular; do
+		[ -f ../tools/cellular/$x.plist ] && cp ../tools/cellular/$x.plist root/seed/$x.plist &&
+			printf '644\t0\t0\t/private/var/jb/usr/lib/TweakInject/%s.plist\t/seed/%s.plist\n' $x $x >> root/etc/seed.list
+	done
+	printf '755\t0\t0\t/private/var/jb/redwood/callservicesd\t/System/Library/Redwood/Phone/callservicesd\n' >> root/etc/seed.list
+	[ -f obj/lpmd ] && cp obj/lpmd root/bin/
+	[ -f obj/softkeybag-init ] && cp obj/softkeybag-init root/bin/
+	[ -f obj/redwood-motiond ] && cp obj/redwood-motiond root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
 	[ -f obj/cg_test ] && cp obj/cg_test root/bin/
 	[ -f obj/metal_dev ] && cp obj/metal_dev root/bin/
@@ -379,6 +524,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/metal_drv_test ] && cp obj/metal_drv_test root/bin/
 	[ -f obj/metal_caps ] && cp obj/metal_caps root/bin/
 	[ -f obj/metal_props ] && cp obj/metal_props root/bin/
+	[ -f obj/redwood-defaults ] && cp obj/redwood-defaults root/bin/
+	[ -f obj/safari_favourites ] && cp obj/safari_favourites root/bin/
+	[ -f obj/trollstore_once ] && cp obj/trollstore_once root/bin/
+	[ -f obj/sd-userfs-start ] && cp obj/sd-userfs-start root/bin/
+	[ -f obj/prefset ] && cp obj/prefset root/bin/          # (x1slte: preferences without Settings' UI)
 	[ -f obj/shm_test ] && cp obj/shm_test root/bin/
 	[ -f obj/apfs_mmap_test ] && cp obj/apfs_mmap_test root/bin/
 	[ -f obj/vol_ls ] && cp obj/vol_ls root/bin/
@@ -386,6 +536,10 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/font_test ] && cp obj/font_test root/bin/
 	[ -f obj/metal_test ] && cp obj/metal_test root/bin/
 	[ -f obj/net_test ] && cp obj/net_test root/bin/
+	[ -f obj/rwlogd ] && cp obj/rwlogd root/bin/
+	[ -f obj/m2m_mark ] && cp obj/m2m_mark root/bin/
+	[ -f obj/rwsys ] && cp obj/rwsys root/bin/          # (sysctl strings from the Mac: the sound debug port)
+	[ -f obj/bluetool_stub ] && cp obj/bluetool_stub root/bin/
 	[ -f obj/store_test ] && cp obj/store_test root/bin/
 	[ -f obj/battery_test ] && cp obj/battery_test root/bin/
 	[ -f obj/keychain_test ] && cp obj/keychain_test root/bin/
@@ -452,11 +606,21 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	mkdir -p root/dev root/private/var
 	mkdir -p root/lib
 	cp obj/libredwood.dylib obj/libredwood-sb.dylib root/lib/
+	[ ! -f obj/libredwood-touchid-ui.dylib ] || cp obj/libredwood-touchid-ui.dylib root/lib/
 	[ -f obj/libredwood-media.dylib ] && cp obj/libredwood-media.dylib root/lib/     # (as with cpu_test)
 	[ -f obj/libredwood-store.dylib ] && cp obj/libredwood-store.dylib root/lib/
 	[ -f obj/libredwood-fairplay.dylib ] && cp obj/libredwood-fairplay.dylib root/lib/
 	[ -f obj/libredwood-app.dylib ] && cp obj/libredwood-app.dylib root/lib/
 	[ -f obj/libredwood-tweaks.dylib ] && cp obj/libredwood-tweaks.dylib root/lib/
+	[ -f obj/libredwood-files.dylib ] && cp obj/libredwood-files.dylib root/lib/
+	[ -f obj/libredwood-finder.dylib ] && cp obj/libredwood-finder.dylib root/lib/
+	[ -f obj/libredwood-mis.dylib ] && cp obj/libredwood-mis.dylib root/lib/
+	[ -f obj/libredwood-mgcell.dylib ] && cp obj/libredwood-mgcell.dylib root/lib/
+	for p in rwdhcpd rwpf clat-test misctl; do [ ! -f obj/$p ] || cp obj/$p root/bin/; done
+	cp ../tools/hotspot/hotspot-up.sh root/bin/ && chmod 755 root/bin/hotspot-up.sh
+	[ -f obj/register_finder_host ] && cp obj/register_finder_host root/bin/
+	[ -f obj/LocalFilesHost ] && cp obj/LocalFilesHost root/bin/
+	[ -f obj/device_name ] && cp obj/device_name root/bin/
 	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/
 	[ -f obj/libredwoodair.dylib ] && cp obj/libredwoodair.dylib root/lib/
 	if [ -f obj/RedwoodAudio ]; then
@@ -482,6 +646,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		if [ -f obj/u2f_test ]; then cp obj/u2f_test root/bin/; fi   # an "if": see the inject.conf loop below
 		[ -f obj/air_run ] && cp obj/air_run root/bin/
 		[ "$GL" = test ] || cp obj/libredwood-gl.dylib root/lib/
+		[ -f obj/libredwood-eagl.dylib ] && cp obj/libredwood-eagl.dylib root/lib/
 	fi
 	# a program is not started with a library that is not there: it would not start at all
 	echo "$INJECT" | while read -r library names; do
@@ -496,39 +661,21 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		*) echo "$library $names" ;;
 		esac
 	done > root/etc/inject.conf
+	if [ "${DEVICE:-x1slte}" = x1slte ]; then
+		python3 ../tools/aod/prepare-root.py root --binaries obj
+	fi
 	cp $IOS/var.skel root/etc/var.skel              # the directories init creates in /private/var
 	# time zones: the template's links go in a circle until the time zone daemon has run (/usr/share/zoneinfo
 	# points back into /var); point them at the data that ships with the system, and use this machine's zone
-	python3 - root/etc/var.skel <<'PYZONE'
-import os
-from pathlib import Path
-import shutil
-import subprocess
-import sys
-
-zone = os.environ.get("TZ", "").lstrip(":")
-if not zone and shutil.which("timedatectl"):
-    result = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"],
-                            capture_output=True, text=True)
-    if result.returncode == 0:
-        zone = result.stdout.strip()
-if not zone:
-    localtime = os.path.realpath("/etc/localtime")
-    zone = localtime.split("/zoneinfo/", 1)[1] if "/zoneinfo/" in localtime else "UTC"
-p = Path(sys.argv[1])
-lines = p.read_text().splitlines()
-for i, line in enumerate(lines):
-    fields = line.split("\t")
-    if len(fields) == 3 and fields[0] == "l":
-        if fields[1:] == ["/usr/share/zoneinfo", "/private/var/db/timezone/zoneinfo"]:
-            fields[1] = "/usr/share/zoneinfo.default"
-        elif fields[1].startswith("/var/db/timezone/zoneinfo/") and fields[2] == "/private/var/db/timezone/localtime":
-            fields[1] = "/var/db/timezone/zoneinfo/" + zone
-        lines[i] = "\t".join(fields)
-p.write_text("\n".join(lines) + "\n")
-print("build.sh: timezone " + zone)
-PYZONE
+	zone=$(timedatectl show -p Timezone --value 2>/dev/null || true)
+	# macOS: /etc/localtime -> /var/db/timezone/zoneinfo/Area/City
+	[ -n "$zone" ] || zone=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
+	zone=${zone:-UTC}
+	# perl, not sed -i: BSD sed takes the next argument as -i's suffix and does not know \t
+	ZONE=$zone perl -pi -e 's|^l\t/usr/share/zoneinfo\t/private/var/db/timezone/zoneinfo$|l\t/usr/share/zoneinfo.default\t/private/var/db/timezone/zoneinfo|;
+		s|^l\t/var/db/timezone/zoneinfo/[^\t]*\t/private/var/db/timezone/localtime$|l\t/var/db/timezone/zoneinfo/$ENV{ZONE}\t/private/var/db/timezone/localtime|' root/etc/var.skel
 	# ... and the files of ours it puts there (var/): those under mobile/ belong to the user mobile
+	printf 'd\t755\t0\t0\t/private/var/preferences/SystemConfiguration\n' >> root/etc/var.skel
 	cp -r var root/var
 	(cd var && find . -type f | sed 's|^\./||' | sort) | while read -r f; do
 		case $f in mobile/*) owner=501 ;; *) owner=0 ;; esac
@@ -561,41 +708,88 @@ PYZONE
 	fi
 	cp ${RC:-rc.launchd} root/etc/rc
 	cp ${RC_JOBS:-rc.jobs} root/etc/rc.jobs
+	cp m2m.tour root/etc/m2m.tour        # mali2metal's standard tour (rwlogd GET /tour)
 	# QUIET=1: launchd's own standard error goes nowhere (src/init.c). It says a few thousand
 	# lines about its own business in the first minutes and pushes everything else out of the
 	# kernel's log; the daemons keep their own standard error on the console all the same.
 	rm -f root/etc/quiet
-	[ -n "$QUIET" ] && : > root/etc/quiet
+	# on by default since 2026-11-14 (B): launchd's notices were the largest share of the log; QUIET=0 brings them back
+	[ "${QUIET-1}" != 0 ] && : > root/etc/quiet
 	# the jobs the iOS launchd will see (/System/Library/LaunchDaemons is a symlink to this directory).
 	# With FLASHBOOT=1 the root will be Apple's whole volume on the flash, not the part of it that fits in
 	# the system image, so mkjobs.py judges "is this daemon's program there" by the listing of the volume
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
-	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist root/LaunchDaemons/
+	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
+	[ ! -x root/bin/safari_favourites ] || cp com.redwood.safari-favourites.plist root/LaunchDaemons/
+	[ ! -x root/bin/redwood-defaults ] || cp com.redwood.defaults.plist root/LaunchDaemons/   # fresh-volume defaults
+	[ ! -x root/bin/trollstore_once ] || cp com.redwood.trollstore.plist root/LaunchDaemons/   # TrollStore, once
+	cp com.redwood.account-store.plist root/LaunchDaemons/     # (the Store relay at every boot, if installed)
+	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
+	[ ! -x root/bin/redwood-fpd ] || cp com.redwood.fpd.plist root/LaunchDaemons/
+    # Shared graphics is automatic for normal applications. GRAPHICS_COMPAT=0
+    # retains the previous discovery behavior for diagnosis.
+    if [ "${GRAPHICS_COMPAT-1}" != 0 ] && [ -n "$GL" ] && [ "$GL" != test ]; then
+        python3 ../tools/graphics/prepare-root.py root --binaries obj
+    fi
+	# calls on iOS's own call screen (A, 2026-11-14): callservicesd (CallKit's daemon; the system image leaves framework
+	# executables out) runs from /var/jb/redwood (5 MB: too big for root.apfs in RECOVERY; tools/cellular/RedwoodPhone/
+	# install.sh puts it there from the iOS rootfs), its own launchd job pointed there, and RedwoodPhone (installed in
+	# /var/jb/Applications) as the CallKit provider of redwood-ims
+	# Calls (A, 2026-11-15; native only, the user's decision): redwood-telephonyd (/var/jb/redwood/bin, installed by
+	# tools/cellular/telephonyd/install.sh) is the telephony CallKit provider under CommCenter's identity. RedwoodPhone,
+	# the third-party style provider of the old engine, is no longer shipped.
+	CALL_PROVIDER=../tools/cellular/telephonyd/com.redwood.telephonyd.plist
+	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
+	if [ "${REQUIRE_SOURCE:-0}" = 1 ]; then
+		[ -f "$IOS/rootfs/$CSD" ] || { echo "build.sh: callservicesd missing from prepared extraction" >&2; exit 1; }
+	else
+		[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
+	fi
+	if [ -f $IOS/rootfs/$CSD ] && [ -f $IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
+		# The plist is rewritten with plistlib after mkjobs below, which handles both binary and XML.
+		cp "$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist" root/LaunchDaemons/
+		cp $CALL_PROVIDER root/LaunchDaemons/
+	else
+		# a machine without the extracted iOS root (B, 2026-11-14: a macOS build left mkjobs' stock job, which
+		# points at /System/.../callservicesd -- absent -- so launchd failed it with EX_CONFIG and no incoming
+		# call reached the call screen): the job as it runs on the phone, kept in the tree
+		cp com.apple.telephonyutilities.callservicesd.plist root/LaunchDaemons/
+		cp $CALL_PROVIDER root/LaunchDaemons/
+	fi
+	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
+	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
+	[ ! -x root/bin/register_finder_host ] || cp com.redwood.finder-host.plist root/LaunchDaemons/
+	[ -x ../jb/root/var/jb/usr/sbin/sshd ] && [ -f root/var/root/.ssh/authorized_keys ] && cp com.redwood.sshd.plist root/LaunchDaemons/
+	[ "${BT-1}" != 0 ] && cp com.apple.BlueTool.plist root/LaunchDaemons/
+	# native Touch ID: the iPhone 8's biometrickitd job (Touch ID module only); it starts when RedwoodMesa publishes
+	# AppleBiometricServices, i.e. only with touchid=1 (redwood-fpd). Needs libBKDM1 in the system image.
+	[ ! -x root/bin/redwood-fpd ] || cp com.apple.biometrickitd.mesa.plist root/LaunchDaemons/
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $IOS/rootfs.slt ] && VOLUME="--root-volume $IOS/rootfs.slt"
-	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
+	# (A, 2026-11-14: no job's os_log on the console by default -- with OS_ACTIVITY_DT_MODE backboardd, the window server,
+	# wrote every touch's log lines out on its own threads; stream them with /var/jb/usr/bin/oslog instead, or build
+	# with OSLOG=com.apple.backboardd for the console copy)
+	[ -n "$IOS_JOBS" ] && SD_USERFS=${DEVICE:-x1slte} OSLOG=${OSLOG-} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
+	# after mkjobs, which writes the stock callservicesd job over ours (B, 2026-11-14): the program is in /var/jb/redwood
+	# (python, not plutil: on macOS the build's PATH has xnu-deps/host-macos/bin/plutil, a no-op stand-in)
+	if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
+		python3 -c 'import plistlib,sys
+p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"]=["/var/jb/redwood/callservicesd"]; d.pop("Program",None)
+plistlib.dump(d,open(p,"wb"))' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+	fi
+fi
+# Explicit experimental image profile; ordinary builds retain their current job list.
+# Match with softpasscode=1 in the kernel boot line. Restore the saved software bag
+# before launchd, and use the native daemon with private file permissions.
+if [ "${SOFTWARE_PASSCODE:-0}" = 1 ]; then
+	python3 ../tools/passcode/prepare-root.py root --binaries obj
 fi
 # firmware of the phone's own hardware, where somebody has pulled it from the phone's Android into ../fw-gpu
 # (it is the vendor's and never in the repository): the kernel's GPU bring-up, bsd/dev/redwood_adreno.c, finds it in fw/
 if [ -d ../fw-gpu ]; then
 	mkdir -p root/fw
 	cp ../fw-gpu/* root/fw/
-fi
-# ... and the Galaxy S20+'s Broadcom BCM4375 (B1): its firmware and one of its NVRAMs, the phone's
-# /vendor/firmware/bcmdhd_sta.bin_b1 and nvram.txt_* in ../fw-wifi-y2q, the NVRAM turned into what the chip
-# reads (tools/brcm-nvram.py); for bsd/dev/redwood_pcie.c's step 9. Y2Q_NVRAM picks the module's file.
-# Linux's brcmfmac (tools/mk-brcmfmac.sh) reads the NVRAM as text and converts it itself, and loads the
-# radio's regulatory data (CLM blob): those two as they are, for it.
-if [ -f ../fw-wifi-y2q/bcmdhd_sta.bin_b1 ]; then
-	mkdir -p root/fw
-	install -m 0644 ../fw-wifi-y2q/bcmdhd_sta.bin_b1 root/fw/bcm4375_sta.bin
-	python3 -I ../tools/brcm-nvram.py ../fw-wifi-y2q/nvram.txt_${Y2Q_NVRAM:-CS01_semco_b1} root/fw/bcm4375_nvram.bin
-	install -m 0644 ../fw-wifi-y2q/nvram.txt_${Y2Q_NVRAM:-CS01_semco_b1} root/fw/bcm4375_nvram.txt
-	[ -f ../fw-wifi-y2q/bcmdhd_clm.blob ] && install -m 0644 ../fw-wifi-y2q/bcmdhd_clm.blob root/fw/bcm4375_clm.blob
-	# the network to join, as for redwood below (fw-wifi/network): name, then passphrase; not with SHARE=1
-	rm -f root/fw/network
-	if [ -z "$SHARE" ] && [ -f ../fw-wifi-y2q/network ]; then install -m 0600 ../fw-wifi-y2q/network root/fw/network; fi
 fi
 # ... and the image of the Wi-Fi DSP, from /vendor/firmware_mnt/image of the same Android into ../fw-wifi
 # (bsd/dev/redwood_wifi.c; 7.6 MB), with what the radio's firmware is sent once it runs: this phone's
@@ -612,12 +806,45 @@ if [ -f ../fw-wifi/wpss.mdt ]; then
 	# SHARE=1: leave it out, for an image that is going to somebody else -- it is a passphrase
 	if [ -z "$SHARE" ] && [ -f ../fw-wifi/network ]; then install -m 0600 ../fw-wifi/network root/fw/network; fi
 fi
+# the VTS (voice block) firmware, the phone's /vendor/firmware/vts.bin, into ../fw-sound (Samsung's: never committed):
+# the S20's microphones go through VTS, and its Cortex-M core runs during capture (bsd/dev/redwood_exynos_sound.c mic.vts)
+if [ -f ../fw-sound/vts.bin ]; then
+	mkdir -p root/fw
+	install -m 0644 ../fw-sound/vts.bin root/fw/
+fi
+# ... or the S20+'s Broadcom BCM4375 (bsd/dev/redwood_bcm4375.c, wifi_pcie=4), from the phone's /vendor/firmware
+# into ../fw-wifi under these names: bcmdhd_sta.bin_b1, bcmdhd_clm.blob and the B1 NVRAMs (SEMCO's is this
+# phone's, "Y2"; Murata's for wifi_nvram=1). 1.3 MB, the vendor's and not in the repository.
+if [ -f ../fw-wifi/bcm4375-sta.bin ]; then
+	mkdir -p root/fw
+	# (and bcm4375B1-semco.hcd: the Bluetooth side's patchram, the phone's /vendor/firmware/bcm4375B1_semco.hcd,
+	# bsd/dev/redwood_exynos_bt.c)
+	for f in bcm4375-sta.bin bcm4375-clm.blob bcm4375-nvram-semco.txt bcm4375-nvram-murata.txt bcm4375B1-semco.hcd bcm4375B1-murata.hcd; do
+		[ -f ../fw-wifi/$f ] && install -m 0644 ../fw-wifi/$f root/fw/
+	done
+	# the network the kernel joins at the start (name, then passphrase; in no repository), as above
+	rm -f root/fw/network
+	if [ -z "$SHARE" ] && [ -f ../fw-wifi/network ]; then install -m 0600 ../fw-wifi/network root/fw/network; fi
+fi
 # ... and the vibration motor's waveforms, the phone's /vendor/firmware/aw8697_haptic.bin, from ../fw-haptic
 # (bsd/dev/redwood_haptic.c, haptic=3; 3.6 KB, the vendor's and not in the repository either)
 if [ -f ../fw-haptic/aw8697_haptic.bin ]; then
 	mkdir -p root/fw
 	install -m 0644 ../fw-haptic/aw8697_haptic.bin root/fw/
 fi
+# x1slte: the sensor hub's firmware (bsd/dev/redwood_ssp.c, shub=4 and up), made by
+# tools/sensors/mk-fw-sensors.py out of Samsung's picasso patch into ../fw-sensors (Samsung's/Broadcom's: never committed)
+if [ -f ../fw-sensors/bcm_sensorhub_a1.bin ]; then
+	mkdir -p root/fw
+	install -m 0644 ../fw-sensors/bcm_sensorhub_a1.bin root/fw/
+fi
+# x1slte: the Galaxy S20's CS40L25 needs Cirrus's DSP program and wavetable (bsd/dev/redwood_cs40l25.c, haptic_chip=cs40l25)
+for f in cs40l25a.wmfw cs40l20.bin; do
+	if [ -f ../fw-haptic/$f ]; then
+		mkdir -p root/fw
+		install -m 0644 ../fw-haptic/$f root/fw/
+	fi
+done
 # ... and the cameras' register tables (bsd/dev/redwood_camera.c, cam=2 and up), made by tools/camsensor.py out of
 # the sensors' module files of Android's camera stack, the phone's /vendor/lib64/camera/com.qti.sensormodule.
 # redwood_<maker>_<sensor>_<camera>.bin, in ../fw-camera (the vendor's: neither they nor the tables are in the
@@ -669,29 +896,42 @@ fi
 # NanoLaunchDaemons and LaunchAngels with,
 # xpc without launchd.plist (launchd would read that list of all of iOS's jobs instead of
 # LaunchDaemons) and the audio server's plug-in directory with only our device in it.
-mkdir -p root/empty root/xpc root/hal root/angels
-# the launch angels (apps launchd starts in the user's domain) SpringBoard looks up, taken from the iOS
-# volume: PosterBoard (the lock screen's posters, com.apple.posterboardservices.services) and
-# AccessibilityUIServer (Settings > Accessibility); the volume's other ten stay hidden
-ANGELS=${ANGELS-"com.apple.PosterBoard com.apple.AccessibilityUIServer"}
-ANGEL_SOURCE=
-for f in $IOS/rootfs.apfs $IOS/rootfs.dmg; do [ -f $f ] && { ANGEL_SOURCE=$f; break; }; done
-if [ -n "$ANGELS" ] && [ -n "$ANGEL_SOURCE" ]; then
-	for a in $ANGELS; do
-		7z e -y -oroot/angels "$ANGEL_SOURCE" "System/Library/LaunchAngels/$a.plist" > /dev/null 2>&1 ||
-			echo "build.sh: no launch angel $a in $ANGEL_SOURCE"
-	done
-	chmod 644 root/angels/*.plist 2>/dev/null
-	echo "build.sh: launch angels: $(ls root/angels | tr '\n' ' ')"
-elif [ -n "$ANGELS" ]; then
-	echo "build.sh: no iOS volume image ($IOS/rootfs.apfs or rootfs.dmg; KEEP=1 ios165/fetch.sh): no launch angels"
-fi
+mkdir -p root/empty root/xpc root/hal
 for f in extensions.plist extensions.plist.sig; do
 	[ -f $IOS/rootfs/System/Library/xpc/$f ] && cp $IOS/rootfs/System/Library/xpc/$f root/xpc/
 done
 [ -d root/lib/RedwoodAudio.driver ] && ln -s /redwood/lib/RedwoodAudio.driver root/hal/RedwoodAudio.driver
+# launchd panics on a non-platform binary for a system daemon, and in this port an ad hoc signature
+# is what makes one (bsd/kern/kern_minimac.c). Sign the BlueTool stand-in here, where every build
+# path passes (macOS copies the program from prebuilt/userland and never compiles it).
+if [ -f root/bin/bluetool_stub ]; then
+	{ ${LDID:-ldid} -Cadhoc -S root/bin/bluetool_stub 2>/dev/null ||
+	  codesign -s - -f root/bin/bluetool_stub 2>/dev/null; } ||
+		echo "build.sh: bluetool_stub is unsigned: launchd will panic on com.apple.BlueTool"
+fi
+# the same for dsc-exec, which starts biometrickitd under com.apple.biometrickitd.mesa (Touch ID): unsigned, launchd
+# panics ("unexpected exec of non-platform binary: /redwood/bin/dsc-exec", on the S20 2026-11-18)
+if [ -f root/bin/dsc-exec ]; then
+	{ ${LDID:-ldid} -Cadhoc -S root/bin/dsc-exec 2>/dev/null || codesign -s - -f root/bin/dsc-exec 2>/dev/null; } ||
+		{ echo "build.sh: dsc-exec is unsigned: launchd would panic on com.apple.biometrickitd.mesa; leaving its job out" >&2
+		  rm -f root/LaunchDaemons/com.apple.biometrickitd.mesa.plist; }
+fi
 # the image: zlib where it saves room (a small file whole in its attribute, as Apple keeps them); fw/
 # as it is, which the kernel's drivers use where it lies in memory (bsd/dev/redwood_image.c)
+# callservicesd runs from /var/jb/redwood, whatever wrote its job (mkjobs, or a stale one when the job section was
+# skipped on a machine without the extracted iOS root): checked here, right before the boot volume is made (B, 2026-11-14)
+if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
+	python3 -c 'import plistlib,sys
+p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"]=["/var/jb/redwood/callservicesd"]; d.pop("Program",None)
+plistlib.dump(d,open(p,"wb"))' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+fi
+# per-device mods (devices/exynos990/.../root/ and customize.sh), only for release builds that name a target
+if [ -n "${JESVI_TARGET:-}" ]; then
+	python3 ../tools/release/apply_mods.py "$JESVI_TARGET" root root
+fi
+if [ "${DEVICE:-x1slte}" = x1slte ] && [ -d "$IOS/rootfs/usr/lib" ]; then
+    python3 ../tools/camera/prepare-root.py root --binaries obj
+fi
 python3 ../tools/apfs/mkapfs.py -z --plain fw -o root.apfs redwood=root | tail -1
 [ -z "$CHECK" ] || ../tools/apfs/check-image.sh root.apfs redwood=root
 
@@ -720,7 +960,7 @@ if [ -n "$FLASHBOOT" ] && [ -f $CACHE/dyld_shared_cache_arm64 ]; then
 	# built and thrown away unused. The guard ends with the cache: everything after it goes
 	# into the boot volume, which every recipe carries, flash cryptexes included
 	if [ "$CRYPTEXES" != flash ]; then
-		if [ -d $IOS/cryptex ]; then cp -al $IOS/cryptex flashboot.os; else mkdir -p flashboot.os; fi
+		if [ -d $IOS/cryptex ]; then python3 ../tools/release/copy_tree.py "$IOS/cryptex" flashboot.os; else mkdir -p flashboot.os; fi
 		D=flashboot.os/System/Library/Caches/com.apple.dyld
 		mkdir -p $D
 		for f in $CACHE/dyld_shared_cache_arm64*; do
@@ -773,23 +1013,76 @@ if [ -n "$FLASHBOOT" ] && [ -f $CACHE/dyld_shared_cache_arm64 ]; then
 fi
 
 # --- the system image -----------------------------------------------------------------------------
+SYSTEM_CACHE_HIT=0
+if [ -n "${HACKIOS_IMAGE_CACHE:-}" ]; then
+	cache_rc=0
+	python3 ../tools/release/system_cache.py restore --ios "$IOS" ${SYSTEM:+--force} || cache_rc=$?
+	case "$cache_rc" in
+		0) SYSTEM_CACHE_HIT=1 ;;
+		10) SYSTEM=1 ;; # An input changed: do not trust the legacy mtime shortcut.
+		*) exit "$cache_rc" ;;
+	esac
+fi
+if [ "$SYSTEM_CACHE_HIT" = 0 ]; then
 if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
-	{ [ ! -f system.apfs ] || [ obj/stage0 -nt system.apfs ] || [ $IOS/system.manifest -nt system.apfs ] ||
+	{ [ ! -f system.apfs ] || [ obj/stage0 -nt system.apfs ] || [ obj/LocalFilesHost -nt system.apfs ] ||
+	  [ ../tools/storage/stage-provider.py -nt system.apfs ] || [ $IOS/system.manifest -nt system.apfs ] ||
 	  [ $IOS/cryptex -nt system.apfs ] || [ $IOS/cryptex-app -nt system.apfs ] || [ -n "$SYSTEM" ]; }; then
 	# what ios165/select-system.py has chosen since ios165/rootfs was extracted is not in it, and would not be
 	# in the image either (so it was once with the audio plug-ins and the system's sounds: iOS found no
 	# speaker and played nothing, though our device was there and the kernel's side worked)
-	if [ -f $IOS/.done-rootfs ] && [ $IOS/select-system.py -nt $IOS/.done-rootfs ]; then
+	if [ "${REQUIRE_SOURCE:-0}" = 1 ]; then
+		python3 ../tools/release/extraction.py verify
+	elif [ -f $IOS/.done-rootfs ] && [ $IOS/select-system.py -nt $IOS/.done-rootfs ]; then
 		echo "build.sh: ios165/select-system.py has changed since ios165/rootfs was extracted: run KEEP=1 ios165/fetch.sh" >&2
 		exit 1
 	fi
 	rm -rf sysroot
-	cp -al $IOS/rootfs sysroot                      # hard links: no copies of the 0.5 GB
+	python3 ../tools/release/copy_tree.py "$IOS/rootfs" sysroot
 	# launchd must load our choice of jobs, not all 500 that iOS has
 	rm -rf sysroot/System/Library/LaunchDaemons sysroot/System/Library/NanoLaunchDaemons \
 		sysroot/System/Library/LaunchAngels sysroot/System/Library/xpc/launchd.plist
 	ln -s /redwood/LaunchDaemons sysroot/System/Library/LaunchDaemons
 	mkdir -p sysroot/redwood sysroot/sbin
+	# Touch ID's sensor module: the iPhone 8's libBKDM1, ported onto this (iPhone X) cache by tools/touchid/relink_bkdm1.py
+	# (tools/touchid/fetch-bkdm1.sh; Apple's code, never in the repository). biometrickitd loads it from /usr/lib: every
+	# install has Touch ID without the iPhone 8's 3 GB cache (A, 2026-11-20). Sparse: ~130 MB, mostly zeros.
+	if [ -f ../sysimage/iphone8/libBKDM1.dylib ]; then
+		cp ../sysimage/iphone8/libBKDM1.dylib sysroot/usr/lib/libBKDM1.dylib
+		chmod 755 sysroot/usr/lib/libBKDM1.dylib
+		echo "  Touch ID: ported libBKDM1.dylib in /usr/lib"
+	fi
+	# The default wallpaper (B, 2026-11-14, the user's pick): a Photos poster with its lock-screen clock style,
+	# layout and paired home screen -- PosterBoard's store (PRBPosterExtensionDataStore) reduced to that one poster.
+	# init copies it into a data volume that has no poster store yet (userland/src/init.c, default_wallpaper); a
+	# phone with wallpapers of its own is never touched. 3.5 MB (the editing source is HEIC; snapshots are left out,
+	# PosterBoard renders them again).
+	if [ -d defaults/wallpaper/PRBPosterExtensionDataStore ]; then
+		mkdir -p sysroot/System/Library/Redwood/DefaultWallpaper
+		cp -R defaults/wallpaper/PRBPosterExtensionDataStore sysroot/System/Library/Redwood/DefaultWallpaper/
+		find sysroot/System/Library/Redwood/DefaultWallpaper -type d -exec chmod 0777 {} +
+		find sysroot/System/Library/Redwood/DefaultWallpaper -type f -exec chmod 0644 {} +
+	fi
+	# The fingerprint TA set for a clean data volume (A, 2026-11-20): redwood-fpd copies it to /var/root/tee when that
+	# is missing (src/redwood-fpd.c fp_provision). It is Samsung's vendor/tee from THIS phone (device/firmware/vendor-tee),
+	# Private release builds take it from ../fw-fingerprint (a private input like fw-sound/fw-wifi, the same vendor/tee
+	# folder); a build for this machine's own phone also from device/firmware/vendor-tee (docs/clean-install.md).
+	FPTEE=
+	if [ -d ../fw-fingerprint ]; then FPTEE=../fw-fingerprint
+	elif [ -z "$SHARE" ] && [ -d ../../../device/firmware/vendor-tee ]; then FPTEE=../../../device/firmware/vendor-tee; fi
+	if [ -n "$FPTEE" ]; then
+		mkdir -p sysroot/System/Library/Redwood/Fingerprint
+		rm -rf sysroot/System/Library/Redwood/Fingerprint/tee
+		cp -R "$FPTEE" sysroot/System/Library/Redwood/Fingerprint/tee
+		find sysroot/System/Library/Redwood/Fingerprint/tee -name '._*' -delete
+		chmod -R go-rwx sysroot/System/Library/Redwood/Fingerprint/tee
+		echo "  Touch ID: fingerprint TA set in the system image (fresh data volumes)"
+	fi
+	# callservicesd for the data volume (B, 2026-11-15): init copies it to /var/jb/redwood where its job runs it
+	# (src/init.c seed_phone); select-system.py leaves framework executables out of the image, so it is added here
+	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
+	if [ -f $IOS/rootfs/$CSD ]; then mkdir -p sysroot/System/Library/Redwood/Phone; cp $IOS/rootfs/$CSD sysroot/System/Library/Redwood/Phone/callservicesd; chmod 755 sysroot/System/Library/Redwood/Phone/callservicesd
+	else echo "build.sh: no $CSD in the iOS root: a fresh phone will have no callservicesd" >&2; fi
 	# where the kernel mounts the iOS root container off the phone's flash (boot-arg apfs_volume=):
 	# iOS has no /System/Volumes, and nothing can make a directory in this image once it is built
 	mkdir -p sysroot/System/Volumes/iOS
@@ -806,6 +1099,15 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		mkdir -p sysroot/fw
 		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] sysroot/fw/
 	fi
+	# x1slte: ABOX's Calliope DSP firmware (bsd/dev/redwood_exynos_sound.c, snd_calliope=1), the phone's /vendor/firmware
+	# calliope_*.bin and abox_tplg.bin, from ../fw-sound (Samsung's: never committed). In the system image: 4 MB that do not
+	# fit in the small one's 14.4 MB slot; the kernel reads them from /fw once iOS's volume is the root.
+	for f in calliope_sram.bin calliope_dram.bin calliope_sram_2.bin calliope_dram_2.bin abox_tplg.bin; do
+		if [ -f ../fw-sound/$f ]; then
+			mkdir -p sysroot/fw
+			install -m 0644 ../fw-sound/$f sysroot/fw/
+		fi
+	done
 	# ... and the speaker amplifiers' configuration, the phone's /vendor/etc/aw882xx_acf.bin (bsd/dev/redwood_speaker.c,
 	# for sound=3): Android's own register values, which are not in the repository either
 	if [ -f ../fw-audio/aw882xx_acf.bin ]; then
@@ -832,6 +1134,10 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		done
 		echo "  the package manager's prefix: $(du -sh sysroot/jb | cut -f1) as /jb (init puts it at /var/jb)"
 	fi
+	if [ -f "$IOS/rootfs/$CSD" ]; then
+		mkdir -p sysroot/jb/redwood
+		cp "$IOS/rootfs/$CSD" sysroot/jb/redwood/callservicesd
+	fi
 	# An application of this port's own, registered the same free way the prefix's are: a plain
 	# directory in /Applications, which the LaunchServices database is rebuilt from at every boot
 	# by walking that directory -- no installd, no container, no uicache. cp -a and not a link,
@@ -840,7 +1146,8 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	#
 	# This is in the SYSTEM image and not the small one, so a change to it costs a 2.5 GB rebuild
 	# and a re-upload: SYSTEM=1 is what makes this line run again.
-	if [ -d obj/RedwoodTriangle.app ]; then
+	# the triangle test app only on request (TRIANGLE=1): it did nothing for a user and sat on the home screen (A, 2026-11-20)
+	if [ -n "${TRIANGLE:-}" ] && [ -d obj/RedwoodTriangle.app ]; then
 		cp -a obj/RedwoodTriangle.app sysroot/Applications/
 		echo "  RedwoodTriangle.app in /Applications (com.redwood.triangle, scheme redwoodtriangle:)"
 	fi
@@ -875,10 +1182,10 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	# the OS cryptex: on a device a separate volume grafted at /System/Cryptexes/OS. It holds the dyld
 	# shared cache (dyld looks there first) and a few libraries and resources outside the cache.
 	mkdir -p sysroot/System/Cryptexes
-	if [ -d $IOS/cryptex ]; then cp -al $IOS/cryptex sysroot/System/Cryptexes/OS; fi
+	if [ -d $IOS/cryptex ]; then python3 ../tools/release/copy_tree.py "$IOS/cryptex" sysroot/System/Cryptexes/OS; fi
 	# the App cryptex, the same way: Safari's daemons (eight launchd jobs run them from there), its settings and
 	# the bundles around it, which the root's links reach (System/Library/PreferenceBundles/MobileSafariSettings.bundle...)
-	if [ -d $IOS/cryptex-app ]; then cp -al $IOS/cryptex-app sysroot/System/Cryptexes/App; fi
+	if [ -d $IOS/cryptex-app ]; then python3 ../tools/release/copy_tree.py "$IOS/cryptex-app" sysroot/System/Cryptexes/App; fi
 	D=sysroot/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld
 	mkdir -p $D
 	for f in $CACHE/dyld_shared_cache_arm64*; do
@@ -886,9 +1193,37 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		# -f: a cryptex fetched with the cache already in it would otherwise stop the build
 		ln -f "$f" $D/
 	done
+	# A containing app gives the local provider its data/app-group containers.
+	# Relocate rather than duplicate it: a metadata-only standalone registration
+	# can otherwise win PlugInKit election over the working app extension.
+	if [ -n "${JESVI_TARGET:-}" ]; then
+		python3 ../tools/release/apply_mods.py "$JESVI_TARGET" system sysroot
+	fi
+	# Framework providers stay in their native paths. register_finder_host automatically prepares
+	# a hidden containerized registration host from these bundles on the data volume; standalone
+	# registerPlugin: loses entitlement/container metadata on this port. FILES_HOST=1 retains
+	# the older image-time relocation option.
+	if [ -n "${FILES_HOST:-}" ]; then
+		python3 ../tools/storage/stage-provider.py sysroot obj/LocalFilesHost \
+			$IOS/system.manifest obj/system-files.manifest
+	else
+		cp $IOS/system.manifest obj/system-files.manifest
+	fi
+	# TrollStore (opa334, MIT; the official 2.1.1 release, TrollStore.tar) for installing IPAs: com.redwood.trollstore
+	# runs its own trollstorehelper install-trollstore once on a data volume without it (userland/src/trollstore_once.c)
+	TS=${TROLLSTORE_TAR:-$HOME/ios-port-research/work/sideloading/TrollStore-uncompressed.tar}
+	if [ -f "$TS" ]; then
+		mkdir -p sysroot/System/Library/Redwood/TrollStore
+		cp "$TS" sysroot/System/Library/Redwood/TrollStore/TrollStore.tar
+		echo "  TrollStore: the official release in the image (installed at first boot)"
+	fi
 	# zlib where it saves room, as Apple keeps the root (a small file whole in its attribute): 5.4 GB of
 	# files in 2.5 GB, what fits into the phone's RAM beside iOS
-	python3 ../tools/apfs/mkapfs.py -z -o system.apfs System=sysroot,manifest=$IOS/system.manifest | tail -1
-	[ -z "$CHECK" ] || ../tools/apfs/check-image.sh system.apfs System=sysroot,manifest=$IOS/system.manifest
+	python3 ../tools/apfs/mkapfs.py -z -o system.apfs System=sysroot,manifest=obj/system-files.manifest | tail -1
+	[ -z "$CHECK" ] || ../tools/apfs/check-image.sh system.apfs System=sysroot,manifest=obj/system-files.manifest
 	rm -rf sysroot
+fi
+if [ -n "${HACKIOS_IMAGE_CACHE:-}" ]; then
+	python3 ../tools/release/system_cache.py store --ios "$IOS"
+fi
 fi

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "id": "r8s",
+  "name": "Galaxy S20 FE (Exynos; later candidate)",
+  "platform": "exynos990",
+  "status": "unmaintained",
+  "maintainers": [],
+  "models": [],
+  "recovery_products": [],
+  "bootloaders": [],
+  "installer_validated": false,
+  "partitions": {},
+  "layout": {},
+  "evidence": null
+}

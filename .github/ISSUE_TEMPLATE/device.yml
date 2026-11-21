@@ -1,0 +1,16 @@
+name: Device maintainer proposal
+description: Volunteer hardware and testing for an Exynos 990 board.
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Exact model, SoC, storage/RAM and bootloader
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Hardware access, stock restore test, partition measurements and source references
+      description: Follow docs/release/porting.md. Do not share unique identifiers or device backups.
+    validations:
+      required: true

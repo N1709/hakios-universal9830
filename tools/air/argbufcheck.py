@@ -3,7 +3,7 @@
 
 `air.indirect_buffer` is the one interface word that cannot be checked against
 Apple's own libraries: 0 of the 456 modules of iOS 16.5's corpus declare one and
-7 620 of Resident Evil 4's 7 879 do (docs/air.md section 8.2). So this is the
+7 620 of Resident Evil 4's 7 879 do (docs/dev/air.md section 8.2). So this is the
 stage that belongs with the implementation, as vattrcheck.py belongs with the
 vertex attributes -- the numbers in that section are re-derivable by `--census`
 here, and the behaviour is checked against two references that are not each
@@ -55,7 +55,7 @@ What each part is worth:
 What this does NOT show, said here rather than left to be assumed:
 
   - nothing about the runtime's half. There is no argument buffer to write
-    (docs/air.md section 8.2): the frontend resolved every descriptor, so
+    (docs/dev/air.md section 8.2): the frontend resolved every descriptor, so
     MTLArgumentEncoder has to RECORD rather than write, and no part of that is
     exercised or even present here.
   - the sampler member's INDEX is not checked, only that it resolves and

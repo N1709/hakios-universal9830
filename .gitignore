@@ -1,65 +1,66 @@
 # A whitelist: the working tree also holds gigabytes of downloads, build output, logs, third-party
-# clones and files of iOS, none of which belongs in this repository (common/bootstrap.sh fetches or
-# builds all of it again). Nothing is tracked unless it is named here.
-#
-# G986N-iOS carries both of HackiOS's repositories in one: hackios-xnu-kernel's files and
-# hackios-xnu-userland's (userland/, ios165/'s scripts, the userland's tools, docs and prebuilt/userland),
-# with their histories merged, and the Galaxy S20+ (y2q) port on top.
+# clones and files of iOS, none of which belongs in the repository. Nothing is tracked unless it
+# is named here.
 /*
 !/.gitignore
 !/README.md
+!/ci/
+!/.github/
+!/.editorconfig
+!/.gitattributes
+!/build.sh
+!/release.conf
+!/Makefile
 !/LICENSE
-!/LICENSE-userland
-!/README.ko.md
-!/common/
+!/LICENSE.APSL
+!/NOTICE
+!/devices/
 !/docs/
-!/xl
-!/mkxnuimg.py
-!/xnu-build.sh
-!/xnu-env.sh
+!/xnu/mkxnuimg.py
+!/xnu/xnu-build.sh
+!/xnu/xnu-env.sh
 !/xnuloader/
 !/qemu/
 !/tools/
+!/userland/
+!/sysimage/
 !/xnu/
 !/xnu-deps/
-!/uefi/
 !/prebuilt/
 !/wifi/
-!/userland/
-!/ios165/
 
 __pycache__/
 *~
 *.orig
 *.rej
-*.part
-
-# of the userland only the sources (userland/build.sh builds the rest; userland/obj, the images)
-/userland/*
-!/userland/build.sh
-!/userland/*.py
-!/userland/rc.*
-!/userland/com.redwood.*.plist
-!/userland/src/
-!/userland/libmini/
-!/userland/var/
-
-# of ios165 only the scripts (ios165/fetch.sh takes iOS out of Apple's IPSW onto this machine)
-/ios165/*
-!/ios165/fetch.sh
-!/ios165/*.py
 
 /xnuloader/*
 !/xnuloader/build.sh
 !/xnuloader/efi.h
-!/xnuloader/identity.h
 !/xnuloader/loader.c
+!/xnuloader/s20_memory.h
+!/xnuloader/s20_efi_memory.h
 !/xnuloader/mkidentity.py
 !/xnuloader/mkpayload.py
 
 /qemu/*
 !/qemu/*.sh
 !/qemu/*.py
+
+/userland/*
+!/userland/software-passcode-config.sh
+!/userland/build.sh
+!/userland/*.py
+!/userland/rc.*
+!/userland/com.hakios.*.plist
+!/userland/src/
+!/userland/libmini/
+!/userland/var/
+!/userland/defaults/
+
+/sysimage/*
+!/sysimage/fetch.sh
+!/sysimage/*.py
 
 # of xnu-deps only what is ours; setup.sh fetches and builds the rest
 /xnu-deps/*
@@ -90,18 +91,37 @@ __pycache__/
 !/xnu-deps/build/lzbitmap/libzbitmap.c
 !/xnu-deps/build/lzbitmap/libzbitmap.h
 /tools/android/f2fs-resize
+/tools/macos-bin/platform-tools/
 
+# made at build time from the device tree of the builder's own IPSW (xnuloader/mkidentity.sh)
+/xnuloader/identity.h
+!/xnuloader/im4p.py
+!/xnuloader/mkidentity.sh
 
-# Local hardware and build inputs
-.DS_Store
-* 2.sh
-* 2.py
-/fw-*/
+# y2sios overlay and the x1slte (SM-G980F) port
+!/common/
+!/userland/build-gpu-y2s.sh
+!/userland/rc.*
+!/userland/*.plist
+!/userland/m2m.tour
+!/userland/hfs-kit.bin
+!/userland/hfs-kit-*.bin
+!/userland/mkjobs.py
+!/userland/mkeagl.py
+!/userland/libmini/
+!/x1slte.sh
+/common/devices/*.local.conf
+
+# secrets and fetched prefixes (2026-11-06): never in the repository
 /ssh/
-/logs/
-/out/
-/work/
-/uefi/files/Binaries/z3q/
-/uefi/files/Resources/DTBs/z3q.dtb
-*.pem
-*.key
+/jb/
+
+# Private release inputs, caches, local identities and generated payloads.
+/.cache/
+/inputs/
+/dist/
+**/.DS_Store
+**/*.local.conf
+
+# research notes and debug images: kept on this Mac, not published (user, 2026-11-20)
+docs/research/

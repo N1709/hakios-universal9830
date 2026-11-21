@@ -68,6 +68,7 @@
  * CSID-lite 0, IFE-lite 0, one match register and context of the SMMU) are written the same way, read back
  * where they keep what they are given, and taken back in the reverse order.
  */
+#include "redwood_camera_s20_controls.h"
 #include <kern/clock.h>
 #include <kern/locks.h>
 #include <kern/thread.h>
@@ -3256,8 +3257,25 @@ capture_sensor(void)
 #define IDLE_MS                 1000
 #define FRAME_TIMEOUT_MS        1500
 #define EXPOSURE_MARGIN         40
-#define GAIN_UNITY              (hw->gain_unity)
-#define GAIN_MAX                (hw->gain_max)
+static bool s20_rotate;         /* (no longer used: frames go out as the sensor sends them; camera_device.c has turned = false) */
+static bool s20_full = true;   /* cam_s20_full=0: the binned 1824x1368 mode instead of the full 3648x2736 */
+/* kern.redwood.camera_turn: 1 = libredwood-media turns the S20 front camera's pictures half round (read at each stream start;
+ * boot-arg cam_turn), so the orientation can be settled on the phone without a new image */
+extern int redwood_camera_s20_turn;   /* (redwood_camera_s20.c: the sysctl lives there) */
+extern void redwood_camera_s20_set_full(bool full);
+extern void redwood_camera_s20_set_rear(bool rear);
+extern bool redwood_camera_s20_rear_is_warm(void);
+extern void redwood_camera_s20_rear_cool(void);
+extern bool redwood_camera_s20_rear_full(void);
+extern void redwood_camera_s20_select_rear_mode(int full);
+extern void redwood_camera_s20_set_ultra(bool ultra);
+extern void redwood_camera_s20_set_gw2(bool enabled);
+static bool s20_gw2_now;
+static bool s20_ultra_now;
+static bool s20_rear_now;    /* the session streams the rear main (REDWOOD_CAMERA_SENSOR mode 2) */
+static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
+#define GAIN_UNITY              (s20_real ? 0x20 : hw->gain_unity)
+#define GAIN_MAX                (s20_real ? 0x200 : hw->gain_max)
 #define FRAME_LINES_MAX         0xfff0
 #define RDI0_SOF                (1u << 27)      /* IFE_IRQ_STATUS0 (cam_vfe_lite16x.h: sof_irq_mask of RDI 0) */
 #define WM0_DONE                1u              /* BUS_IRQ_STATUS1 */
@@ -3266,6 +3284,10 @@ enum { PLACE_FREE, PLACE_WRITING, PLACE_READY, PLACE_READING };
 
 static LCK_GRP_DECLARE(ios_lck_grp, "redwood-camera");
 static LCK_MTX_DECLARE(ios_lock, &ios_lck_grp);
+/* camdev_read()s that copy a frame out of the ring with ios_lock released. The ring is not freed under them:
+ * a stream that ended while mediaserverd was in its uiomove() freed it, and the kernel stopped on a data abort
+ * in camdev_read (2026-11-13, twice, at a front/rear switch a few seconds after start). */
+static int ios_readers;
 static struct {
 	uint8_t         state;
 	uint64_t        sequence, time;
@@ -3292,6 +3314,25 @@ static int ios_source = SOURCE_SENSOR;
 static volatile unsigned ios_switch_to;         /* 1 + the sensor's index; 0: none asked for */
 static uint32_t ios_switch_mode;
 
+/* Auxiliary identity transactions reserve the camera while no device client or
+ * sensor session owns it. Also cover the warm-main cooldown outside ios_lock. */
+static bool ios_aux_busy, ios_aux_failed, ios_session_active;
+extern bool redwood_camera_s20_rear_is_warm(void);
+bool redwood_camera_aux_acquire(void) {
+    bool ok;
+    lck_mtx_lock(&ios_lock);
+    ok=!ios_aux_busy&&!ios_aux_failed&&!ios_session_active&&!ios_open&&
+        !ios_streaming&&!ios_wanted&&!ios_switch_to&&!redwood_camera_s20_rear_is_warm();
+    if(ok)ios_aux_busy=true;
+    lck_mtx_unlock(&ios_lock);return ok;
+}
+void redwood_camera_aux_release(bool clean) {
+    lck_mtx_lock(&ios_lock);
+    if(!clean)ios_aux_failed=true;
+    ios_aux_busy=false;
+    lck_mtx_unlock(&ios_lock);wakeup(&ios_open);
+}
+
 static uint64_t
 ios_ms(void)
 {
@@ -3306,9 +3347,14 @@ static void
 exposure_limits(uint32_t *lines, uint32_t *gain, uint32_t *frame_lines)
 {
 	uint32_t shortest = ios_mode->frame_length;
+    if(s20_real&&s20_gw2_now){*lines=MAX(16U,MIN(*lines,5150U));*gain=MAX(32U,MIN(*gain,512U));*frame_lines=5166;return;}
+    if(s20_real&&s20_ultra_now){
+        *lines=MAX(16U,MIN(*lines,6636U));*gain=MAX(32U,MIN(*gain,512U));*frame_lines=6652;return;
+    }
 
 	*gain = *gain < GAIN_UNITY ? GAIN_UNITY : *gain > GAIN_MAX ? GAIN_MAX : *gain;
-	*lines = *lines < 4 ? 4 : *lines > FRAME_LINES_MAX - EXPOSURE_MARGIN ? FRAME_LINES_MAX - EXPOSURE_MARGIN : *lines;
+	/* (16 lines at the least on the S20: Samsung's S5K2LD minimum coarse integration, is-cis-2ld.h) */
+	*lines = *lines < (s20_real ? 16u : 4u) ? (s20_real ? 16u : 4u) : *lines > FRAME_LINES_MAX - EXPOSURE_MARGIN ? FRAME_LINES_MAX - EXPOSURE_MARGIN : *lines;
 	if (*frame_lines == 0) {
 		*frame_lines = *lines + EXPOSURE_MARGIN > shortest ? *lines + EXPOSURE_MARGIN : shortest;
 	}
@@ -3316,6 +3362,8 @@ exposure_limits(uint32_t *lines, uint32_t *gain, uint32_t *frame_lines)
 	if (*lines > *frame_lines - EXPOSURE_MARGIN) {
 		*lines = *frame_lines - EXPOSURE_MARGIN;
 	}
+	/* Samsung normal-mode CIT is even; normalize after the final frame clamp. */
+	if (s20_real && s20_rear_now) *lines = redwood_2ld_even_exposure(*lines);
 }
 
 /*
@@ -3363,6 +3411,12 @@ exposure_write(uint32_t lines, uint32_t gain, uint32_t frame_lines)
 static void
 ring_free(void)
 {
+	lck_mtx_lock(&ios_lock);
+	while (ios_readers > 0) {
+		struct timespec ts = { 0, 20 * NSEC_PER_MSEC };
+		(void)msleep(&ios_readers, &ios_lock, PZERO, "redwood-camera-readers", &ts);
+	}
+	lck_mtx_unlock(&ios_lock);
 	if (page_tables != 0) {
 		kmem_free(kernel_map, page_tables, ring_tables_bytes);
 		page_tables = 0;
@@ -3770,6 +3824,148 @@ fake_session(void)
 	    "another sensor asked for" : "nobody reads", ios_frames_done, ios_given);
 }
 
+/*
+ * cam_s20=1 (with cam=5): the Galaxy S20's own front camera (SAK3J1, 1824x1368 RAW10 at 30 a second) behind
+ * /dev/redwood-camera. Everything of the phone is done by redwood_camera_s20.c (the sequence its bounded tests
+ * proved); here each finished frame, 10 bits in 16, is packed into a place of the ring as the fake session's are.
+ */
+extern bool redwood_camera_s20_stream(bool (*fn)(const volatile uint8_t *, uint32_t, uint32_t, uint32_t), char *out, size_t cap);
+extern void redwood_camera_s20_exposure(uint32_t lines, uint32_t gain, uint32_t frame_lines);
+extern void redwood_camera_s20_focus(uint32_t position);
+extern uint32_t redwood_camera_s20_focus_now(void);
+/* what was asked of the sensor, frame by frame: it takes an exposure at the second frame after (a frame tagged with
+ * the new values at once had AE overshoot and swing, 2026-11-11) */
+static struct { uint32_t lines, gain, frame_lines; } s20_sent[3];
+
+static bool
+s20_frame(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t in_stride)
+{
+	uint32_t stride = RAW10_STRIDE(width);
+    if(width!=ios_mode->width||height!=ios_mode->height||in_stride<stride){say("camera: S20 frame geometry mismatched selected mode\n");return false;}
+	int p = -1;
+	bool more;
+
+	lck_mtx_lock(&ios_lock);
+	if (ios_ask.pending) {
+		uint32_t lines = ios_ask.lines, gain = ios_ask.gain, frame_lines = ios_ask.frame_lines;
+
+		ios_ask.pending = false;
+		exposure_limits(&lines, &gain, &frame_lines);
+		ios_now.lines = lines;
+		ios_now.gain = gain;
+		ios_now.frame_lines = frame_lines;
+		redwood_camera_s20_exposure(lines, gain, frame_lines);
+	}
+	if (ios_ask.focus_pending) {
+		ios_ask.focus_pending = false;
+		if(!s20_ultra_now)redwood_camera_s20_focus(ios_ask.focus);
+	}
+	/* this frame was taken with what was asked two frames ago */
+	s20_sent[0] = s20_sent[1];
+	s20_sent[1] = s20_sent[2];
+	s20_sent[2].lines = ios_now.lines;
+	s20_sent[2].gain = ios_now.gain;
+	s20_sent[2].frame_lines = ios_now.frame_lines;
+	for (int i = 0; i < RING; i++) {
+		if (place[i].state != PLACE_READING && (p < 0 || place[i].sequence < place[p].sequence)) {
+			p = i;
+		}
+	}
+	if (p >= 0) {
+		place[p].state = PLACE_WRITING;
+	}
+	/*
+	 * The first frames of a session count from now: the rear main takes ~3 s to start (its tables), longer than
+	 * IDLE_MS, so its first frame found "nobody reads" and the session ended at once, to start again 3 s later
+	 * (2026-11-12: rear opened twice, flips failed).
+	 */
+	if (ios_frames_done < 3) {
+		ios_last_read = ios_ms();
+	}
+	more = ios_open && ios_switch_to == 0 && ios_ms() - ios_last_read <= IDLE_MS;
+	lck_mtx_unlock(&ios_lock);
+	if (p < 0) {
+		ios_writes_late++;
+		return more;
+	}
+	uint8_t *at = (uint8_t *)(ring + (uint64_t)p * ring_place_bytes);
+
+	/* The DMA wrote MIPI RAW10 already, lines padded as RAW10_STRIDE pads them: one copy (through the cached
+	 * mapping, whose lines redwood_camera_s20.c had forgotten before this). The picture is the right way up. */
+	if (in_stride == stride) {
+		memcpy(at, (const void *)data, (size_t)stride * height);
+	} else {
+		for (uint32_t y = 0; y < height; y++) {
+			memcpy(at + (uint64_t)y * stride, (const void *)(data + (uint64_t)y * in_stride), MIN(stride, in_stride));
+		}
+	}
+	lck_mtx_lock(&ios_lock);
+	place[p].state = PLACE_READY;
+	place[p].sequence = ++ios_frames_done;
+	place[p].time = mach_absolute_time();
+	place[p].exposure_lines = s20_sent[0].lines;
+	place[p].gain = s20_sent[0].gain;
+	place[p].frame_lines = s20_sent[0].frame_lines;
+	af_position = s20_ultra_now?REDWOOD_CAMERA_NO_FOCUS:redwood_camera_s20_focus_now();
+	lck_mtx_unlock(&ios_lock);
+	wakeup(&ios_frames_done);
+	return more;
+}
+
+static void
+s20_session(void)
+{
+	static char report[8192];
+	uint32_t lines, gain, frame_lines;
+	bool ok;
+
+	ios_frames_done = ios_given = ios_writes_late = 0;
+	if (!ring_alloc(RAW10_STRIDE(ios_mode->width) * ios_mode->height)) {
+		return;
+	}
+	lck_mtx_lock(&ios_lock);
+	for (int i = 0; i < RING; i++) {
+		place[i].state = PLACE_FREE;
+		place[i].sequence = 0;
+	}
+	lines = ios_ask.lines;
+	gain = ios_ask.gain;
+	frame_lines = ios_ask.frame_lines;
+	ios_ask.pending = false;
+	exposure_limits(&lines, &gain, &frame_lines);
+	ios_now.lines = lines;
+	ios_now.gain = gain;
+	ios_now.frame_lines = frame_lines;
+	ios_streaming = true;
+	ios_last_read = ios_ms();
+	lck_mtx_unlock(&ios_lock);
+	redwood_camera_s20_exposure(lines, gain, frame_lines);
+	for (int i = 0; i < 3; i++) {
+		s20_sent[i].lines = lines;
+		s20_sent[i].gain = gain;
+		s20_sent[i].frame_lines = frame_lines;
+	}
+	say("camera: the frames for iOS: the S20's front SAK3J1, %ux%u\n", ios_mode->width, ios_mode->height);
+	report[0] = 0;
+	ok = redwood_camera_s20_stream(s20_frame, report, sizeof(report));
+	af_position = REDWOOD_CAMERA_NO_FOCUS;
+	report[400] = 0;
+	say("camera: S20 stream ended (%s): %s\n", ok ? "frames came" : "NO FRAMES", report);
+	lck_mtx_lock(&ios_lock);
+	ios_streaming = false;
+	for (int i = 0; i < RING; i++) {
+		place[i].state = PLACE_FREE;
+	}
+	lck_mtx_unlock(&ios_lock);
+	wakeup(&ios_frames_done);
+	ring_free();
+	say("camera: the frames for iOS stopped (%s): %llu done, %llu given\n", !ios_open ? "closed" : ios_switch_to != 0 ?
+	    "another sensor asked for" : "nobody reads", ios_frames_done, ios_given);
+	if (!ok) {
+		wait_ms(1000);          /* (not a busy loop of power cycles when the sensor does not come) */
+	}
+}
+
 static const char *
 ios_res(void)
 {
@@ -3785,7 +3981,10 @@ camdev_open(__unused dev_t dev, __unused int flags, __unused int type, __unused 
 	if (broken) {
 		return EIO;
 	}
+	lck_mtx_lock(&ios_lock);
+	if(ios_aux_busy||ios_aux_failed){int error=ios_aux_failed?EIO:EBUSY;lck_mtx_unlock(&ios_lock);return error;}
 	ios_open = true;
+	lck_mtx_unlock(&ios_lock);
 	return 0;
 }
 
@@ -3843,6 +4042,7 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 		ios_last_read = ios_ms();
 	}
 	place[b].state = PLACE_READING;
+	ios_readers++;
 	ios_given = place[b].sequence;
 	bzero(&f, sizeof(f));
 	memcpy(f.magic, REDWOOD_CAMERA_MAGIC, 8);
@@ -3851,7 +4051,8 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 	f.height = ios_mode->height;
 	f.stride = RAW10_STRIDE(ios_mode->width);
 	f.format = 1;
-	f.bayer = ios_source == SOURCE_CSID_TPG ? 0 : ios_source == SOURCE_SENSOR_PATTERN ? hw->pattern_bayer : hw->bayer;
+	/* (the S20's SAK3J1 is GR/BG: Samsung's is-cis-3j1.c, OTF_INPUT_ORDER_BAYER_GR_BG) */
+	f.bayer = s20_real ? (s20_rotate ? 2 : 1) : ios_source == SOURCE_CSID_TPG ? 0 : ios_source == SOURCE_SENSOR_PATTERN ? hw->pattern_bayer : hw->bayer;
 	f.black = 64;
 	f.sequence = place[b].sequence;
 	f.time = place[b].time;
@@ -3862,9 +4063,9 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 	f.gain_max = GAIN_MAX;
 	f.frame_lines = place[b].frame_lines;
 	f.frame_lines_min = ios_mode->frame_length;
-	f.frame_lines_max = FRAME_LINES_MAX;
-	f.margin = EXPOSURE_MARGIN;
-	f.sensor = hw_index;
+	f.frame_lines_max = s20_real&&s20_gw2_now?5166:s20_real&&s20_ultra_now?6652:FRAME_LINES_MAX;
+	f.margin = s20_real&&(s20_ultra_now||s20_gw2_now)?16:EXPOSURE_MARGIN;
+	f.sensor = s20_real&&s20_gw2_now?4:s20_real&&s20_ultra_now?3:hw_index;
 	f.focus = af_position;
 	lck_mtx_unlock(&ios_lock);
 
@@ -3897,6 +4098,9 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 		place[b].state = PLACE_READY;
 	}
 	ios_last_read = ios_ms();
+	if (--ios_readers == 0) {
+		wakeup(&ios_readers);
+	}
 	lck_mtx_unlock(&ios_lock);
 	return error;
 }
@@ -3921,7 +4125,7 @@ keep_picture(const struct redwood_camera_command *c, struct uio *uio)
 	h->height = c->b;
 	h->stride = c->c;
 	h->format = c->d;
-	h->bayer = c->d == 1 ? hw->bayer : 0;
+	h->bayer = c->d == 1 ? (s20_real ? (s20_rotate ? 2 : 1) : hw->bayer) : 0;
 	h->frame_bytes = c->bytes;
 	h->source = 2;
 	strlcpy(h->sensor, "iOS", sizeof(h->sensor));
@@ -4009,12 +4213,66 @@ camdev_make(void)
 static bool
 ios_select(unsigned index, uint32_t mode_n)
 {
+	static const struct ctab_head fake_head = {
+		.magic = "RWCTAB02",
+		.modes = 1,
+	};
+	static const struct ctab_mode fake_modes[] = {
+		/* Fixed software-camera mode; no sensor table or MMIO is used. */
+		{ 1920, 1080, 0, 0, 4, 0, 9, 148500000, 2200, 1125, 30000, RAW10_DT },
+	};
+	static const struct ctab_mode s20_modes[] = {
+		/* SAK3J1 full 3648x2736 at 30: line length 0x24a8, frame length 0xb30 (cam_s20_full=1, the default) */
+		{ 3648, 2736, 0, 0, 4, 0, 9, 807720000, 9384, 2864, 30000, RAW10_DT },
+		/* SAK3J1 2x2-binned 1824x1368 at 30: line length 0x4940, frame length 0x597 (cam_s20_full=0) */
+		{ 1824, 1368, 0, 0, 4, 0, 9, 805000000, 18752, 1431, 30000, RAW10_DT },
+		/* the rear main S5K2LD 2016x1512 at 30 (Samsung setA): line length 0x08e0, frame length 0x5824; C-PHY 3 trios */
+		{ 2016, 1512, 0, 0, 3, 1, 7, REDWOOD_2LD_PIXEL_CLOCK, 2272, 22564, 30000, RAW10_DT },
+		/* the rear main's full 4032x3024 at 30 (setA A0, what the stock camera uses): line length 0x1090, frame 0x2f80 */
+		{ 4032, 3024, 0, 0, 3, 1, 7, REDWOOD_2LD_PIXEL_CLOCK, 4240, 12160, 30000, RAW10_DT },
+        /* 2LA A202 native ultra-wide, fixed normal frame timing. */
+        { 4032, 3024, 0, 0, 3, 1, 7, 2236000000U, 11200, 6652, 30000, RAW10_DT },
+        /* GW2 high-resolution central crop, stock mode2; no binned upsample. */
+        { 4864, 3648, 0, 0, 3, 1, 1, 1918000000U, 12304, 5166, 30000, RAW10_DT },
+	};
+	static const uint32_t fake_blocks[] = { 0 };
+
+	/*
+	 * The S20's SAK3J1 (one built-in table, two modes): REDWOOD_CAMERA_SENSOR's mode chooses between them, from
+	 * the next session -- 0 the full 3648x2736, 1 the 2x2-binned 1824x1368 (a quarter of the data: the preview
+	 * and video without the phone at 95 C and half its clock, 2026-11-12); ~0 keeps what there is.
+	 */
+	if (s20_real && fake && mode_n <= 6) {
+		/* mode 2: the rear main (S5K2LD) instead of the front, asked for by libredwood-media's Back Camera */
+		s20_gw2_now=mode_n==6;redwood_camera_s20_set_gw2(s20_gw2_now);
+        s20_ultra_now=mode_n==5;redwood_camera_s20_set_ultra(s20_ultra_now);
+        s20_rear_now = mode_n >= 2;
+        /* S20 commands 3/4 select native full/binned explicitly. Mode2 retains
+         * the boot profile. This runs only after the previous stream stops. */
+        if (s20_rear_now) redwood_camera_s20_select_rear_mode(mode_n == 3 ? 1 : mode_n == 4 ? 0 : -1);
+		if (!s20_rear_now) {
+			s20_full = mode_n == 0;
+			redwood_camera_s20_set_full(s20_full);
+		}
+		redwood_camera_s20_set_rear(s20_rear_now);
+		say("camera: the S20's %s from the next session\n", s20_rear_now ? (redwood_camera_s20_rear_full() ? "rear main S5K2LD 4032x3024" : "rear main S5K2LD 2016x1512") :
+		    s20_full ? "front sensor, full 3648x2736" : "front sensor, binned 1824x1368");
+		mode_n = 0;
+	}
 	select_sensor(index);
 	if (!fake) {
 		find_pins();
 	}
 	if (!ctab_load()) {
-		return false;
+		if (!fake) {
+			return false;
+		}
+		ctab = &fake_head;
+		ctab_size = sizeof(fake_head) + sizeof(fake_modes) + sizeof(fake_blocks);
+		ctab_modes = s20_real ? s20_modes + (s20_gw2_now ? 5 : s20_ultra_now ? 4 : s20_rear_now ? (redwood_camera_s20_rear_full() ? 3 : 2) : s20_full ? 0 : 1) : fake_modes;
+		ctab_tables = (const uint8_t *)fake_blocks;
+		say("camera: cam_fake=1: using the built-in %ux%u RAW10 mode; no sensor firmware table is needed\n",
+		    fake_modes[0].width, fake_modes[0].height);
 	}
 	if (mode_n >= ctab->modes) {
 		uint64_t best = 0;
@@ -4038,6 +4296,9 @@ ios_select(unsigned index, uint32_t mode_n)
 		return false;
 	}
 	ios_line_ns = (uint32_t)(1000000000000ull / ((uint64_t)ios_mode->fps_milli * ios_mode->frame_length));
+	if(s20_real&&s20_ultra_now)ios_line_ns=(uint32_t)(11200ULL*1000000000ULL/2236000000ULL);
+	if(s20_real&&s20_gw2_now)ios_line_ns=(uint32_t)(12304ULL*1000000000ULL/1918000000ULL);
+	if (s20_real && s20_rear_now && !s20_ultra_now && !s20_gw2_now) ios_line_ns = redwood_2ld_line_ns(ios_mode->line_length);
 	uint32_t pattern = 0, count = 0;
 	const struct ctab_entry *tpgon;
 
@@ -4076,7 +4337,22 @@ serve_ios(void)
 	}
 	while (!broken) {
 		lck_mtx_lock(&ios_lock);
-		while (!broken && !(ios_open && ios_wanted) && ios_switch_to == 0) {
+        if(ios_aux_failed){lck_mtx_unlock(&ios_lock);give_up("auxiliary camera cleanup failed");break;}
+		while (!broken && (ios_aux_busy || (!(ios_open && ios_wanted) && ios_switch_to == 0))) {
+            if(ios_aux_busy){(void)msleep(&ios_open,&ios_lock,PZERO,"redwood-camera-aux",NULL);continue;}
+			if (s20_real && redwood_camera_s20_rear_is_warm()) {
+				/* the rear main waits warm for 20 s (a fast start), then goes all the way down */
+				struct timespec ts = { 20, 0 };
+
+				if (msleep(&ios_open, &ios_lock, PZERO, "redwood-camera-warm", &ts) == EWOULDBLOCK) {
+					ios_session_active=true;
+                    lck_mtx_unlock(&ios_lock);
+					redwood_camera_s20_rear_cool();
+					lck_mtx_lock(&ios_lock);
+                    ios_session_active=false;
+				}
+				continue;
+			}
 			(void)msleep(&ios_open, &ios_lock, PZERO, "redwood-camera-idle", NULL);
 		}
 		unsigned to = ios_switch_to;
@@ -4096,12 +4372,16 @@ serve_ios(void)
 		}
 		lck_mtx_lock(&ios_lock);
 		ios_wanted = false;
+        ios_session_active=true;
 		lck_mtx_unlock(&ios_lock);
-		if (fake) {
+		if (s20_real) {
+			s20_session();
+		} else if (fake) {
 			fake_session();
 		} else {
 			ios_session();
 		}
+        lck_mtx_lock(&ios_lock);ios_session_active=false;lck_mtx_unlock(&ios_lock);
 	}
 	say("camera: /dev/redwood-camera: no more frames in this run\n");
 }
@@ -4227,6 +4507,24 @@ redwood_camera_init(void)
 	uint32_t fake_n = 0;
 
 	fake = level == 5 && PE_parse_boot_argn("cam_fake", &fake_n, sizeof(fake_n)) && fake_n != 0;
+	/* cam_s20=1: the S20's real front camera through the same plumbing as cam_fake (nothing of the POCO is touched) */
+	fake_n = 0;
+	if (level == 5 && PE_parse_boot_argn("cam_s20", &fake_n, sizeof(fake_n)) && fake_n != 0) {
+		fake = true;
+		s20_real = true;
+		s20_rotate = false;
+		/* 6 = 4 (absolute, both cameras) | 2 (mirror: the line reversed). The raw frame (2026-11-12) has the scene's
+		 * top along the sensor's lines, so reversing each line fixes up and down; the half turn (5) also swapped
+		 * left and right (user: "sides inverted"). 5 since 2026-11-12, user-checked: the preview a mirror, and the
+		 * photographs and videos (which iOS turns for the front camera itself) as others see you. */
+		fake_n = 5;
+		(void)PE_parse_boot_argn("cam_turn", &fake_n, sizeof(fake_n));
+		redwood_camera_s20_turn = (int)fake_n;
+		fake_n = 1;
+		(void)PE_parse_boot_argn("cam_s20_full", &fake_n, sizeof(fake_n));
+		s20_full = fake_n != 0;
+		redwood_camera_s20_set_full(s20_full);
+	}
 	if (level >= 3) {
 		/*
 		 * Memory in one piece for the host (cam_keep_mb, default 24: a 12-megapixel NV12 picture of cam=5,

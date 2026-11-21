@@ -50,6 +50,15 @@ redwood_battery_temperature(void)
 	return battery_temperature_c;
 }
 
+/* x1slte: a charger or a computer on the cable (the Wi-Fi driver's power save follows it): 1, 0, or -1 not known */
+int redwood_battery_external(void);
+
+int
+redwood_battery_external(void)
+{
+	return battery_soc_percent < 0 ? -1 : battery_charger_present;
+}
+
 SYSCTL_NODE(_kern, OID_AUTO, redwood, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "redwood phone bits");
 SYSCTL_INT(_kern_redwood, OID_AUTO, battery_soc, CTLFLAG_RD | CTLFLAG_LOCKED,
     &battery_soc_percent, 0, "battery state of charge, 0..100 percent, or -1 if unknown");

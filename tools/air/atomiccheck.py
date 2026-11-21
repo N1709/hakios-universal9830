@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the atomics with a kernel written for the purpose.
 
-docs/air.md said what was missing and why none of Apple's kernels could supply
+docs/dev/air.md said what was missing and why none of Apple's kernels could supply
 it: "a sum written by threads that never raced looks exactly like a sum written
 by threads that did. Detecting a lost update needs the expected total to depend
 on every thread having contributed -- which needs a kernel whose arithmetic is

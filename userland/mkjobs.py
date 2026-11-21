@@ -126,7 +126,7 @@ import sys
 # absent, while launchd's "Last log repeated 2312 times" of failed lookups fills the window. So the
 # store's missing bag strings are not evidence that no bag was fetched; they are evidence of nothing.
 # What the console did carry, and what is therefore true, is the opposite of what was written here:
-# THE PHONE'S NETWORK WORKS. en0 is 192.168.9.243, mDNSResponder resolves over TCP to 192.168.9.1:53
+# THE PHONE'S NETWORK WORKS. en0 has an address, mDNSResponder resolves over TCP to the gateway
 # (four queries, answers of 159, 842, 200 and 107 bytes), and trustd, geod, maild, gamed, cloudd,
 # StocksWidget and nsurlsessiond all open TLS to Apple and Akamai (17.248.214.x, 17.253.39.x,
 # 2.16.56.93, 23.11.40.157, 95.100.176.233). "net_test: en0: flags 0x8802" was read 0.1 s into user
@@ -213,7 +213,10 @@ import sys
 # for ever, see «Sileo» in README.md.)
 # (mediaserverd is not among them, for all that there is neither sound nor a camera:
 # it is where VideoToolbox decodes for every other process, a HEIC picture included; see src/inject_media.c.)
-DENY = ('watchdog', 'CommCenter', 'wifi', 'WiFi', 'bluetooth', 'BTServer', 'locationd', 'softwareupdate',
+# BlueTool: Apple's own never runs -- it would load an iPhone's Bluetooth firmware into whatever chip is there; the
+# S20+'s kernel boots its chip and userland/com.apple.BlueTool.plist stands in (src/bluetool_stub.c)
+# locationd: out of DENY since the S20's sensor hub (shub=6): it is CoreMotion's server (compass, gyroscope's device motion)
+DENY = ('watchdog', 'CommCenter', 'wifi', 'WiFi', 'bluetooth', 'BTServer', 'BlueTool', 'softwareupdate',
         'datamigrator', 'backupd', 'thermalmonitord', 'keybagd', 'nfcd', 'biometrickitd', 'pearld',
         'obliterat', 'storage_mounter', 'com.apple.fud', 'sepd', 'seputil', 'camera', 'ReportCrash',
         'osanalytics', 'lockdown', 'audio', 'jetsamproperties',
@@ -222,7 +225,25 @@ DENY = ('watchdog', 'CommCenter', 'wifi', 'WiFi', 'bluetooth', 'BTServer', 'loca
         # these start, crash and are asked for again, over and over. (aggregated, which was among them, is where
         # iOS 16 keeps its power log -- com.apple.powerlog.plxpclogger.xpc and the rest -- that Settings > Battery
         # waits for; it now runs through a session.)
-        'homed', 'routined', 'duetexpertd', 'com.apple.dmd', 'syncdefaultsd', 'photoanalysisd', 'avconferenced')
+        'homed', 'routined', 'com.apple.dmd', 'syncdefaultsd', 'photoanalysisd',
+        # (avconferenced is let through again, B 2026-11-15: it crash-looped when the port had no camera and no audio;
+        #  both work now, and without it callservicesd and InCallService asked for it every 2 s during calls, "Server
+        #  died. Attempt reconnect", for the whole call. On demand only: KeepAlive false, no RunAtLoad.)
+        # x1slte (2026-11-06): Visual Voicemail spins without a baseband (85 % of a core, the SoC at 92-94 C)
+        'voicemail.vmd',
+        # x1slte (2026-11-06): coreduetd (66 %) asks for duetexpertd's services (denied above) without end, and biomed
+        # (32 %) streams for it: two cores' worth of heat for app predictions this port does not use
+        'coreduetd', 'biomed',
+        # x1slte (A, 2026-11-14): ClassKit's progressd (Schoolwork progress) dies of a null pointer 10 s after every
+        # start (pc 0x1cd79aa4c) and is started again: 35 runs and ~100 log lines a minute from launchd for nothing
+        'progressd')
+# livefileproviderd: allowed again (A, 2026-11-21): our kernel loads Apple's lifs.kext (bsd/dev/redwood_kextload.c,
+# boot-arg lifs=); with lifs it starts, mounts LiveFiles over LIFSv2 and userfsd comes up (docs/devices/x1slte/lifs-loader.md)
+# duetexpertd is let through again (B, 2026-11-14): it fills the wallpaper gallery ("Add New Wallpaper",
+# com.apple.proactive.FaceSuggestions.xpc; without it PosterBoard aborts on a nil gallery). It starts on demand
+# and sits idle; coreduetd, which asked for it without end, stays denied. It traps in
+# ATXEnableMobileAssetDataVault (a data vault this kernel cannot make): /var/jb/usr/lib/libredwood-duet.dylib
+# (inject list, build.sh) skips that call.
 
 # ALLOW="word ..." in the environment lets jobs through that DENY would stop: for trying one out
 DENY = tuple(word for word in DENY if word not in os.environ.get('ALLOW', '').split())
@@ -237,6 +258,34 @@ if '--root-volume' in args:
 args = [a for a in args if a != '--rest']
 src_root, dest, labels = args[0], args[1], args[2:]
 oslog = os.environ.get('OSLOG', '').split()
+# JOB_ENV="label:NAME=VALUE,NAME=VALUE;label2:...": variables for single jobs, which also get their
+# output on the console whatever QUIET says (one process watched closely, e.g. Panfrost's fault decoder
+# in chronod: tools/mesa/panfrost-faultdump.patch)
+job_env = {}
+for entry in filter(None, os.environ.get('JOB_ENV', '').split(';')):
+    who, _, pairs = entry.partition(':')
+    job_env[who.strip()] = dict(p.split('=', 1) for p in pairs.split(',') if '=' in p)
+
+
+# Variables a job always gets.
+# CA_FORCE_TIMER=1 for the window server: CoreAnimation (iOS 16.5 QuartzCore 0x188364614) follows the
+# display's refresh notifications (IOMobileFramebufferEnableVSyncNotifications, selector 72 here, the
+# kernel's vsync just after each frame is latched) only on the chips 0x7000-0x8004 or with this variable
+# set; on the iPhone X's 0x8015 it ran its own timer, out of phase with the panel (27 October: 0 vsync
+# requests, 30 % of animation frames 25 ms apart). Despite its name the variable selects the notifications
+# (0x188373218: bit 1 of the display's flags -> EnableVSyncNotifications).
+JOB_FIXED_ENV = {
+    'com.apple.backboardd': {'CA_FORCE_TIMER': '1'},
+}
+
+
+def apply_job_env(label, job):
+    if label in JOB_FIXED_ENV and os.environ.get('CA_VSYNC', '1') != '0':
+        job.setdefault('EnvironmentVariables', {}).update(JOB_FIXED_ENV[label])
+    if label in job_env:
+        job.setdefault('EnvironmentVariables', {}).update(job_env[label])
+        job['StandardErrorPath'] = '/dev/console'
+        job['StandardOutPath'] = '/dev/console'
 src = f'{src_root}/System/Library/LaunchDaemons'
 # A program in a cryptex -- on a device a volume of its own, grafted at /System/Cryptexes/NAME (eight of
 # Safari's daemons are in the App cryptex) -- is looked for where fetch.sh unpacked that cryptex, beside
@@ -281,14 +330,17 @@ for label in labels:
     # it. The boot of 22 October showed what declining costs: SpringBoard's icons stopped being
     # drawn, because its layers ask for one of those formats and a refused texture is a layer
     # that never appears.
-    for variable in ('RWA_PACKED16',):
-        if os.environ.get(variable):
-            job.setdefault('EnvironmentVariables', {})[variable] = os.environ[variable]
+    # PAN_MESA_DEBUG / PAN_REDWOOD_FAULTS: Panfrost's own switches, for a boot that decodes the
+    # GPU jobs that fault (tools/mesa/panfrost-faultdump.patch)
+    for name in ('RWA_PACKED16', 'PAN_MESA_DEBUG', 'PAN_REDWOOD_FAULTS'):
+        if os.environ.get(name):
+            job.setdefault('EnvironmentVariables', {})[name] = os.environ[name]
     # a job that is named is wanted, whatever hardware it says it is for: wifid's asks for a node "wlan" in the
     # device tree, which the loader's tree does not have yet
     job.pop('_LimitLoadToDeviceTree', None)
     if 'all' in oslog or label in oslog:
         job.setdefault('EnvironmentVariables', {})['OS_ACTIVITY_DT_MODE'] = 'YES'
+    apply_job_env(label, job)
     with open(f'{dest}/{label}.plist', 'wb') as f:
         plistlib.dump(job, f, fmt=plistlib.FMT_BINARY)
     program = job.get('Program') or job['ProgramArguments'][0]
@@ -310,11 +362,21 @@ if rest:
         program = job.get('Program') or (job.get('ProgramArguments') or [''])[0]
         if not job.get('MachServices') or not present(program):
             continue
+        sd_userfs = label == 'com.apple.filesystems.userfsd' and os.environ.get('SD_USERFS') == 'x1slte'
         for key in ('RunAtLoad', 'KeepAlive', 'StartInterval', 'StartCalendarInterval', 'WatchPaths',
                     'QueueDirectories', 'StartOnMount', 'LaunchEvents'):
-            job.pop(key, None)
-        job['StandardErrorPath'] = '/dev/console'
-        job['StandardOutPath'] = '/dev/console'
+            if key != 'LaunchEvents' or not sd_userfs:
+                job.pop(key, None)
+        if sd_userfs:
+            if not os.access(os.path.join(dest, '../bin/sd-userfs-start'), os.X_OK):
+                raise SystemExit('missing SD Files startup program in root image')
+            job['Program'] = '/redwood/bin/sd-userfs-start'
+            job['RunAtLoad'] = True
+        # QUIET=1 (build.sh): the on-demand jobs' chatter (CoreData alone is thousands of lines) goes
+        # nowhere, so that a whole boot's kernel log and the test list's output fit in what is kept
+        quiet = os.environ.get('QUIET') and not os.environ.get('REST_LOUD')
+        job['StandardErrorPath'] = '/dev/null' if quiet else '/dev/console'
+        job['StandardOutPath'] = '/dev/null' if quiet else '/dev/console'
         # One experiment at a time, carried to every job because the thing being measured is what
         # Apple's own compositor draws. RWA_PACKED16=1 makes the compiler library serve Metal's four
         # 16-bit packed colour formats on a channel order that was READ off the format names and
@@ -322,11 +384,22 @@ if rest:
         # it. The boot of 22 October showed what declining costs: SpringBoard's icons stopped being
         # drawn, because its layers ask for one of those formats and a refused texture is a layer
         # that never appears.
+        # (not `name`: that is this loop's file name, and reusing it wrote all of these jobs over one
+        # file called RWA_PACKED16 -- PosterBoard, the widgets' renderers and 400 others never existed)
         for variable in ('RWA_PACKED16',):
             if os.environ.get(variable):
                 job.setdefault('EnvironmentVariables', {})[variable] = os.environ[variable]
         if label in oslog:
             job.setdefault('EnvironmentVariables', {})['OS_ACTIVITY_DT_MODE'] = 'YES'
+        apply_job_env(label, job)
+        # Mach services offered only behind a feature flag ({"#IfFeatureFlagEnabled": ..., "#Then": true}, e.g.
+        # avconferenced's): resolved here to the "#Then" value, as iOS 16.5 ships those flags on -- so the job does
+        # not depend on this port's launchd evaluating FeatureFlags (B, 2026-11-15)
+        ms = job.get('MachServices')
+        if isinstance(ms, dict):
+            for k, v in list(ms.items()):
+                if isinstance(v, dict) and '#IfFeatureFlagEnabled' in v:
+                    ms[k] = v.get('#Then', True)
         with open(f'{dest}/{name}', 'wb') as f:
             plistlib.dump(job, f, fmt=plistlib.FMT_BINARY)
         count += 1

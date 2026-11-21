@@ -34,6 +34,7 @@
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <notify.h>
+#include "../../tools/aod/state.h"
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <pthread.h>
@@ -45,10 +46,20 @@
 #include <sys/sysctl.h>
 #include <signal.h>
 #include <sys/ucontext.h>
+#include "m2m.h"
 #include <unistd.h>
 
 #include "redwood_gl.h"
 #include "redwood_input.h"
+
+/* the S20's sensors (src/inject_sensors.c): /dev/redwood-sensors into HID services */
+void redwood_sensors_early(void);
+void redwood_sensors_client(void *client);
+
+/* locationd: the software compass instead of the motion coprocessor's (src/inject_location.c) */
+void redwood_location_fixes(void);
+/* apps: CoreMotion asks locationd for device motion instead of the SPU (src/inject_location.c) */
+void redwood_coremotion_fixes(void);
 
 extern const void *_dyld_get_shared_cache_range(size_t *length);
 
@@ -96,6 +107,37 @@ replace_virtual(const char *what, uintptr_t slot, uintptr_t expected, void *repl
 	*entry = (uintptr_t)replacement;
 	vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ);
 	return original;
+}
+
+/*
+ * 120 Hz in apps (A, 2026-11-14; boot-arg app_fps=0 leaves Apple's). QuartzCore holds an app on a phone to 60 frames a
+ * second unless its Info.plist has CADisableMinimumFrameDurationOnPhone (the ProMotion opt-in) -- so Settings' scrolling
+ * ran at 60 on the 120 Hz panel while SpringBoard ran at 120. The main bundle's info dictionary is a mutable one here
+ * (__NSDictionaryM, checked on the phone for Preferences and MobileSafari): the key is set in it before QuartzCore asks.
+ */
+static void
+app_fps_unlock(void)
+{
+	char arguments[1024] = "";
+	size_t size = sizeof(arguments) - 1;
+	const char *at;
+	CFBundleRef bundle;
+	CFDictionaryRef info;
+	CFStringRef key = CFSTR("CADisableMinimumFrameDurationOnPhone");
+
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0 && (at = strstr(arguments, "app_fps=0")) != NULL &&
+	    (at == arguments || at[-1] == ' ')) {
+		return;
+	}
+	if ((bundle = CFBundleGetMainBundle()) == NULL || (info = CFBundleGetInfoDictionary(bundle)) == NULL ||
+	    CFDictionaryGetValue(info, key) != NULL) {
+		return;
+	}
+	if (strcmp(object_getClassName((id)info), "__NSDictionaryM") != 0) {
+		say("redwood: %s: info dictionary is a %s: frame rate left at 60\n", getprogname(), object_getClassName((id)info));
+		return;
+	}
+	CFDictionarySetValue((CFMutableDictionaryRef)info, key, kCFBooleanTrue);
 }
 
 /* ---- backboardd: CA::WindowServer ------------------------------------------------------------ */
@@ -277,6 +319,24 @@ say_the_fault(int signal_number, siginfo_t *info, void *context_in)
 	}
 	say("redwood: signal %d at %p, pc %#lx, lr %#lx, called from%s (unslid)\n", signal_number,
 	    info != NULL ? info->si_addr : NULL, pc - slide, lr - slide, frames);
+	/* ... and for code outside the shared cache (Mesa, our own libraries), the image and the offset in it */
+	{
+		uintptr_t where[2] = { pc, lr };
+
+		for (unsigned i = 0; i < 2; i++) {
+			Dl_info d;
+
+			if (dladdr((const void *)where[i], &d) != 0 && d.dli_fname != NULL) {
+				say("redwood:   %s = %s+%#lx (%s)\n", i == 0 ? "pc" : "lr", d.dli_fname,
+				    where[i] - (uintptr_t)d.dli_fbase, d.dli_sname != NULL ? d.dli_sname : "?");
+			}
+		}
+	}
+	/* a Metal client's crash is mali2metal's evidence too (m2m.h): where it was, in the channel; the
+	 * kernel's own record ("F CRASH ... ended by signal") follows when the process is gone */
+	if (dlopen("/redwood/lib/RedwoodMetal.bundle/RedwoodMetal", RTLD_LAZY | RTLD_NOLOAD) != NULL) {
+		m2m_crash_record(signal_number, info, context_in);
+	}
 	signal(signal_number, SIG_DFL);
 	raise(signal_number);
 }
@@ -626,6 +686,188 @@ window_server_keeps_opengl_es(void)
 	method_setImplementation(method, (IMP)my_detect_displays);
 }
 
+/*
+ * The lock screen and Auto-Lock never timed out (B, 2026-11-07). SpringBoard's idle timer is an AttentionAwareness
+ * client; its server runs here in backboardd and lets a connection in only if -[NSXPCConnection
+ * valueForEntitlement:@"com.apple.private.attentionawareness"] answers. Here that lookup failed ("Error getting
+ * value for entitlement ... Code=3 No such process": the audit token it holds no longer matches), the client was
+ * refused, SpringBoard got a lost-attention event with no tag ("attention client lost event tag is not a number")
+ * and never dimmed. When that one lookup comes back empty, the answer is yes (SpringBoard has the entitlement).
+ * Boot-arg aw_ent=0 leaves the lookup alone.
+ */
+static id (*orig_value_for_entitlement)(id connection, SEL selector, CFStringRef entitlement);
+
+static id
+my_value_for_entitlement(id connection, SEL selector, CFStringRef entitlement)
+{
+	id answer = orig_value_for_entitlement(connection, selector, entitlement);
+
+	if (answer == NULL && entitlement != NULL &&
+	    CFEqual(entitlement, CFSTR("com.apple.private.attentionawareness"))) {
+		static int told;
+		int pid = ((int (*)(id, SEL))objc_msgSend)(connection, sel_registerName("processIdentifier"));
+
+		if (told++ < 5) {
+			say("redwood: attention: entitlement lookup for pid %d came back empty: allowed (the idle timer)\n", pid);
+		}
+		return (id)kCFBooleanTrue;
+	}
+	return answer;
+}
+
+/* CBABModuleiOS calls shouldMitigateHarmony: even when its auto-brightness
+ * controller (_AABC) could not be constructed. Guard that null controller;
+ * this is not a True Tone implementation or a missing colour-sensor object. */
+#define CB_MITIGATE_HARMONY     0x1af03a028UL
+#define CB_AABC_IVAR_OFFSET  0x1ddda5140UL
+static BOOL (*orig_mitigate_harmony)(id self, SEL selector, id arg);
+
+static BOOL
+my_mitigate_harmony(id self, SEL selector, id arg)
+{
+	int32_t offset = *(const int32_t *)(CB_AABC_IVAR_OFFSET + slide);
+
+	if (self == NULL || *(void * const *)((const char *)self + offset) == NULL) {
+		static int told;
+
+		if (told++ < 3) {
+			say("redwood: brightness: -shouldMitigateHarmony: with no auto-brightness controller: NO\n");
+		}
+		return NO;
+	}
+	return orig_mitigate_harmony(self, selector, arg);
+}
+
+/* Installed from the sensors thread right before the light service is made (not at start-up: walking every class
+ * there hung backboardd); only CoreBrightness's own classes are looked at (objc_copyClassNamesForImage). */
+/* Optional software-only True Tone approximation. The native toggle controls a
+ * mild fixed warmth, not a claimed color-sensor measurement. DQE applies the
+ * channel gains once; no per-frame rendering or polling of the GPU is needed. */
+static CFTypeRef (*tone_original_copy)(id, SEL, CFStringRef);
+static BOOL (*tone_original_set)(id, SEL, CFTypeRef, CFStringRef);
+static bool tone_enabled;
+
+static CFTypeRef
+tone_copy(id self, SEL selector, CFStringRef key)
+{
+	if (key && (CFEqual(key, CFSTR("ColorAdaptationAvailable")) ||
+	    CFEqual(key, CFSTR("SupportsAmbientColorAdaptation")))) return CFRetain(kCFBooleanTrue);
+	if (key && CFEqual(key, CFSTR("ColorAdaptationEnabled")))
+		return CFRetain(__atomic_load_n(&tone_enabled, __ATOMIC_RELAXED) ? kCFBooleanTrue : kCFBooleanFalse);
+	CFTypeRef original = tone_original_copy(self, selector, key);
+	if (key && CFEqual(key, CFSTR("SupportedColorFX"))) {
+		CFMutableDictionaryRef result = original && CFGetTypeID(original) == CFDictionaryGetTypeID() ?
+		    CFDictionaryCreateMutableCopy(NULL, 0, original) : CFDictionaryCreateMutable(NULL, 0,
+		    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+		if (result) CFDictionarySetValue(result, CFSTR("SupportsAmbientColorAdaptation"), kCFBooleanTrue);
+		if (original) CFRelease(original);
+		return result;
+	}
+	return original;
+}
+
+static BOOL
+tone_set(id self, SEL selector, CFTypeRef value, CFStringRef key)
+{
+	if (key && CFEqual(key, CFSTR("ColorAdaptationEnabled")) && value) {
+		bool enabled;
+		if (CFGetTypeID(value) == CFBooleanGetTypeID()) enabled = CFBooleanGetValue(value);
+		else if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+			int n = 0; if (!CFNumberGetValue(value, kCFNumberIntType, &n)) return NO; enabled = n != 0;
+		} else return NO;
+		__atomic_store_n(&tone_enabled, enabled, __ATOMIC_RELAXED);
+		CFPreferencesSetAppValue(CFSTR("SoftwareTrueToneEnabled"), enabled ? kCFBooleanTrue : kCFBooleanFalse,
+		    CFSTR("com.redwood.display"));
+		CFPreferencesAppSynchronize(CFSTR("com.redwood.display"));
+		/* This module has no sendNotificationForKey:withValue: method.
+		 * The setter's reply and copyPropertyForKey: report our state. */
+		say("redwood: software True Tone approximation %s\n", enabled ? "on" : "off");
+		return YES;
+	}
+	return tone_original_set(self, selector, value, key);
+}
+
+static void
+software_tone_fix(void)
+{
+	if (tone_original_copy) return;
+	Class cls = objc_getClass("CBColorModuleiOS");
+	Method copy = cls ? class_getInstanceMethod(cls, sel_registerName("copyPropertyForKey:")) : NULL;
+	Method set = cls ? class_getInstanceMethod(cls, sel_registerName("setProperty:forKey:")) : NULL;
+	if (!copy || !set || (uintptr_t)method_getImplementation(copy) != 0x1aefc12c8UL + slide ||
+	    (uintptr_t)method_getImplementation(set) != 0x1aefa9a34UL + slide) {
+		say("redwood: software True Tone: unexpected CoreBrightness methods; left alone\n"); return;
+	}
+	CFPropertyListRef pref = CFPreferencesCopyAppValue(CFSTR("SoftwareTrueToneEnabled"), CFSTR("com.redwood.display"));
+	tone_enabled = pref && CFGetTypeID(pref) == CFBooleanGetTypeID() && CFBooleanGetValue(pref);
+	if (pref) CFRelease(pref);
+	tone_original_copy = (void *)method_getImplementation(copy);
+	tone_original_set = (void *)method_getImplementation(set);
+	method_setImplementation(copy, (IMP)tone_copy);
+	method_setImplementation(set, (IMP)tone_set);
+	say("redwood: software True Tone: native toggle bridged to optional DQE warmth\n");
+}
+
+void redwood_software_tone_update(bool display_on);
+void
+redwood_software_tone_update(bool display_on)
+{
+	static int applied = -1;
+	int wanted = __atomic_load_n(&tone_enabled, __ATOMIC_RELAXED) ? 1 : 0;
+	if (!tone_original_copy || !display_on || applied == wanted) return;
+	if (sysctlbyname("kern.redwood.display_warmth", NULL, NULL, &wanted, sizeof(wanted)) == 0)
+		applied = wanted;
+}
+
+static void brightness_registry_fix(void);
+void redwood_brightness_guard(void);
+void
+redwood_brightness_guard(void)
+{
+	static const char *image = "/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness";
+	SEL sel = sel_registerName("shouldMitigateHarmony:");
+	unsigned count = 0;
+	const char **names;
+
+	if (orig_mitigate_harmony != NULL) {
+		return;
+	}
+	brightness_registry_fix();
+	software_tone_fix();
+	names = objc_copyClassNamesForImage(image, &count);
+	for (unsigned i = 0; names != NULL && i < count; i++) {
+		Class cls = objc_getClass(names[i]);
+		Method method = cls ? class_getInstanceMethod(cls, sel) : NULL;
+
+		if (method != NULL && (uintptr_t)method_getImplementation(method) == CB_MITIGATE_HARMONY + slide) {
+			orig_mitigate_harmony = (BOOL (*)(id, SEL, id))method_getImplementation(method);
+			method_setImplementation(method, (IMP)my_mitigate_harmony);
+			say("redwood: brightness: -[%s shouldMitigateHarmony:] guarded\n", names[i]);
+			break;
+		}
+	}
+	say("redwood: brightness: controller null guard %s (%u CoreBrightness classes)\n",
+	    orig_mitigate_harmony ? "on" : "NOT FOUND", count);
+	free(names);
+}
+
+static void
+attention_fixes(const char *arguments)
+{
+	Class cls = objc_getClass("NSXPCConnection");
+	Method method = cls ? class_getInstanceMethod(cls, sel_registerName("valueForEntitlement:")) : NULL;
+
+	if (arguments != NULL && strstr(arguments, "aw_ent=0") != NULL) {
+		return;
+	}
+	if (method == NULL) {
+		say("redwood: attention: -[NSXPCConnection valueForEntitlement:] not found; idle timer left as it is\n");
+		return;
+	}
+	orig_value_for_entitlement = (id (*)(id, SEL, CFStringRef))method_getImplementation(method);
+	method_setImplementation(method, (IMP)my_value_for_entitlement);
+}
+
 static void
 window_server_fixes(void)
 {
@@ -705,6 +947,62 @@ brightness_fixes(void)
 	method_setImplementation(method, (IMP)wait_for_als_arrival);
 }
 
+/* Brightness telemetry on 20F66 assumes DisplayBrightness is a dictionary.
+ * Our incomplete brightness pipeline can return NSNumber instead (observed at
+ * slider zero). Skip that optional record rather than crash backboardd. This
+ * does not change requested brightness or fabricate physical nits/calibration.
+ */
+struct brightness_tracked_state { bool dark, landscape, automatic, eco; };
+static void (*original_brightness_commit)(id, SEL, int64_t, float, float, struct brightness_tracked_state);
+static Ivar brightness_display_container, brightness_logging_queue;
+static unsigned brightness_telemetry_skipped;
+
+static void
+brightness_commit_checked(id self, SEL selector, int64_t timestamp, float slider_value, float apce,
+    struct brightness_tracked_state state)
+{
+    dispatch_queue_t queue = (dispatch_queue_t)object_getIvar(self, brightness_logging_queue);
+    ((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("retain"));
+    dispatch_async(queue, ^{
+        id container = object_getIvar(self, brightness_display_container);
+        CFTypeRef info = (CFTypeRef)((id (*)(id, SEL, id))objc_msgSend)(container,
+            sel_registerName("copyPropertyForKey:"), (id)CFSTR("DisplayBrightness"));
+        bool valid = info == NULL || CFGetTypeID(info) == CFDictionaryGetTypeID();
+
+        if (info != NULL) CFRelease(info);
+        if (valid) {
+            original_brightness_commit(self, selector, timestamp, slider_value, apce, state);
+        } else if (++brightness_telemetry_skipped <= 8) {
+            say("redwood: brightness: skipped commit telemetry with non-dictionary DisplayBrightness (slider %.3f)\n", slider_value);
+        }
+        ((void (*)(id, SEL))objc_msgSend)(self, sel_registerName("release"));
+    });
+}
+
+static void
+brightness_telemetry_fixes(void)
+{
+    Class cls = objc_getClass("CBSliderCommitTelemetry");
+    SEL selector = sel_registerName("logAfterUserBrightnessCommitWithTimestamp:slider:apce:andTrackedState:");
+    Method method = cls ? class_getInstanceMethod(cls, selector) : NULL;
+    IMP original = method ? method_getImplementation(method) : NULL;
+    Ivar container = cls ? class_getInstanceVariable(cls, "_displayContainer") : NULL;
+    Ivar queue = cls ? class_getInstanceVariable(cls, "_loggingQueue") : NULL;
+    const char *encoding = method ? method_getTypeEncoding(method) : NULL;
+
+    if ((uintptr_t)original != 0x1af037b64UL + slide || container == NULL ||
+        ivar_getOffset(container) != 32 || queue == NULL || ivar_getOffset(queue) != 48 || encoding == NULL ||
+        strcmp(encoding, "v36@0:8q16f24f28{TrackedState=BBBB}32") != 0) {
+        say("redwood: brightness telemetry: unexpected implementation or ABI; left alone\n");
+        return;
+    }
+    brightness_display_container = container;
+    brightness_logging_queue = queue;
+    original_brightness_commit = (void *)original;
+    method_setImplementation(method, (IMP)brightness_commit_checked);
+    say("redwood: brightness telemetry: checking metadata type before commit record\n");
+}
+
 /* ---- backboardd: the touch screen and the buttons ---------------------------------------------- */
 
 /* IOKit's HID event system, the part that has no public header on iOS (prototypes checked against 20F66) */
@@ -774,10 +1072,7 @@ extern void IOHIDEventSetIntegerValue(IOHIDEventRef event, uint32_t field, CFInd
 static struct {
 	bool touching, edge;
 	double x, y;
-	uint32_t identity;      /* this touch's own, new at every landing, as Apple's touch controller numbers them */
 } fingers[MAX_FINGERS];
-static uint32_t next_identity = 2;
-
 
 static CFNumberRef
 number(int value)
@@ -821,6 +1116,8 @@ service_copy_property(__unused void *target, void *refcon, __unused IOHIDService
 #define TOUCH_MODE_WAKE         0xfe
 #define TOUCH_MODE_OFF          0xff
 static volatile int touch_mode;
+static volatile uint64_t last_input_at;  /* mach time of the last touch or button sample (the idle timer) */
+static IOHIDServiceClientRef volatile idle_buttons;   /* the buttons' service, for the idle timer's lock press */
 
 /* What the event server tells a service of ours: said once per name, to learn what there is. */
 static Boolean
@@ -883,6 +1180,96 @@ static const struct virtual_service_callbacks service_callbacks = {
  * how fast the machine is and on how many processors it has, so no fixed delay avoids it:
  * the service is made again until the server has opened it.
  */
+/* CoreBrightness resolves an ALS HID registry ID to a real IOKit entry before
+ * constructing _AABC. Virtual HID IDs have no such entry. This adapter changes
+ * only CoreBrightness's verified import stub; HID property/event routing keeps
+ * its original virtual ID. The framebuffer is a temporary metadata backing.
+ */
+extern CFNumberRef IOHIDServiceClientGetRegistryID(IOHIDServiceClientRef);
+extern CFTypeRef IOHIDServiceClientCopyProperty(IOHIDServiceClientRef, CFStringRef);
+static CFNumberRef als_backing_registry_id;
+static CFNumberRef
+brightness_als_registry_id(IOHIDServiceClientRef service)
+{
+    CFTypeRef product = IOHIDServiceClientCopyProperty(service, CFSTR("Product"));
+    bool ours = product && CFGetTypeID(product) == CFStringGetTypeID() &&
+        CFEqual(product, CFSTR("Redwood ambient light sensor"));
+    if (product) CFRelease(product);
+    if (ours && als_backing_registry_id) return als_backing_registry_id;
+    return IOHIDServiceClientGetRegistryID(service);
+}
+
+static void
+brightness_registry_fix(void)
+{
+    const uint32_t expected[] = { 0xb0ef5070, 0x912c5210, 0xd61f0200 };
+    uint32_t *stub = (uint32_t *)(0x1afb35b38UL + slide);
+    if (als_backing_registry_id) return;
+    if (memcmp(stub, expected, sizeof(expected))) {
+        say("redwood: ALS registry bridge: unexpected stub %08x %08x %08x\n", stub[0], stub[1], stub[2]); return;
+    }
+    io_service_t backing = IOServiceGetMatchingService(0, IOServiceNameMatching("RedwoodAmbientLightSensor"));
+    /* Compatibility with older kernels while updating the bridge independently. */
+    if (!backing) backing = IOServiceGetMatchingService(0, IOServiceMatching("IOMobileFramebuffer"));
+    uint64_t id = 0;
+    if (!backing || IORegistryEntryGetRegistryEntryID(backing, &id) != KERN_SUCCESS) {
+        if (backing) IOObjectRelease(backing);
+        say("redwood: ALS registry bridge: no backing service\n");
+        return;
+    }
+    IOObjectRelease(backing);
+    uintptr_t target = (uintptr_t)brightness_als_registry_id;
+    int64_t pages = ((int64_t)(target & ~(uintptr_t)4095) -
+        (int64_t)((uintptr_t)stub & ~(uintptr_t)4095)) / 4096;
+    vm_address_t island = 0;
+    if (pages < -1048576 || pages >= 1048576) {
+        vm_address_t hint = 0x170000000UL; /* below the reserved shared-cache range */
+        for (unsigned i = 0; i < 64; i++) {
+            island = hint - (vm_address_t)i * 0x1000000;
+            if (vm_allocate(mach_task_self(), &island, vm_page_size, 0 /* fixed, no overwrite */) == KERN_SUCCESS) break;
+            island = 0;
+        }
+        if (!island) { say("redwood: ALS registry bridge: no nearby code island\n"); return; }
+        uint32_t *code = (uint32_t *)island;
+        code[0] = 0x58000050; /* ldr x16, literal at +8 */
+        code[1] = 0xd61f0200;
+        memcpy(code + 2, &target, sizeof(target));
+        if (vm_protect(mach_task_self(), island, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE) != KERN_SUCCESS) {
+            vm_deallocate(mach_task_self(), island, vm_page_size); return;
+        }
+        target = island;
+        pages = ((int64_t)(target & ~(uintptr_t)4095) - (int64_t)((uintptr_t)stub & ~(uintptr_t)4095)) / 4096;
+        if (pages < -1048576 || pages >= 1048576) { vm_deallocate(mach_task_self(), island, vm_page_size); return; }
+    }
+    void (*invalidate)(void *, size_t) = dlsym(RTLD_DEFAULT, "sys_icache_invalidate");
+    if (!invalidate) {
+        if (island) vm_deallocate(mach_task_self(), island, vm_page_size);
+        say("redwood: ALS registry bridge: cache invalidation unavailable\n"); return;
+    }
+    if (island) invalidate((void *)island, 16);
+    vm_address_t page = (vm_address_t)stub & ~(vm_address_t)(vm_page_size - 1);
+    if (vm_protect(mach_task_self(), page, vm_page_size, FALSE,
+        VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE | VM_PROT_COPY) != KERN_SUCCESS) {
+        if (island) vm_deallocate(mach_task_self(), island, vm_page_size);
+        say("redwood: ALS registry bridge: code page could not be copied\n");
+        return;
+    }
+    als_backing_registry_id = CFNumberCreate(NULL, kCFNumberSInt64Type, &id);
+    if (!als_backing_registry_id) {
+        vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+        if (island) vm_deallocate(mach_task_self(), island, vm_page_size);
+        return;
+    }
+    uint32_t immediate = (uint32_t)pages & 0x1fffff;
+    uint32_t branch[2] = { 0x90000010 | ((immediate & 3) << 29) | ((immediate >> 2) << 5),
+        0x91000210 | ((uint32_t)(target & 4095) << 10) };
+    uint64_t pair; memcpy(&pair, branch, sizeof(pair));
+    __atomic_store_n((uint64_t *)stub, pair, __ATOMIC_SEQ_CST);
+    invalidate(stub, 12);
+    vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+    say("redwood: ALS registry bridge: virtual light maps to IOKit ID %llu\n", id);
+}
+
 static IOHIDServiceClientRef
 make_service(IOHIDEventSystemClientRef client, const char *product, int page, int usage, bool display)
 {
@@ -912,15 +1299,6 @@ make_service(IOHIDEventSystemClientRef client, const char *product, int page, in
 	CFDictionarySetValue(properties, CFSTR("ProductID"), zero);
 	if (display) {
 		CFDictionarySetValue(properties, CFSTR("DisplayIntegrated"), kCFBooleanTrue);
-		/*
-		 * Asked for at the first touch: the iPhone X's user space scales a finger's pressure by
-		 * it into the touch's force. Our pressure is always 0, so any maximum makes that force 0.
-		 */
-		CFNumberRef most = number(1000);
-
-		CFDictionarySetValue(properties, CFSTR("AccurateMaxDigitizerPressureValue"), most);
-		CFDictionarySetValue(properties, CFSTR("MaxDigitizerPressureValue"), most);
-		CFRelease(most);
 	}
 	/* the dictionary stays: it is what service_copy_property() answers from */
 	made->properties = properties;
@@ -960,10 +1338,6 @@ send_touch(IOHIDServiceClientRef screen, const struct redwood_touch *t)
 	fingers[f].x = t->x / 65535.0;
 	fingers[f].y = t->y / 65535.0;
 	if (t->type == REDWOOD_TOUCH_DOWN) {
-		fingers[f].identity = next_identity++;
-		if (next_identity > 0xfff0) {
-			next_identity = 2;
-		}
 		fingers[f].edge = fingers[f].x < EDGE_SIDE || fingers[f].x > 1 - EDGE_SIDE || fingers[f].y < EDGE_TOP ||
 		    fingers[f].y > 1 - EDGE_BOTTOM;
 	}
@@ -979,15 +1353,9 @@ send_touch(IOHIDServiceClientRef screen, const struct redwood_touch *t)
 		if (!fingers[i].touching && i != f) {
 			continue;
 		}
-		/*
-		 * No pressure: the iPhone X whose user space this is has 3D Touch, and a finger that lands
-		 * at full pressure is a hard press there -- an icon's quick actions for every quick tap
-		 * (seen on the Galaxy S20+ with the whole iOS volume as the root). A touch screen without
-		 * force sensing says nothing about pressure.
-		 */
-		finger = IOHIDEventCreateDigitizerFingerEvent(NULL, t->time, i + 1, fingers[i].identity,
+		finger = IOHIDEventCreateDigitizerFingerEvent(NULL, t->time, i + 1, i + 2,
 		    (i == f ? change : 0) | (fingers[i].edge ? DIGITIZER_FROM_EDGE_TIP : 0), fingers[i].x, fingers[i].y, 0,
-		    0.0, 0, fingers[i].touching, fingers[i].touching, 0);
+		    fingers[i].touching ? 1.0 : 0.0, 0, fingers[i].touching, fingers[i].touching, 0);
 		IOHIDEventSetIntegerValue(finger, FIELD_DIGITIZER_DISPLAY_INTEGRATED, 1);
 		IOHIDEventAppendEvent(hand, finger, 0);
 		CFRelease(finger);
@@ -1088,15 +1456,38 @@ input_thread(__unused void *arg)
 	}
 	if (screen != NULL) {
 		buttons = make_service(client, "Redwood buttons", HID_PAGE_CONSUMER, HID_USAGE_CONSUMER_CONTROL, false);
+		idle_buttons = buttons;
 	}
 	say("redwood: input: touch screen service %p, buttons %p\n", (void *)screen, (void *)buttons);
 	dispatch_semaphore_signal(input_services_made); /* see wait_for_als_arrival() */
+	if (screen != NULL) {
+		redwood_sensors_client(client);  /* the sensors' services on the same client (inject_sensors.c) */
+	}
 	if (screen == NULL) {
 		return NULL;
 	}
 
 	while (read(device, &t, sizeof(t)) == (ssize_t)sizeof(t)) {
 		uint64_t read_at = mach_absolute_time();
+		static uint64_t lat_checked;
+
+		/* kern.redwood.touch_lat (live; boot-arg touch_lat=1 as before): looked at once a second at most */
+		if (read_at - lat_checked > 24000000ULL) {
+			uint32_t live = 0;
+			size_t live_size = sizeof(live);
+
+			lat_checked = read_at;
+			if (sysctlbyname("kern.redwood.touch_lat", &live, &live_size, NULL, 0) == 0) {
+				static int boot_value = -1;
+
+				if (boot_value < 0) {
+					boot_value = touch_latency;
+				}
+				touch_latency = boot_value || live;
+			}
+		}
+
+		last_input_at = read_at;        /* (the idle timer below) */
 
 		if (count++ < 4) {
 			say("redwood: input: sample type %u finger %u at %u %u\n", t.type, t.finger, t.x, t.y);
@@ -1132,6 +1523,158 @@ input_thread(__unused void *arg)
 	return NULL;
 }
 
+/*
+ * The idle timer (B, 2026-11-07). SpringBoard's own never fires on this phone: it is an AttentionAwareness client and
+ * the attention server hands it a lost-attention event with no tag ("attention client lost event tag is not a
+ * number"), so neither the lock screen nor Auto-Lock ever turned the display off. Here, with the display on and no
+ * touch or button for
+ *   idle_lock_s (default 10) seconds on the lock screen (com.apple.springboard.lockstate), or
+ *   Auto-Lock's time (Settings: maxInactivity in EffectiveUserSettings; "Never" leaves it on) when unlocked,
+ * the lock button is pressed, as the user would. Unlocked, not while the speakers have had sound in the last 5 s
+ * (kern.redwood.snd_quiet_ms), so a video or music keeps the screen on.
+ * Boot-arg idle_lock=0 off, 1 only an untouched wake (lock_s), 2 also
+ * Auto-Lock when in use (default, user request 2026-11-20). /var/jb/etc/redwood-idle.conf "mode=N" overrides it at every wake.
+ */
+static int
+auto_lock_seconds(void)
+{
+	static const char *path = "/var/mobile/Library/UserConfigurationProfiles/EffectiveUserSettings.plist";
+	int seconds = 60;
+	CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+	CFReadStreamRef stream = url ? CFReadStreamCreateWithFile(NULL, url) : NULL;
+
+	if (stream != NULL && CFReadStreamOpen(stream)) {
+		CFPropertyListRef plist = CFPropertyListCreateWithStream(NULL, stream, 0, kCFPropertyListImmutable, NULL, NULL);
+
+		if (plist != NULL && CFGetTypeID(plist) == CFDictionaryGetTypeID()) {
+			CFDictionaryRef values = CFDictionaryGetValue(plist, CFSTR("restrictedValue"));
+			CFDictionaryRef inactivity = values && CFGetTypeID(values) == CFDictionaryGetTypeID() ?
+			    CFDictionaryGetValue(values, CFSTR("maxInactivity")) : NULL;
+			CFNumberRef value = inactivity && CFGetTypeID(inactivity) == CFDictionaryGetTypeID() ?
+			    CFDictionaryGetValue(inactivity, CFSTR("value")) : NULL;
+
+			if (value != NULL && CFGetTypeID(value) == CFNumberGetTypeID()) {
+				CFNumberGetValue(value, kCFNumberIntType, &seconds);
+			}
+		}
+		if (plist != NULL) {
+			CFRelease(plist);
+		}
+		CFReadStreamClose(stream);
+	}
+	if (stream != NULL) {
+		CFRelease(stream);
+	}
+	if (url != NULL) {
+		CFRelease(url);
+	}
+	return seconds;
+}
+
+static void *
+idle_thread(__unused void *argument)
+{
+	int lock_s = 10, auto_s = 60, mode = 2;     /* user 2026-11-20: sleep on lock screen and unlocked */
+	uint64_t woke_at = 0;
+	int aod_token = NOTIFY_TOKEN_INVALID;
+	bool was_on = false, booted = false;
+	char arguments[1024] = "";
+	size_t size = sizeof(arguments) - 1;
+
+	pthread_setname_np("redwood idle");
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
+		const char *at = strstr(arguments, "idle_lock_s="), *mode_at = strstr(arguments, "idle_lock=");
+
+		if (mode_at != NULL && (mode_at == arguments || mode_at[-1] == ' ')) {
+			mode = atoi(mode_at + 10);
+		}
+		if (at != NULL && atoi(at + 12) >= 3) {
+			lock_s = atoi(at + 12);
+		}
+	}
+	if (mode == 0) {
+		return NULL;                    /* idle_lock=0: iOS's own, broken, idle timer */
+	}
+	(void)notify_register_check(RW_AOD_SERVICE_STATUS, &aod_token);
+	say("redwood: idle timer (idle_lock=%d): %d s after a wake with no touch%s\n", mode, lock_s,
+	    mode >= 2 ? ", Auto-Lock's time once touched" : "");
+	for (;;) {
+		uint64_t now, idle_ns, locked = 0, input_at;
+		bool on;
+		int limit, quiet = -1;
+		size_t len = sizeof(quiet);
+
+		sleep(1);
+		/* (the clock read AFTER the sleep: read before it, a touch during the sleep was "newer than now" and the
+		 * unsigned difference wrapped to a huge idle time -- touching locked the phone) */
+		now = mach_absolute_time();
+		booted |= touch_mode != 0;      /* (0 before the window server has said anything) */
+		/* touch detection mode: 0xfe/0xff the display off; 0x1/0x101 the lock screen (pocket touches); 0 unlocked */
+		on = (touch_mode & 0xff) != TOUCH_MODE_WAKE && (touch_mode & 0xff) != TOUCH_MODE_OFF && booted;
+		uint64_t aod_flags = 0;
+		bool aod_inactive = aod_token != NOTIFY_TOKEN_INVALID &&
+		    notify_get_state(aod_token, &aod_flags) == NOTIFY_STATUS_OK && rw_aod_idle_suppressed(aod_flags);
+		if (!on || aod_inactive) {
+			/* AOD may keep touch/displayStatus on: another lock press can wake it. */
+			was_on = false;
+			continue;
+		}
+		if (!was_on) {                  /* the display just came on: count from here, Auto-Lock read again */
+			was_on = true;
+			last_input_at = woke_at = now;
+			auto_s = auto_lock_seconds();
+			/* /var/jb/etc/redwood-idle.conf "mode=0|1|2" switches it without a rebuild, read at every wake */
+			{
+				FILE *f = fopen("/var/jb/etc/redwood-idle.conf", "r");
+				char b[32] = "";
+				if (f != NULL) {
+					size_t n = fread(b, 1, sizeof(b) - 1, f);
+					fclose(f);
+					b[n] = 0;
+					char *p = strstr(b, "mode=");
+					if (p != NULL && p[5] >= '0' && p[5] <= '2') {
+						mode = p[5] - '0';
+					}
+				}
+			}
+			continue;
+		}
+		/*
+		 * SpringBoard's lock state (com.apple.springboard.lockstate) stayed 1 after unlocking here, so it is not
+		 * used: woken and not touched since -> lock_s (a glance, a wake in the pocket); touched since -> Auto-Lock.
+		 */
+		locked = last_input_at <= woke_at;
+		if (mode == 0) {
+			continue;                       /* (redwood-idle.conf mode=0: off) */
+		}
+		if (!locked && mode < 2) {
+			continue;                       /* idle_lock=1: only a wake that nobody touched */
+		}
+		limit = locked ? lock_s : auto_s;
+		if (!locked && (limit <= 0 || limit > 24 * 3600)) {
+			continue;                       /* Auto-Lock: Never */
+		}
+		if (!locked && sysctlbyname("kern.redwood.snd_quiet_ms", &quiet, &len, NULL, 0) == 0 && quiet >= 0 &&
+		    quiet < 5000) {
+			last_input_at = now;            /* sound playing: as if touched */
+			continue;
+		}
+		input_at = last_input_at;
+		idle_ns = input_at >= now ? 0 : (now - input_at) * timebase.numer / timebase.denom;
+		if (idle_ns >= (uint64_t)limit * NSEC_PER_SEC && idle_buttons != NULL) {
+			struct redwood_touch press = { .time = now, .type = REDWOOD_BUTTON_DOWN, .finger = REDWOOD_BUTTON_LOCK };
+
+			say("redwood: idle timer: %d s without a touch %s: the display off\n", limit, locked ? "since the wake" :
+			    "(Auto-Lock)");
+			send_button(idle_buttons, &press);
+			press.type = REDWOOD_BUTTON_UP;
+			send_button(idle_buttons, &press);
+			last_input_at = now;
+		}
+	}
+	return NULL;
+}
+
 static void
 input_start(void)
 {
@@ -1139,6 +1682,9 @@ input_start(void)
 
 	input_services_made = dispatch_semaphore_create(0);
 	if (pthread_create(&thread, NULL, input_thread, NULL) == 0) {
+		pthread_detach(thread);
+	}
+	if (pthread_create(&thread, NULL, idle_thread, NULL) == 0) {
 		pthread_detach(thread);
 	}
 }
@@ -1206,6 +1752,10 @@ opengl_es(void)
 	}
 	if (wanted < 0) {
 		gpu = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodGPU"));
+		if (gpu == 0) {
+			/* the Exynos phone's Mali-G77 (boot-arg mali=1: iokit/Kernel/RedwoodMali.cpp), Mesa's panfrost */
+			gpu = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodMali"));
+		}
 		wanted = gpu != 0;
 		if (gpu != 0) {
 			IOObjectRelease(gpu);
@@ -1225,6 +1775,56 @@ opengl_es(void)
 	gl_function_refused = (void (*)(unsigned))dlsym(library, "redwood_gl_function_refused");
 }
 
+
+/* Camera.app resets to rear Photo. The native S20 lens adapter chooses the
+ * user's preferred 0.9x ultra-wide route independently of front/rear selection. */
+static IMP camera_read_prefs_original;
+
+static BOOL
+camera_read_prefs(id self, SEL selector, id overrides, long emulation, BOOL call_active, BOOL *should_reset)
+{
+	CFStringRef app = CFSTR("com.apple.camera");
+	CFDateRef until = CFPreferencesCopyAppValue(CFSTR("CAMUserPreferenceResetTimeoutDate"), app);
+	CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+
+	if (until == NULL || CFGetTypeID(until) != CFDateGetTypeID() || CFDateGetAbsoluteTime(until) <= now) {
+		int rear = 0, photo = 0;
+		CFNumberRef device = CFNumberCreate(NULL, kCFNumberIntType, &rear), mode = CFNumberCreate(NULL, kCFNumberIntType, &photo);
+		CFDateRef later = CFDateCreate(NULL, now + 600);
+
+		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceCaptureDevice"), device, app);
+		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceCaptureMode"), mode, app);
+		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceResetTimeoutDate"), later, app);
+		CFPreferencesAppSynchronize(app);
+		CFRelease(device);
+		CFRelease(mode);
+		CFRelease(later);
+		say("redwood: Camera: its reset was due: the rear camera and Photo instead\n");
+	}
+	if (until != NULL) {
+		CFRelease(until);
+	}
+	return ((BOOL (*)(id, SEL, id, long, BOOL, BOOL *))camera_read_prefs_original)(self, selector, overrides, emulation, call_active,
+	    should_reset);
+}
+
+static void
+camera_rear_by_default(void)
+{
+	Class c = objc_getClass("CAMUserPreferences");
+	Method m = c != Nil ? class_getInstanceMethod(c,
+	    sel_registerName("readPreferencesWithOverrides:emulationMode:callActive:shouldResetCaptureConfiguration:")) : NULL;
+
+	if (m == NULL) {
+		say("redwood: Camera: no -[CAMUserPreferences readPreferencesWithOverrides:...]: the camera's defaults left alone\n");
+		return;
+	}
+	camera_read_prefs_original = method_setImplementation(m, (IMP)camera_read_prefs);
+	say("redwood: Camera: opens on the rear camera in Photo after its reset time\n");
+}
+
+#include "statusbar_shift.h"
+
 __attribute__((constructor))
 static void
 redwood_init(void)
@@ -1237,6 +1837,16 @@ redwood_init(void)
 		return;
 	}
 	slide = (uintptr_t)cache - CACHE_BASE;
+	if (strcmp(name, "Camera") == 0) {
+		camera_rear_by_default();
+	}
+	/* the call hooks live outside the boot image (A, 2026-11-14), so they change without a reboot:
+	 * /var/jb/redwood/lib/libredwood-calls.dylib (userland/src/calls_tweak.c), in the Phone app and the call screen */
+	if (strcmp(name, "MobilePhone") == 0 || strcmp(name, "InCallService") == 0) {
+		if (dlopen("/var/jb/redwood/lib/libredwood-calls.dylib", RTLD_NOW) == NULL) {
+			say("redwood: %s: no call hooks (%s)\n", name, dlerror());
+		}
+	}
 	if (strcmp(name, "backboardd") == 0) {
 		char arguments[1024] = "";
 		size_t size = sizeof(arguments) - 1;
@@ -1248,6 +1858,22 @@ redwood_init(void)
 		 * (CADeviceUseVBL()); on the iPhone X it runs a timer of its own instead (CADisplayTimer),
 		 * whose phase it would set from the frame timings of a display driver this one is not.
 		 */
+		/*
+		 * CoreAnimation's frame clock at the panel's rate (A, 2026-11-14). The driver publishes 120 Hz in TimingElements,
+		 * but the window server's own clock stayed at 60 (CADisplay.refreshRate 0.016667 asked from a process, with the
+		 * panel scanning 120): it went to 120 only with CA_HEARTBEAT_RATE=120 (docs/devices/x1slte/display.md, the FHD+/120
+		 * retest). fb_mode 1 and 3 run the panel at 120; caenv=CA_HEARTBEAT_RATE=N (below) overrides.
+		 */
+		if (getenv("CA_HEARTBEAT_RATE") == NULL && sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
+			const char *mode = strstr(arguments, "fb_mode=");
+
+			if (mode != NULL && (mode == arguments || mode[-1] == ' ') && (mode[8] == '1' || mode[8] == '3') &&
+			    (mode[9] == ' ' || mode[9] == 0)) {
+				setenv("CA_HEARTBEAT_RATE", "120", 1);
+				say("redwood: CoreAnimation's frame clock at 120 a second (CA_HEARTBEAT_RATE, panel fb_mode %c)\n", mode[8]);
+			}
+		}
+		size = sizeof(arguments) - 1;
 		if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0 && strstr(arguments, "ca_vbl=1") != NULL) {
 			setenv("CA_FORCE_TIMER", "1", 1);
 			say("redwood: ca_vbl=1: CoreAnimation is to take the display driver's refresh notifications\n");
@@ -1272,8 +1898,10 @@ redwood_init(void)
 				say("redwood: caenv: %s=%s for the window server\n", setting, equals + 1);
 			}
 		}
+		brightness_telemetry_fixes();
 		opengl_es();
 		window_server_fixes();
+		attention_fixes(arguments);
 		/*
 		 * brightness_fixes() is not used for now: with it backboardd no longer took our touch
 		 * screen service for its own ("still waiting for a main screen digitizer"), whether the
@@ -1281,8 +1909,16 @@ redwood_init(void)
 		 * moved the start of the event server onto the moment make_service() now knows how to
 		 * survive; not tried again since, and until it is, the five seconds stay.)
 		 */
+		redwood_coremotion_fixes();     /* backboardd also consumes motion; it has no Apple SPU */
+		redwood_sensors_early();        /* CMDeviceOrientationManager taken over, if the kernel has sensors */
 		input_start();
 	} else if (strncmp(name, "containermanagerd", 17) == 0) {
 		container_manager_fixes();
+	} else if (strcmp(name, "locationd") == 0) {
+		redwood_location_fixes();
+	} else {
+		redwood_coremotion_fixes();     /* every app (INJECT names their folders): CoreMotion without the SPU */
+		app_fps_unlock();               /* 120 Hz: the ProMotion opt-in QuartzCore looks for */
+		statusbar_shift_start();        /* the status bar's left side (src/statusbar_shift.h) */
 	}
 }

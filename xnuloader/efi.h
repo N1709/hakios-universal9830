@@ -30,9 +30,17 @@ struct efi_text_output;
 typedef struct efi_text_output {
 	void *reset;
 	efi_status (EFIAPI *output_string)(struct efi_text_output *self, const char16 *str);
+	void *test_string;
+	void *query_mode;
+	void *set_mode;
+	void *set_attribute;
+	efi_status (EFIAPI *clear_screen)(struct efi_text_output *self);
+	void *set_cursor_position;
+	void *enable_cursor;
+	void *mode;
 } efi_text_output;
 
-enum { EfiLoaderData = 2, EfiConventionalMemory = 7 };
+enum { EfiReservedMemoryType = 0, EfiLoaderData = 2, EfiBootServicesData = 4, EfiConventionalMemory = 7 };
 enum { AllocateAnyPages = 0, AllocateMaxAddress = 1, AllocateAddress = 2 };
 enum { ByProtocol = 2 };
 
@@ -42,7 +50,8 @@ typedef struct {
 
 typedef struct {
 	efi_table_header hdr;
-	void *raise_tpl, *restore_tpl;
+	uint64_t (EFIAPI *raise_tpl)(uint64_t new_tpl);
+	void (EFIAPI *restore_tpl)(uint64_t old_tpl);
 	efi_status (EFIAPI *allocate_pages)(int type, int mem_type, uint64_t pages, uint64_t *addr);
 	efi_status (EFIAPI *free_pages)(uint64_t addr, uint64_t pages);
 	efi_status (EFIAPI *get_memory_map)(uint64_t *size, void *map, uint64_t *key, uint64_t *desc_size, uint32_t *desc_ver);
@@ -55,7 +64,10 @@ typedef struct {
 	void *install_protocol_interface, *reinstall_protocol_interface, *uninstall_protocol_interface;
 	efi_status (EFIAPI *handle_protocol)(efi_handle h, const efi_guid *guid, void **iface);
 	void *reserved, *register_protocol_notify, *locate_handle, *locate_device_path, *install_configuration_table;
-	void *load_image, *start_image, *exit, *unload_image;
+	efi_status (EFIAPI *load_image)(uint8_t boot_policy, efi_handle parent, void *path,
+	    void *source, uint64_t size, efi_handle *handle);
+	efi_status (EFIAPI *start_image)(efi_handle image, uint64_t *exit_size, char16 **exit_data);
+	void *exit, *unload_image;
 	efi_status (EFIAPI *exit_boot_services)(efi_handle image, uint64_t map_key);
 	void *get_next_monotonic_count;
 	efi_status (EFIAPI *stall)(uint64_t microseconds);
@@ -88,18 +100,10 @@ typedef struct {
 	void (EFIAPI *reset_system)(int type, efi_status status, uint64_t size, void *data);
 } efi_runtime_services;
 
-/* the console's keys (UEFI 12.3): on a phone, the volume keys come as the arrows, power as Enter */
-typedef struct { uint16_t scan_code; char16 unicode_char; } efi_input_key;
-typedef struct efi_text_input {
-	efi_status (EFIAPI *reset)(struct efi_text_input *self, uint8_t extended);
-	efi_status (EFIAPI *read_key_stroke)(struct efi_text_input *self, efi_input_key *key);
-	void *wait_for_key;
-} efi_text_input;
-
 typedef struct {
 	efi_table_header hdr;
 	char16 *vendor; uint32_t revision; uint32_t pad;
-	efi_handle con_in_handle; efi_text_input *con_in;
+	efi_handle con_in_handle; void *con_in;
 	efi_handle con_out_handle; efi_text_output *con_out;
 	efi_handle stderr_handle; efi_text_output *std_err;
 	efi_runtime_services *rt;
@@ -107,6 +111,23 @@ typedef struct {
 	uint64_t nr_tables;                     /* the configuration tables: ACPI, a device tree, ... */
 	struct { efi_guid guid; void *table; } *tables;
 } efi_system_table;
+
+/* PI DXE services: memory ownership stays in boot services; these services
+ * report/apply CPU cache attributes while preserving the other GCD bits. */
+typedef struct {
+	uint64_t base, length, capabilities, attributes;
+	uint32_t type, pad;
+	efi_handle image, device;
+} efi_gcd_memory_descriptor;
+typedef struct {
+	efi_table_header hdr;
+	efi_status (EFIAPI *add_memory_space)(uint32_t type, uint64_t base, uint64_t size, uint64_t capabilities);
+	void *allocate_memory_space, *free_memory_space, *remove_memory_space;
+	efi_status (EFIAPI *get_memory_space_descriptor)(uint64_t address, efi_gcd_memory_descriptor *descriptor);
+	efi_status (EFIAPI *set_memory_space_attributes)(uint64_t address, uint64_t size, uint64_t attributes);
+} efi_dxe_services;
+_Static_assert(sizeof(efi_gcd_memory_descriptor) == 56, "PI GCD descriptor ABI");
+_Static_assert(offsetof(efi_dxe_services, set_memory_space_attributes) == 64, "PI DXE service ABI");
 
 /* a device path is a list of these, each followed by its data, ending with type 0x7f subtype 0xff */
 typedef struct {
@@ -266,22 +287,80 @@ typedef struct {
 #define EFI_PARTITION_INFO_GUID { 0x8cf2f62c, 0xbc9b, 0x4821, { 0x80, 0x8d, 0xec, 0x9e, 0xc4, 0x21, 0xa1, 0xa0 } }
 #define QCOM_CHARGER_EX_GUID     { 0x6edc8a6d, 0x2663, 0x43cd, { 0x90, 0xff, 0x46, 0x21, 0xff, 0xd1, 0x0d, 0xf5 } }
 #define QCOM_CHARGER_GUID        { 0x21bfb78b, 0x02ea, 0x4ab7, { 0x99, 0x40, 0xb5, 0x8a, 0x2a, 0xd6, 0x58, 0x29 } }
-#define QCOM_TLMM_GUID           { 0xad9aec18, 0x7bf0, 0x4809, { 0x9e, 0x96, 0x30, 0x12, 0x30, 0x9f, 0x3d, 0xf7 } }
 
-/* Qualcomm's pin controller (EFITlmm.h; y2q's TLMMDxe has it at revision 1): no This, a pin's
- * configuration in one word, TLMM_GPIO_CFG */
-struct qcom_tlmm {
-	uint64_t revision;
-	efi_status (EFIAPI *config_gpio)(uint32_t config, uint32_t enable);
-	efi_status (EFIAPI *config_gpio_group)(uint32_t enable, uint32_t *configs, uint32_t count);
-	efi_status (EFIAPI *gpio_in)(uint32_t config, uint32_t *value);
-	efi_status (EFIAPI *gpio_out)(uint32_t config, uint32_t value);
-	efi_status (EFIAPI *set_inactive_config)(uint32_t gpio, uint32_t config);
+
+/* Simple Text Input: the keypad (Silicium's KeypadDxe: Vol-Up SCAN_UP, Vol-Down SCAN_DOWN, Power Enter,
+ * Power held 0.5 s SCAN_ESC, Power + Vol-Down SCAN_RIGHT, Power + Vol-Up SCAN_LEFT) */
+typedef struct {
+	uint16_t scan_code;
+	char16 unicode_char;
+} efi_input_key;
+
+typedef struct efi_simple_text_input {
+	efi_status (EFIAPI *reset)(struct efi_simple_text_input *self, uint8_t extended);
+	efi_status (EFIAPI *read_key_stroke)(struct efi_simple_text_input *self, efi_input_key *key);
+	void *wait_for_key;
+} efi_simple_text_input;
+
+#define EFI_SCAN_UP     0x01
+#define EFI_SCAN_DOWN   0x02
+#define EFI_SCAN_RIGHT  0x03
+#define EFI_SCAN_LEFT   0x04
+#define EFI_SCAN_ESC    0x17
+
+/* USB Function I/O (UEFI 2.5, MdePkg/Include/Protocol/UsbFunctionIo.h): Silicium's UsbfnDwc3Dxe on y2s */
+#define EFI_USBFN_IO_GUID { 0x32d2963a, 0xfe5d, 0x4f30, { 0xb6, 0x33, 0x6e, 0x5d, 0xc5, 0x58, 0x03, 0xcc } }
+
+enum {
+	EfiUsbMsgNone = 0, EfiUsbMsgSetupPacket, EfiUsbMsgEndpointStatusChangedRx, EfiUsbMsgEndpointStatusChangedTx,
+	EfiUsbMsgBusEventDetach, EfiUsbMsgBusEventAttach, EfiUsbMsgBusEventReset, EfiUsbMsgBusEventSuspend,
+	EfiUsbMsgBusEventResume, EfiUsbMsgBusEventSpeed
 };
-#define TLMM_GPIO_CFG(gpio, function, output, pull, drive) \
-	(((gpio) & 0x3ffu) << 4 | ((function) & 0xfu) | ((output) & 1u) << 14 | ((pull) & 3u) << 15 | \
-	((drive) & 0xfu) << 17 | 0x20000000u)
-#define TLMM_PULL_UP            3
-#define TLMM_16MA               7
+enum { UsbfnTransferUnknown = 0, UsbfnTransferComplete, UsbfnTransferAborted, UsbfnTransferActive, UsbfnTransferNone };
+enum { UsbfnDirDeviceRx = 0, UsbfnDirDeviceTx = 1 };
+
+typedef struct __attribute__((packed)) {
+	uint8_t request_type, request;
+	uint16_t value, index, length;
+} efi_usb_device_request;
+
+typedef struct {
+	uint64_t bytes;                 /* UINTN BytesTransferred */
+	uint32_t status;                /* EFI_USBFN_TRANSFER_STATUS */
+	uint8_t endpoint;               /* EndpointIndex */
+	uint32_t direction;             /* EFI_USBFN_ENDPOINT_DIRECTION */
+	void *buffer;
+} efi_usbfn_transfer_result;
+
+typedef union {
+	efi_usb_device_request udr;
+	efi_usbfn_transfer_result utr;
+	uint32_t speed;
+} efi_usbfn_message_payload;
+
+typedef struct { const void *interface; const void *const *endpoints; } efi_usb_interface_info;
+typedef struct { const void *config; const efi_usb_interface_info *const *interfaces; } efi_usb_config_info;
+typedef struct { const void *device; const efi_usb_config_info *const *configs; } efi_usb_device_info;
+
+typedef struct efi_usbfn_io {
+	uint32_t revision;
+	efi_status (EFIAPI *detect_port)(struct efi_usbfn_io *self, uint32_t *port_type);
+	efi_status (EFIAPI *configure_enable_endpoints)(struct efi_usbfn_io *self, efi_usb_device_info *info);
+	void *get_endpoint_max_packet_size, *get_device_info, *get_vendor_id_product_id;
+	efi_status (EFIAPI *abort_transfer)(struct efi_usbfn_io *self, uint8_t endpoint, uint32_t direction);
+	void *get_endpoint_stall_state;
+	efi_status (EFIAPI *set_endpoint_stall_state)(struct efi_usbfn_io *self, uint8_t endpoint, uint32_t direction,
+	    uint8_t *state);
+	efi_status (EFIAPI *event_handler)(struct efi_usbfn_io *self, uint32_t *message, uint64_t *payload_size,
+	    efi_usbfn_message_payload *payload);
+	efi_status (EFIAPI *transfer)(struct efi_usbfn_io *self, uint8_t endpoint, uint32_t direction, uint64_t *size,
+	    void *buffer);
+	void *get_max_transfer_size, *allocate_transfer_buffer, *free_transfer_buffer;
+	efi_status (EFIAPI *start_controller)(struct efi_usbfn_io *self);
+	efi_status (EFIAPI *stop_controller)(struct efi_usbfn_io *self);
+	void *set_endpoint_policy, *get_endpoint_policy;
+} efi_usbfn_io;
+
+_Static_assert(sizeof(efi_usbfn_transfer_result) == 32, "EFI_USBFN_TRANSFER_RESULT");
 
 #endif /* XNULOADER_EFI_H */

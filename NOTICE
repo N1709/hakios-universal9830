@@ -1,0 +1,40 @@
+Third-party components in or used by HakiOS
+(full table with origins and status: THIRD_PARTY_LICENSES.md; compliance notes: COMPLIANCE.md)
+
+In the repository:
+
+- Files/HFS+ compatibility, userland/src/inject_files.c: adapted from Angelpro09xd/ios-sapphire
+  commit 04f94d5c6577d65bf9e112ed801c8b1fce9fff47, userland/tweaks/fileprovider/fpfix.c.
+  File-specific license is to verify; see THIRD_PARTY_LICENSES.md.
+
+- XNU (Apple): the kernel sources are fetched by xnu/apply.sh from github.com/apple-oss-distributions/xnu;
+  our patch and files are a derivative work under the Apple Public Source License 2.0 (LICENSE.APSL).
+- libdeflate (Eric Biggers), xnu/files/bsd/miscfs/apfs/libdeflate/: MIT, see its COPYING.
+
+- the FocalTech touch firmware, xnu/files/bsd/dev/hakios.focaltech_fw.h: the touch vendor's;
+  generated from a device blob, redistribution terms "to verify" (THIRD_PARTY_LICENSES.md).
+
+- the Wi-Fi driver: Linux's ath11k (BSD-3-Clause-Clear) and FreeBSD's LinuxKPI headers (BSD-2-Clause) are
+  fetched by tools/mk-ath11k.sh at pinned releases and built on our layer wifi/lx (MIT); only the layer is here.
+
+Fetched at build time, never committed:
+
+- the iOS 16.5 IPSW (Apple): the user space of the system image; sysimage/fetch.sh downloads it from
+  Apple's public servers; its license is Apple's.
+- the iPhoneOS 16.5 SDK from github.com/theos/sdks, and theos's cctools (Apple's open-source cctools): the
+  kernel's and user space's build tools.
+- the phone's firmware (GPU, Wi-Fi, audio DSP, modem, haptics, cameras): the vendor's, pulled from the
+  user's own phone (tools/s20-firmware.sh).
+- lzfse (Apple, BSD-3-Clause), built by xnuloader/mkidentity.sh when no LZFSE decoder is installed.
+- Mesa (for GL=1 images), Procursus and Sileo packages (tools/mk-jb.sh): their own licenses.
+
+- S20 cellular live PHY diagnostic: Samsung Exynos9830 EVT1 calibration/reset
+  sequence from Samsung Electronics (2019), GPL-2.0-only; pinned source and
+  attribution in tools/cellular/s5123-phy-evt1.h, license in LICENSE.GPL-2.0 there.
+  Original live-helper portions are MIT; the combined helper is GPL-2.0-only.
+
+S20 live modem link helper: tools/cellular/s5123-live-link.h adapts Samsung
+Electronics (2019) pcie-exynos-rc.c IA/link sequence and DesignWare root setup
+from the same pinned Linux source as s5123-phy-evt1.h, GPL-2.0-only. See
+tools/cellular/LICENSE.GPL-2.0. Combined live-modem binary is GPL-2.0-only;
+original standalone SPI/lifecycle portions retain MIT source license.

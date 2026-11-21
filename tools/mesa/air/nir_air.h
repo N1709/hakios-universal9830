@@ -5,7 +5,7 @@
 
 /*
  * AIR -> NIR: Metal shaders (the LLVM bitcode inside a .metallib) into NIR.
- * See docs/air.md of Darwin on redwood for the design and the mapping
+ * See docs/dev/air.md of Darwin on redwood for the design and the mapping
  * tables this follows.
  */
 
@@ -124,7 +124,7 @@ struct air_resource {
    /* A sampler the shader declares itself (Metal's constexpr sampler) rather
     * than one the API binds: the runtime has to create it from this state
     * word and bind it at .index, which the frontend assigns after the API's
-    * samplers. The word's layout is not decoded yet -- see docs/air.md.
+    * samplers. The word's layout is not decoded yet -- see docs/dev/air.md.
     */
    bool inline_sampler;
    uint64_t sampler_state;         /* the word itself, for a runtime that wants it raw */
@@ -159,7 +159,7 @@ struct air_resource {
     * that it depends on the metadata alone: the runtime's encoder has to answer
     * `encodedLength` for a set whichever of its members this shader reads, and
     * a numbering that skipped the unread ones would differ between two shaders
-    * sharing one set. See docs/air.md section 8.2.
+    * sharing one set. See docs/dev/air.md section 8.2.
     */
    unsigned argbuf_set;
    unsigned argbuf_id;
@@ -217,7 +217,7 @@ struct air_vertex_attribute {
 
    /* The width the SHADER reads, 8, 16 or 32. The NIR input is 32 bits wide
     * whatever this says, and the narrowing is an instruction in the shader --
-    * see docs/air.md: ir3 puts a 16-bit vertex input in the HALF register file
+    * see docs/dev/air.md: ir3 puts a 16-bit vertex input in the HALF register file
     * and then reports it in `ir3_shader_variant.inputs[]`, which has no half
     * flag, as a full register, which is the number fd6_program.cc programs
     * VFD_DEST_CNTL_INSTR_REGID from. A 32-bit input keeps the hardware fetch
@@ -318,6 +318,16 @@ struct air_shader_info {
    const char **notes;
 
    unsigned threadgroup_bytes; /* static threadgroup memory */
+
+   /* Metal's is_null_texture(t), which asks whether anything is bound at t's slot -- a
+    * question about the binding and not the shader, so it is answered at run time: the
+    * shader reads bit n of the first word of constant buffer null_query_ubo - 1 (an index
+    * no `constant` argument of the shader uses), which the runtime fills with the slots it
+    * bound. null_query_textures is the slots the shader asks about; a slot asked about may
+    * be left unbound, which is the point of asking. Both 0 when the shader asks nothing.
+    */
+   uint32_t null_query_textures;
+   unsigned null_query_ubo;
 };
 
 /* The word, field by field. A runtime that holds only `sampler_state` can call
@@ -330,6 +340,12 @@ struct air_sampler_state air_decode_sampler_state(uint64_t word);
 struct air_constant_value {
    unsigned index;     /* the function constant's index */
    uint64_t bits;      /* its value, as the bits of its type */
+   const char *name;   /* its name in the module (air.function_constants), or NULL */
+   /* The pipeline gave no value for it: air.is_function_constant_defined answers false, and
+    * a load still reads `bits` (0), because what Metal leaves in an undefined constant is
+    * unspecified and every guarded read selects past it. Zero, the default of every array
+    * air_module_function_constants makes, is the old answer: defined. */
+   bool undefined;
 };
 
 struct air_to_nir_options {

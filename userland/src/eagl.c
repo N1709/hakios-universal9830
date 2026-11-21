@@ -138,6 +138,10 @@ typedef GLDEBUGPROC GLDEBUGPROCKHR;
 struct eagl;
 static int eagl_tracing;                /* this frame's calls are written down (boot-arg gltrace=FIRST-LAST) */
 static int frame_lines;                 /* boot-arg glframes=1: a line for every frame (see frame_end()) */
+/* boot-arg glstats=1: the running frame line every 20 frames and the summary every 200 (A, 2026-11-14: off by default --
+ * written from the render thread, they cost every 20th frame its time at 120 Hz; the first 40 frames and frame 30's
+ * summary are still written for every boot) */
+static int frame_stats;
 static int latency_lines;               /* boot-arg touch_lat=1: when every frame began and ended (see frame_end()) */
 static uint64_t slow_calls_us;          /* boot-arg glslow=US: a line for every call that takes longer (eagl_leave()) */
 static uint64_t call_began_us;          /* (when the call in progress began) */
@@ -1076,6 +1080,19 @@ frame_end(struct eagl *e, bool finished)
 	after = now_us();
 	e->in_frame = false;
 	e->frames++;
+	if ((e->frames & 63) == 0) {
+		/* kern.redwood.touch_lat (live), every 64 frames; boot-arg touch_lat=1 keeps it on */
+		static int boot_value = -1;
+		uint32_t live = 0;
+		size_t live_size = sizeof(live);
+
+		if (boot_value < 0) {
+			boot_value = latency_lines;
+		}
+		if (sysctlbyname("kern.redwood.touch_lat", &live, &live_size, NULL, 0) == 0) {
+			latency_lines = boot_value || live;
+		}
+	}
 	if (latency_lines) {
 		/* "tl: g FRAME began US ended US DRAWS": microseconds of mach_absolute_time (tools/latency.py) */
 		say("tl: g %u began %llu ended %llu %u\n", e->frames, e->began, after, e->draws);
@@ -1116,14 +1133,14 @@ frame_end(struct eagl *e, bool finished)
 	if (e->triangles > e->most_triangles) {
 		e->most_triangles = e->triangles;
 	}
-	if (e->frames <= 40 || e->frames % 20 == 0) {
+	if (e->frames <= 40 || (frame_stats && e->frames % 20 == 0)) {
 		say("redwood-gl: frame %u: %u GL calls, %u draws, %u triangles, %u clears; %u textures refilled from IOSurfaces "
 		    "(%llu KB); %u picture%s copied out, %u drawn in place; %llu us (%llu handing on, %llu waiting, %llu copying "
 		    "out), %llu before it for the IOSurfaces\n", e->frames, e->calls, e->draws, e->triangles, e->clears, e->uploads,
 		    e->upload_bytes >> 10, copied, copied == 1 ? "" : "s", in_place, after - e->began, e->flushing, waited - before,
 		    after - waited, e->attaching);
 	}
-	if (e->frames == 30 || e->frames % 200 == 0) {
+	if (e->frames == 30 || (frame_stats && e->frames % 200 == 0)) {
 		summary(e);
 	}
 	census_report();
@@ -4116,6 +4133,7 @@ install(void)
 		all_shaders = strstr(arguments, "glshaders=1") != NULL;
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
+		frame_stats = strstr(arguments, "glstats=1") != NULL;
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
 		if ((argument = strstr(arguments, "glslow=")) != NULL) {
 			slow_calls_us = strtoull(argument + 7, NULL, 10);

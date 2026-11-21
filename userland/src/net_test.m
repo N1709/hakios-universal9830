@@ -63,6 +63,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+/* <net/if_media.h> is not in the iOS SDK: the request and the bit "waitlink" needs */
+struct nt_ifmediareq {
+	char ifm_name[IFNAMSIZ];
+	int ifm_current, ifm_mask, ifm_status, ifm_active, ifm_count;
+	int *ifm_ulist;
+};
+#define NT_SIOCGIFMEDIA         _IOWR('i', 56, struct nt_ifmediareq)
+#define NT_IFM_ACTIVE           0x00000002
+
 /* not in the iOS SDK's headers, in the libraries all the same */
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up(mach_port_t bootstrap, const char *name, mach_port_t *service);
@@ -371,7 +380,7 @@ reach(const char *name)
 }
 
 /*
- * With wifi=1 among the kernel's arguments: wait for en0, and for configd's own network service for
+ * With wifi=1 (or wifi_pcie=4, the S20+) among the kernel's arguments: wait for en0, and for configd's own network service for
  * it ("Wi-Fi", made of the radio's IOKit objects, iokit/Kernel/RedwoodWLAN.cpp). That service runs
  * DHCP by itself, and it has to be the one that does: wifid takes the interface for usable only
  * when the address appears under a service whose settings name en0, and the service "dhcp en0"
@@ -391,6 +400,7 @@ wifi(void)
 	}
 	for (const char *word = strtok(arguments, " "); word != NULL; word = strtok(NULL, " ")) {
 		wanted |= strcmp(word, "wifi=1") == 0;
+		wanted |= strncmp(word, "wifi_pcie=", 10) == 0 && atoi(word + 10) >= 4;   /* the S20+'s BCM4375 (redwood_bcm4375.c) */
 	}
 	if (!wanted) {
 		return;
@@ -568,6 +578,28 @@ main(int argc, char **argv)
 				}
 				printf("net_test: waitaddr %s: %s after %.1f s\n", interface, show(interface, true) ? "an address" :
 				    "NO address", seconds() - start);
+				show(interface, false);
+			} else if (strcmp(step, "waitlink") == 0 && i + 2 < argc) {
+				/* the radio joined: the interface's media active (SIOCGIFMEDIA), its flags as they are */
+				const char *interface = argv[++i];
+				double start = seconds(), limit = atof(argv[++i]);
+				int fd = socket(AF_INET, SOCK_DGRAM, 0);
+				struct nt_ifmediareq media;
+				bool active = false;
+
+				while (fd >= 0 && seconds() - start < limit) {
+					memset(&media, 0, sizeof(media));
+					strlcpy(media.ifm_name, interface, sizeof(media.ifm_name));
+					if ((active = ioctl(fd, NT_SIOCGIFMEDIA, &media) == 0 && (media.ifm_status & NT_IFM_ACTIVE))) {
+						break;
+					}
+					usleep(500000);
+				}
+				printf("net_test: waitlink %s: %s after %.1f s\n", interface, active ? "the link is up" : "NO link",
+				    seconds() - start);
+				if (fd >= 0) {
+					close(fd);
+				}
 				show(interface, false);
 			} else if (strcmp(step, "resolve") == 0 && i + 1 < argc) {
 				resolve(argv[++i], NULL, 0);

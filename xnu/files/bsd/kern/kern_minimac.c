@@ -24,6 +24,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
+#include <sys/sysctl.h>
 #include <sys/codesign.h>
 #include <sys/errno.h>
 #include <sys/kpi_socket.h>
@@ -41,6 +42,20 @@
 #include <security/mac_policy.h>
 
 void minimac_policy_init(void);
+
+/* This research kernel already permits development code and debugger access.
+ * amfid queries these stock status OIDs before an installer tries to arm its
+ * hardware-backed developer-mode flow. Expose the existing kernel policy;
+ * these values do not introduce another signature or debugger privilege.
+ */
+SYSCTL_DECL(_security_mac);
+SYSCTL_NODE(_security_mac, OID_AUTO, amfi, CTLFLAG_RD | CTLFLAG_LOCKED, 0,
+    "AMFI stand-in development policy");
+static int miniamfi_developer_mode = 1;
+SYSCTL_INT(_security_mac_amfi, OID_AUTO, developer_mode_status, CTLFLAG_RD | CTLFLAG_LOCKED,
+    &miniamfi_developer_mode, 0, "Development code is enabled in this research kernel");
+SYSCTL_INT(_security_mac_amfi, OID_AUTO, developer_mode_resolved, CTLFLAG_RD | CTLFLAG_LOCKED,
+    &miniamfi_developer_mode, 0, "Development policy is resolved at boot");
 
 static int
 miniamfi_vnode_check_signature(__unused struct vnode *vp, __unused struct label *label, __unused cpu_type_t cpu_type,

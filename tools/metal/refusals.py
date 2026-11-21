@@ -31,7 +31,7 @@ What it does NOT count, and why, because the gap bounds every number here:
     number somebody has to look at.
 
 A corpus report is `tools/air/corpus.py --json`. Two are worth having:
-the 456 modules of the device image (docs/air.md section 5) and the 7 879
+the 456 modules of the device image (docs/dev/air.md section 5) and the 7 879
 Metal libraries of Resident Evil 4 (section 8, extracted with
 tools/air/repak.py). No byte of either is in this repository, so the reports
 are made where the corpus is and this tool is pointed at them.

@@ -1,0 +1,95 @@
+name: CI
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: bash ci/check.sh
+      - run: bash ci/check-recovery.sh
+      - run: python3 tools/release/audit.py --output out/publication-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: publication-audit
+          path: out/publication-audit.json
+          retention-days: 7
+          if-no-files-found: error
+  restore-zip:
+    # Jesvi-iOS-Restore needs only device profiles, so public runners build it
+    # from release.conf (TARGETS/NAME/VERSION/WRITES). iOS ZIPs need private inputs.
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build restore ZIPs for every measured target
+        run: ./build.sh release --set OUTPUTS=restore --set WRITES=false --set OUT=dist/ci
+      - name: Audit the exact firmware-free Restore preflight packages
+        run: python3 tools/release/restore_audit.py dist/ci
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: restore-zips-${{ github.sha }}
+          path: dist/ci/
+          retention-days: 14
+          if-no-files-found: error
+  kernel:
+    needs: checks
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Native Apple framework and data-policy checks
+        run: bash ci/check.sh
+      - name: Identify compiler and source inputs
+        id: identity
+        shell: bash
+        run: |
+          compiler=$({ sw_vers; /usr/bin/xcrun clang --version; /usr/bin/xcrun ld -v 2>&1; } | shasum -a 256 | cut -d ' ' -f 1)
+          source_key=$(python3 tools/release/source_key.py)
+          echo "key=kernel-v1-${RUNNER_OS}-${RUNNER_ARCH}-${compiler}-${source_key}" >> "$GITHUB_OUTPUT"
+      - name: Restore exact source-built kernel
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: out/kernel
+          key: ${{ steps.identity.outputs.key }}
+      - name: Host tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: brew install coreutils gnu-tar gnu-sed findutils bison m4
+      - name: Build kernel from exported source
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./build.sh kernel --device x1slte --jobs 3
+      - name: Verify kernel checksum (including cache hits)
+        working-directory: out/kernel
+        run: shasum -a 256 -c SHA256SUMS
+      - name: Save source-only cache on trusted pushes
+        if: steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: out/kernel
+          key: ${{ steps.identity.outputs.key }}
+      - name: Upload development kernel only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x1slte-development-kernel-${{ github.sha }}
+          path: |
+            out/kernel/mach.x1slte
+            out/kernel/build.json
+            out/kernel/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7

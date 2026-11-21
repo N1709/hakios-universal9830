@@ -159,7 +159,10 @@ def main():
                 # "fully_trusted": the prefix is full of links to absolute paths of its own
                 # (/var/jb/bin/run-parts -> /var/jb/usr/bin/run-parts), which the careful filter
                 # refuses; where the files land is checked above instead.
-                tar.extract(member, prefix, set_attrs=True, filter='fully_trusted')
+                try:
+                    tar.extract(member, prefix, set_attrs=True, filter='fully_trusted')
+                except TypeError:  # Python < 3.12 (macOS's 3.9): no extraction filters, the same behaviour
+                    tar.extract(member, prefix, set_attrs=True)
         os.unlink(tmp)
         # dpkg's database: the new stanza in place of the old one, or added
         entry = '\n'.join(line for line in stanza.split('\n')

@@ -1,0 +1,5552 @@
+[
+  {
+    "base_nodes": {
+      "/dcphy_m0s4s4s4s4s4s2_csi2@17020500": {
+        "compatible": [
+          "samsung,mipi-phy-m0s4s4s4s4s4s2"
+        ],
+        "isolation": [
+          1840
+        ],
+        "owner": [
+          1
+        ],
+        "reg": [
+          0,
+          386734848,
+          1280
+        ],
+        "reset": [
+          1
+        ],
+        "samsung,pmu-syscon": [
+          234
+        ],
+        "samsung,reset-sysreg": [
+          264
+        ]
+      },
+      "/dcphy_m0s4s4s4s4s4s2_csi4@17020500": {
+        "compatible": [
+          "samsung,mipi-phy-m0s4s4s4s4s4s2"
+        ],
+        "isolation": [
+          1840
+        ],
+        "owner": [
+          1
+        ],
+        "reg": [
+          0,
+          386736896,
+          1280
+        ],
+        "reset": [
+          2
+        ],
+        "samsung,pmu-syscon": [
+          234
+        ],
+        "samsung,reset-sysreg": [
+          264
+        ]
+      },
+      "/hsi2c@10560000": {
+        "compatible": [
+          "samsung,exynos5-hsi2c"
+        ],
+        "pinctrl-0": [
+          16
+        ],
+        "pinctrl-names": [
+          "default"
+        ],
+        "reg": [
+          0,
+          274071552,
+          4096
+        ],
+        "status": [
+          "disabled"
+        ]
+      },
+      "/hsi2c@15D70000": {
+        "compatible": [
+          "samsung,exynos5-hsi2c"
+        ],
+        "pinctrl-0": [
+          83
+        ],
+        "pinctrl-names": [
+          "default"
+        ],
+        "reg": [
+          0,
+          366411776,
+          4096
+        ],
+        "status": [
+          "disabled"
+        ]
+      },
+      "/is_sensor2@17050000": {
+        "compatible": [
+          "samsung,exynos-is-sensor"
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          268,
+          0
+        ],
+        "reg": [
+          0,
+          386203648,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ]
+      },
+      "/is_sensor2@17050000/sensor2-ch-mode0": {
+        "mux_reg": [
+          386008084,
+          4
+        ],
+        "reg": [
+          386666496,
+          256,
+          386667520,
+          256,
+          386666752,
+          256,
+          386667520,
+          256,
+          386667008,
+          256,
+          386667520,
+          256,
+          386667264,
+          256,
+          386667520,
+          256
+        ]
+      },
+      "/is_sensor4@17070000": {
+        "compatible": [
+          "samsung,exynos-is-sensor"
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          270,
+          0
+        ],
+        "reg": [
+          0,
+          386334720,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ]
+      },
+      "/is_sensor4@17070000/sensor4-ch-mode0": {
+        "mux_reg": [
+          386008084,
+          4
+        ],
+        "reg": [
+          386666496,
+          256,
+          386667520,
+          256,
+          386666752,
+          256,
+          386667520,
+          256,
+          386667008,
+          256,
+          386667520,
+          256,
+          386667264,
+          256,
+          386667520,
+          256
+        ]
+      },
+      "/pinctrl@10430000/hsi2c1-bus": {
+        "samsung,pin-function": [
+          3
+        ],
+        "samsung,pins": [
+          "gpp0-2",
+          "gpp0-3"
+        ]
+      },
+      "/pinctrl@10730000/gpc0": {},
+      "/pinctrl@10730000/sensor-mclk0-fn": {
+        "samsung,pin-function": [
+          2
+        ],
+        "samsung,pins": [
+          "gpc0-0"
+        ]
+      },
+      "/pinctrl@10730000/sensor-mclk0-out": {
+        "samsung,pin-function": [
+          1
+        ],
+        "samsung,pins": [
+          "gpc0-0"
+        ]
+      },
+      "/pinctrl@10730000/sensor-mclk4-fn": {
+        "samsung,pin-function": [
+          2
+        ],
+        "samsung,pins": [
+          "gpc0-3"
+        ]
+      },
+      "/pinctrl@10730000/sensor-mclk4-out": {
+        "samsung,pin-function": [
+          1
+        ],
+        "samsung,pins": [
+          "gpc0-3"
+        ]
+      },
+      "/pinctrl@15C30000/gpm14": {},
+      "/pinctrl@15C30000/gpm15": {},
+      "/pinctrl@15C30000/gpm32": {},
+      "/pinctrl@15C30000/gpm33": {},
+      "/pinctrl@15C30000/hsi2c45-bus": {
+        "samsung,pin-function": [
+          3
+        ],
+        "samsung,pins": [
+          "gpm14-0",
+          "gpm15-0"
+        ]
+      }
+    },
+    "base_sha256": "ffcad4d6011d108329f801abb9ca9ee48cffd6ccfc2704ea47d5e8f24507e22b",
+    "overlay_nodes": {
+      "/fragment@16": {
+        "target": [
+          {
+            "base_path": "/hsi2c@10560000",
+            "symbol": "hsi2c_1"
+          }
+        ]
+      },
+      "/fragment@16/__overlay__": {
+        "clock-frequency": [
+          1000000
+        ],
+        "gpios": [
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          2,
+          0,
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          3,
+          0
+        ],
+        "pinctrl-0": [
+          33
+        ],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@10430000/hsi2c1-bus",
+            "symbol": "hsi2c1_bus"
+          }
+        ],
+        "pinctrl-2": [
+          33
+        ],
+        "pinctrl-names": [
+          "default",
+          "on_i2c",
+          "off_i2c"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@16/__overlay__/is-gw2@2D": {
+        "compatible": [
+          "samsung,exynos-is-cis-gw2"
+        ],
+        "id": [
+          2
+        ],
+        "reg": [
+          45
+        ],
+        "setfile": [
+          "setA"
+        ]
+      },
+      "/fragment@19": {
+        "target": [
+          {
+            "base_path": "/hsi2c@15D70000",
+            "symbol": "hsi2c_45"
+          }
+        ]
+      },
+      "/fragment@19/__overlay__": {
+        "clock-frequency": [
+          1000000
+        ],
+        "gpios": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm14",
+            "symbol": "gpm14"
+          },
+          0,
+          0,
+          {
+            "base_path": "/pinctrl@15C30000/gpm15",
+            "symbol": "gpm15"
+          },
+          0,
+          0
+        ],
+        "pinctrl-0": [
+          36
+        ],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@15C30000/hsi2c45-bus",
+            "symbol": "hsi2c45_bus"
+          }
+        ],
+        "pinctrl-2": [
+          36
+        ],
+        "pinctrl-names": [
+          "default",
+          "on_i2c",
+          "off_i2c"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@19/__overlay__/is-2la@2D": {
+        "compatible": [
+          "samsung,exynos-is-cis-2la"
+        ],
+        "id": [
+          4
+        ],
+        "reg": [
+          45
+        ],
+        "setfile": [
+          "setA"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@22": {
+        "target": [
+          {
+            "base_path": "/is_sensor2@17050000",
+            "symbol": "is_sensor2"
+          }
+        ]
+      },
+      "/fragment@22/__overlay__": {
+        "csi_ch": [
+          2
+        ],
+        "dma_ch": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "id": [
+          2
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          {
+            "base_path": "/dcphy_m0s4s4s4s4s4s2_csi2@17020500",
+            "symbol": "mipi_phy_csis2_m0s4s4s4s4s4s2"
+          },
+          0
+        ],
+        "reg": [
+          0,
+          386203648,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ],
+        "status": [
+          "okay"
+        ],
+        "use_cphy": [
+          1
+        ],
+        "vc_ch": [
+          0,
+          1,
+          2,
+          3,
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "/fragment@22/__overlay__/sensor2-ch-mode0": {
+        "mux_reg": [
+          386008096,
+          4
+        ],
+        "reg": [
+          386678784,
+          256,
+          386679808,
+          256,
+          386679040,
+          256,
+          386679808,
+          256,
+          386679296,
+          256,
+          386679808,
+          256,
+          386679552,
+          256,
+          386679808,
+          256
+        ]
+      },
+      "/fragment@22/__overlay__/sensor2-ch-mode1": {
+        "mux_reg": [
+          386008096,
+          4
+        ],
+        "reg": [
+          386678784,
+          256,
+          386679808,
+          256,
+          386679040,
+          256,
+          386679808,
+          256,
+          386679296,
+          256,
+          386679808,
+          256,
+          386679552,
+          256,
+          386679808,
+          256
+        ]
+      },
+      "/fragment@24": {
+        "target": [
+          {
+            "base_path": "/is_sensor4@17070000",
+            "symbol": "is_sensor4"
+          }
+        ]
+      },
+      "/fragment@24/__overlay__": {
+        "csi_ch": [
+          4
+        ],
+        "dma_ch": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "id": [
+          4
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          {
+            "base_path": "/dcphy_m0s4s4s4s4s4s2_csi4@17020500",
+            "symbol": "mipi_phy_csis4_m0s4s4s4s4s4s2"
+          },
+          0
+        ],
+        "reg": [
+          0,
+          386334720,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ],
+        "status": [
+          "okay"
+        ],
+        "use_cphy": [
+          1
+        ],
+        "vc_ch": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "/fragment@24/__overlay__/sensor4-ch-mode0": {
+        "mux_reg": [
+          386008084,
+          4
+        ],
+        "reg": [
+          386666496,
+          256,
+          386667520,
+          256,
+          386666752,
+          256,
+          386667520,
+          256,
+          386667008,
+          256,
+          386667520,
+          256,
+          386667264,
+          256,
+          386667520,
+          256
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-buck2": {
+        "regulator-max-microvolt": [
+          1300000
+        ],
+        "regulator-min-microvolt": [
+          1300000
+        ],
+        "regulator-name": [
+          "S2MPB02_BUCK2"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo10": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDD_1.8V_OIS"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo12": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo13": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo3": {
+        "regulator-max-microvolt": [
+          1050000
+        ],
+        "regulator-min-microvolt": [
+          1050000
+        ],
+        "regulator-name": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo6": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_VT"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo7": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo8": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo1": {
+        "regulator-max-microvolt": [
+          1050000
+        ],
+        "regulator-min-microvolt": [
+          1050000
+        ],
+        "regulator-name": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo3": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_CAM"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo6": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo7": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDD_VM_2.8V_OIS"
+        ]
+      },
+      "/fragment@camera": {},
+      "/fragment@camera/__overlay__": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D": {
+        "active_height": [
+          3024
+        ],
+        "active_width": [
+          4032
+        ],
+        "bitwidth": [
+          10
+        ],
+        "compatible": [
+          "samsung,sensor-module"
+        ],
+        "id": [
+          4
+        ],
+        "max_framerate": [
+          120
+        ],
+        "mclk_ch": [
+          3
+        ],
+        "pinctrl-0": [],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@10730000/sensor-mclk4-out",
+            "symbol": "sensor_mclk4_out"
+          }
+        ],
+        "pinctrl-2": [
+          {
+            "base_path": "/pinctrl@10730000/sensor-mclk4-fn",
+            "symbol": "sensor_mclk4_fn"
+          }
+        ],
+        "pinctrl-3": [],
+        "pinctrl-names": [
+          "pin0",
+          "pin1",
+          "pin2",
+          "release"
+        ],
+        "position": [
+          4
+        ],
+        "sensor_i2c_ch": [
+          4
+        ],
+        "sensor_id": [
+          53
+        ],
+        "sensor_maker": [
+          "SLSI"
+        ],
+        "sensor_name": [
+          "S5K2LA"
+        ],
+        "setfile_name": [
+          "setfile_2la.bin"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/af": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/flash": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode0": {
+        "common": [
+          4032,
+          3024,
+          30,
+          0,
+          0,
+          2,
+          1501,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4032,
+          3024,
+          43,
+          0,
+          4032,
+          3024
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode1": {
+        "common": [
+          4032,
+          2268,
+          60,
+          0,
+          1,
+          2,
+          1501,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4032,
+          2268,
+          43,
+          0,
+          4032,
+          2268
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode2": {
+        "common": [
+          4032,
+          2268,
+          30,
+          0,
+          2,
+          2,
+          1501,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4032,
+          2268,
+          43,
+          0,
+          4032,
+          2268
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode3": {
+        "common": [
+          2016,
+          1134,
+          240,
+          0,
+          3,
+          2,
+          1950,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          2016,
+          1134,
+          43,
+          0,
+          2016,
+          1134
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode4": {
+        "common": [
+          2016,
+          1134,
+          120,
+          0,
+          4,
+          2,
+          1950,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          2016,
+          1134,
+          43,
+          0,
+          2016,
+          1134
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode5": {
+        "common": [
+          4032,
+          3024,
+          60,
+          0,
+          5,
+          2,
+          1501,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4032,
+          3024,
+          43,
+          0,
+          4032,
+          3024
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/ois": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq": {
+        "gpio_mclk": [
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          3,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/140": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "S2MPB02_BUCK2"
+        ],
+        "share": [
+          2,
+          5,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/20": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/30": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/40": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/50": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/60": {
+        "pin": [
+          7,
+          0,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/70": {
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/20": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/30": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/40": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/5": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "S2MPB02_BUCK2"
+        ],
+        "share": [
+          1,
+          5,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/50": {
+        "pin": [
+          6,
+          1,
+          10
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/60": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          1,
+          10
+        ],
+        "pname": [
+          "sen_rst high"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/70": {
+        "pin": [
+          4,
+          2,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/80": {
+        "pin": [
+          7,
+          1,
+          2000
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          4
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_off/10": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_off/20": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          4
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_on/10": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_on/20": {
+        "pin": [
+          6,
+          1,
+          0
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/20": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/30": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/40": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/50": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/60": {
+        "pin": [
+          7,
+          0,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/70": {
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/20": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/30": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/40": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/50": {
+        "pin": [
+          6,
+          1,
+          10
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/60": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          1,
+          10
+        ],
+        "pname": [
+          "sen_rst high"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/70": {
+        "pin": [
+          4,
+          2,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/80": {
+        "pin": [
+          7,
+          1,
+          2000
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/preprocessor": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/vc_extra": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A": {
+        "active_height": [
+          6936
+        ],
+        "active_width": [
+          9248
+        ],
+        "bitwidth": [
+          10
+        ],
+        "compatible": [
+          "samsung,sensor-module"
+        ],
+        "id": [
+          2
+        ],
+        "max_framerate": [
+          240
+        ],
+        "mclk_ch": [
+          0
+        ],
+        "pinctrl-0": [],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@10730000/sensor-mclk0-out",
+            "symbol": "sensor_mclk0_out"
+          }
+        ],
+        "pinctrl-2": [
+          {
+            "base_path": "/pinctrl@10730000/sensor-mclk0-fn",
+            "symbol": "sensor_mclk0_fn"
+          }
+        ],
+        "pinctrl-3": [],
+        "pinctrl-names": [
+          "pin0",
+          "pin1",
+          "pin2",
+          "release"
+        ],
+        "position": [
+          2
+        ],
+        "sensor_i2c_ch": [
+          1
+        ],
+        "sensor_id": [
+          54
+        ],
+        "sensor_maker": [
+          "SLSI"
+        ],
+        "sensor_name": [
+          "S5KGW2"
+        ],
+        "setfile_name": [
+          "setfile_gw2.bin"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/af": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/flash": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/mcu": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode0": {
+        "common": [
+          9248,
+          6936,
+          15,
+          0,
+          0,
+          2,
+          2964,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          9248,
+          6936,
+          43,
+          0,
+          9248,
+          6936
+        ],
+        "vc1": [
+          1,
+          43,
+          1152,
+          1720,
+          43,
+          1,
+          1152,
+          1720
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode1": {
+        "common": [
+          7680,
+          4320,
+          30,
+          0,
+          1,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          7680,
+          4320,
+          43,
+          0,
+          7680,
+          4320
+        ],
+        "vc1": [
+          1,
+          43,
+          960,
+          1064,
+          43,
+          1,
+          960,
+          1064
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode2": {
+        "common": [
+          4864,
+          3648,
+          30,
+          0,
+          2,
+          2,
+          2964,
+          3,
+          0,
+          4,
+          0
+        ],
+        "vc0": [
+          0,
+          43,
+          4864,
+          3648,
+          43,
+          0,
+          4864,
+          3648
+        ],
+        "vc1": [
+          1,
+          43,
+          608,
+          904,
+          43,
+          1,
+          608,
+          904
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode3": {
+        "common": [
+          4864,
+          2736,
+          30,
+          0,
+          3,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          4864,
+          2736,
+          43,
+          0,
+          4864,
+          2736
+        ],
+        "vc1": [
+          1,
+          43,
+          608,
+          680,
+          43,
+          1,
+          608,
+          680
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode4": {
+        "common": [
+          4624,
+          3468,
+          30,
+          0,
+          4,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          4624,
+          3468,
+          43,
+          0,
+          4624,
+          3468
+        ],
+        "vc1": [
+          1,
+          43,
+          1152,
+          1712,
+          43,
+          1,
+          1152,
+          1712
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode5": {
+        "common": [
+          4624,
+          2604,
+          30,
+          0,
+          5,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          4624,
+          2604,
+          43,
+          0,
+          4624,
+          2604
+        ],
+        "vc1": [
+          1,
+          43,
+          1152,
+          1280,
+          43,
+          1,
+          1152,
+          1280
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode6": {
+        "common": [
+          4624,
+          2604,
+          60,
+          0,
+          6,
+          2,
+          2964,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4624,
+          2604,
+          43,
+          0,
+          4624,
+          2604
+        ],
+        "vc1": [
+          1,
+          43,
+          1152,
+          1280,
+          43,
+          1,
+          1152,
+          1280
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode7": {
+        "common": [
+          2432,
+          1824,
+          30,
+          0,
+          7,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          2432,
+          1824,
+          43,
+          0,
+          2432,
+          1824
+        ],
+        "vc1": [
+          1,
+          43,
+          608,
+          904,
+          43,
+          1,
+          608,
+          904
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode8": {
+        "common": [
+          1920,
+          1080,
+          120,
+          0,
+          8,
+          2,
+          2236,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          1920,
+          1080,
+          43,
+          0,
+          1920,
+          1080
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode9": {
+        "common": [
+          1920,
+          1080,
+          240,
+          0,
+          9,
+          2,
+          2236,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          1920,
+          1080,
+          43,
+          0,
+          1920,
+          1080
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq": {
+        "gpio_mclk": [
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          0,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm32",
+            "symbol": "gpm32"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/100": {
+        "pin": [
+          4,
+          1,
+          0
+        ],
+        "pname": [
+          "pin"
+        ],
+        "share": [
+          2,
+          1,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/110": {
+        "pin": [
+          4,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/20": {
+        "pin": [
+          5,
+          0,
+          9
+        ],
+        "pname": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/30": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/40": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_CAM"
+        ],
+        "share": [
+          2,
+          2,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/50": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/55": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_VT"
+        ],
+        "share": [
+          2,
+          6,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/60": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/70": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/76": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.8V_OIS"
+        ],
+        "share": [
+          2,
+          4,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/77": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDD_VM_2.8V_OIS"
+        ],
+        "share": [
+          2,
+          3,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/80": {
+        "pin": [
+          7,
+          0,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ],
+        "share": [
+          2,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/90": {
+        "pin": [
+          4,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/10": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/20": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/30": {
+        "pin": [
+          5,
+          1,
+          2000
+        ],
+        "pname": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/35": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDD_VM_2.8V_OIS"
+        ],
+        "share": [
+          1,
+          3,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/36": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.8V_OIS"
+        ],
+        "share": [
+          1,
+          4,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/40": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDDIO_1.8V_CAM"
+        ],
+        "share": [
+          1,
+          2,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/45": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_VT"
+        ],
+        "share": [
+          1,
+          6,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/50": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/60": {
+        "pin": [
+          6,
+          1,
+          10
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/70": {
+        "pin": [
+          4,
+          2,
+          0
+        ],
+        "pname": [
+          "pin"
+        ],
+        "share": [
+          1,
+          1,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/80": {
+        "pin": [
+          7,
+          1,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ],
+        "share": [
+          1,
+          0,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/90": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm32",
+            "symbol": "gpm32"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          1,
+          8000
+        ],
+        "pname": [
+          "sen_rst high"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm32",
+            "symbol": "gpm32"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/100": {
+        "pin": [
+          4,
+          1,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/110": {
+        "pin": [
+          4,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/20": {
+        "pin": [
+          5,
+          0,
+          9
+        ],
+        "pname": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/30": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/40": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_CAM"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/50": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/60": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/70": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/80": {
+        "pin": [
+          7,
+          0,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/90": {
+        "pin": [
+          4,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/10": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/20": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/30": {
+        "pin": [
+          5,
+          1,
+          2000
+        ],
+        "pname": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/40": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDDIO_1.8V_CAM"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/50": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/60": {
+        "pin": [
+          6,
+          1,
+          10
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/70": {
+        "pin": [
+          4,
+          2,
+          10
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/80": {
+        "pin": [
+          7,
+          1,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/90": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm32",
+            "symbol": "gpm32"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          1,
+          8000
+        ],
+        "pname": [
+          "sen_rst high"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/preprocessor": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/vc_extra": {}
+    },
+    "overlay_sha256": "e1e3d424797fc045df23b2123661a6731ca79bcea52a18a3531f820190798c5e",
+    "schema": 1,
+    "status": "offline inventory; no sensor identity or capture verified"
+  },
+  {
+    "base_nodes": {
+      "/dcphy_m0s4s4s4s4s4s2_csi2@17020500": {
+        "compatible": [
+          "samsung,mipi-phy-m0s4s4s4s4s4s2"
+        ],
+        "isolation": [
+          1840
+        ],
+        "owner": [
+          1
+        ],
+        "reg": [
+          0,
+          386734848,
+          1280
+        ],
+        "reset": [
+          1
+        ],
+        "samsung,pmu-syscon": [
+          234
+        ],
+        "samsung,reset-sysreg": [
+          264
+        ]
+      },
+      "/dcphy_m0s4s4s4s4s4s2_csi4@17020500": {
+        "compatible": [
+          "samsung,mipi-phy-m0s4s4s4s4s4s2"
+        ],
+        "isolation": [
+          1840
+        ],
+        "owner": [
+          1
+        ],
+        "reg": [
+          0,
+          386736896,
+          1280
+        ],
+        "reset": [
+          2
+        ],
+        "samsung,pmu-syscon": [
+          234
+        ],
+        "samsung,reset-sysreg": [
+          264
+        ]
+      },
+      "/hsi2c@10560000": {
+        "compatible": [
+          "samsung,exynos5-hsi2c"
+        ],
+        "pinctrl-0": [
+          16
+        ],
+        "pinctrl-names": [
+          "default"
+        ],
+        "reg": [
+          0,
+          274071552,
+          4096
+        ],
+        "status": [
+          "disabled"
+        ]
+      },
+      "/hsi2c@15D70000": {
+        "compatible": [
+          "samsung,exynos5-hsi2c"
+        ],
+        "pinctrl-0": [
+          83
+        ],
+        "pinctrl-names": [
+          "default"
+        ],
+        "reg": [
+          0,
+          366411776,
+          4096
+        ],
+        "status": [
+          "disabled"
+        ]
+      },
+      "/is_sensor2@17050000": {
+        "compatible": [
+          "samsung,exynos-is-sensor"
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          268,
+          0
+        ],
+        "reg": [
+          0,
+          386203648,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ]
+      },
+      "/is_sensor2@17050000/sensor2-ch-mode0": {
+        "mux_reg": [
+          386008084,
+          4
+        ],
+        "reg": [
+          386666496,
+          256,
+          386667520,
+          256,
+          386666752,
+          256,
+          386667520,
+          256,
+          386667008,
+          256,
+          386667520,
+          256,
+          386667264,
+          256,
+          386667520,
+          256
+        ]
+      },
+      "/is_sensor4@17070000": {
+        "compatible": [
+          "samsung,exynos-is-sensor"
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          270,
+          0
+        ],
+        "reg": [
+          0,
+          386334720,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ]
+      },
+      "/is_sensor4@17070000/sensor4-ch-mode0": {
+        "mux_reg": [
+          386008084,
+          4
+        ],
+        "reg": [
+          386666496,
+          256,
+          386667520,
+          256,
+          386666752,
+          256,
+          386667520,
+          256,
+          386667008,
+          256,
+          386667520,
+          256,
+          386667264,
+          256,
+          386667520,
+          256
+        ]
+      },
+      "/pinctrl@10430000/hsi2c1-bus": {
+        "samsung,pin-function": [
+          3
+        ],
+        "samsung,pins": [
+          "gpp0-2",
+          "gpp0-3"
+        ]
+      },
+      "/pinctrl@10730000/gpc0": {},
+      "/pinctrl@10730000/sensor-mclk0-fn": {
+        "samsung,pin-function": [
+          2
+        ],
+        "samsung,pins": [
+          "gpc0-0"
+        ]
+      },
+      "/pinctrl@10730000/sensor-mclk0-out": {
+        "samsung,pin-function": [
+          1
+        ],
+        "samsung,pins": [
+          "gpc0-0"
+        ]
+      },
+      "/pinctrl@10730000/sensor-mclk4-fn": {
+        "samsung,pin-function": [
+          2
+        ],
+        "samsung,pins": [
+          "gpc0-3"
+        ]
+      },
+      "/pinctrl@10730000/sensor-mclk4-out": {
+        "samsung,pin-function": [
+          1
+        ],
+        "samsung,pins": [
+          "gpc0-3"
+        ]
+      },
+      "/pinctrl@15C30000/gpm14": {},
+      "/pinctrl@15C30000/gpm15": {},
+      "/pinctrl@15C30000/gpm32": {},
+      "/pinctrl@15C30000/gpm33": {},
+      "/pinctrl@15C30000/hsi2c45-bus": {
+        "samsung,pin-function": [
+          3
+        ],
+        "samsung,pins": [
+          "gpm14-0",
+          "gpm15-0"
+        ]
+      }
+    },
+    "base_sha256": "ffcad4d6011d108329f801abb9ca9ee48cffd6ccfc2704ea47d5e8f24507e22b",
+    "overlay_nodes": {
+      "/fragment@16": {
+        "target": [
+          {
+            "base_path": "/hsi2c@10560000",
+            "symbol": "hsi2c_1"
+          }
+        ]
+      },
+      "/fragment@16/__overlay__": {
+        "clock-frequency": [
+          1000000
+        ],
+        "gpios": [
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          2,
+          0,
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          3,
+          0
+        ],
+        "pinctrl-0": [
+          34
+        ],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@10430000/hsi2c1-bus",
+            "symbol": "hsi2c1_bus"
+          }
+        ],
+        "pinctrl-2": [
+          34
+        ],
+        "pinctrl-names": [
+          "default",
+          "on_i2c",
+          "off_i2c"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@16/__overlay__/is-gw2@2D": {
+        "compatible": [
+          "samsung,exynos-is-cis-gw2"
+        ],
+        "id": [
+          2
+        ],
+        "reg": [
+          45
+        ],
+        "setfile": [
+          "setA"
+        ]
+      },
+      "/fragment@19": {
+        "target": [
+          {
+            "base_path": "/hsi2c@15D70000",
+            "symbol": "hsi2c_45"
+          }
+        ]
+      },
+      "/fragment@19/__overlay__": {
+        "clock-frequency": [
+          1000000
+        ],
+        "gpios": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm14",
+            "symbol": "gpm14"
+          },
+          0,
+          0,
+          {
+            "base_path": "/pinctrl@15C30000/gpm15",
+            "symbol": "gpm15"
+          },
+          0,
+          0
+        ],
+        "pinctrl-0": [
+          37
+        ],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@15C30000/hsi2c45-bus",
+            "symbol": "hsi2c45_bus"
+          }
+        ],
+        "pinctrl-2": [
+          37
+        ],
+        "pinctrl-names": [
+          "default",
+          "on_i2c",
+          "off_i2c"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@19/__overlay__/is-2la@2D": {
+        "compatible": [
+          "samsung,exynos-is-cis-2la"
+        ],
+        "id": [
+          4
+        ],
+        "reg": [
+          45
+        ],
+        "setfile": [
+          "setA"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@22": {
+        "target": [
+          {
+            "base_path": "/is_sensor2@17050000",
+            "symbol": "is_sensor2"
+          }
+        ]
+      },
+      "/fragment@22/__overlay__": {
+        "csi_ch": [
+          2
+        ],
+        "dma_ch": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "id": [
+          2
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          {
+            "base_path": "/dcphy_m0s4s4s4s4s4s2_csi2@17020500",
+            "symbol": "mipi_phy_csis2_m0s4s4s4s4s4s2"
+          },
+          0
+        ],
+        "reg": [
+          0,
+          386203648,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ],
+        "status": [
+          "okay"
+        ],
+        "use_cphy": [
+          1
+        ],
+        "vc_ch": [
+          0,
+          1,
+          2,
+          3,
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "/fragment@22/__overlay__/sensor2-ch-mode0": {
+        "mux_reg": [
+          386008096,
+          4
+        ],
+        "reg": [
+          386678784,
+          256,
+          386679808,
+          256,
+          386679040,
+          256,
+          386679808,
+          256,
+          386679296,
+          256,
+          386679808,
+          256,
+          386679552,
+          256,
+          386679808,
+          256
+        ]
+      },
+      "/fragment@22/__overlay__/sensor2-ch-mode1": {
+        "mux_reg": [
+          386008096,
+          4
+        ],
+        "reg": [
+          386678784,
+          256,
+          386679808,
+          256,
+          386679040,
+          256,
+          386679808,
+          256,
+          386679296,
+          256,
+          386679808,
+          256,
+          386679552,
+          256,
+          386679808,
+          256
+        ]
+      },
+      "/fragment@24": {
+        "target": [
+          {
+            "base_path": "/is_sensor4@17070000",
+            "symbol": "is_sensor4"
+          }
+        ]
+      },
+      "/fragment@24/__overlay__": {
+        "csi_ch": [
+          4
+        ],
+        "dma_ch": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "id": [
+          4
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          {
+            "base_path": "/dcphy_m0s4s4s4s4s4s2_csi4@17020500",
+            "symbol": "mipi_phy_csis4_m0s4s4s4s4s4s2"
+          },
+          0
+        ],
+        "reg": [
+          0,
+          386334720,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ],
+        "status": [
+          "okay"
+        ],
+        "use_cphy": [
+          1
+        ],
+        "vc_ch": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "/fragment@24/__overlay__/sensor4-ch-mode0": {
+        "mux_reg": [
+          386008084,
+          4
+        ],
+        "reg": [
+          386666496,
+          256,
+          386667520,
+          256,
+          386666752,
+          256,
+          386667520,
+          256,
+          386667008,
+          256,
+          386667520,
+          256,
+          386667264,
+          256,
+          386667520,
+          256
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-buck2": {
+        "regulator-max-microvolt": [
+          1300000
+        ],
+        "regulator-min-microvolt": [
+          1300000
+        ],
+        "regulator-name": [
+          "S2MPB02_BUCK2"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo10": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDD_1.8V_OIS"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo12": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo13": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo3": {
+        "regulator-max-microvolt": [
+          1050000
+        ],
+        "regulator-min-microvolt": [
+          1050000
+        ],
+        "regulator-name": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo6": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_VT"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo7": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo8": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo1": {
+        "regulator-max-microvolt": [
+          1050000
+        ],
+        "regulator-min-microvolt": [
+          1050000
+        ],
+        "regulator-name": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo3": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_CAM"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo6": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo7": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDD_VM_2.8V_OIS"
+        ]
+      },
+      "/fragment@camera": {},
+      "/fragment@camera/__overlay__": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D": {
+        "active_height": [
+          3024
+        ],
+        "active_width": [
+          4032
+        ],
+        "bitwidth": [
+          10
+        ],
+        "compatible": [
+          "samsung,sensor-module"
+        ],
+        "id": [
+          4
+        ],
+        "max_framerate": [
+          120
+        ],
+        "mclk_ch": [
+          3
+        ],
+        "pinctrl-0": [],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@10730000/sensor-mclk4-out",
+            "symbol": "sensor_mclk4_out"
+          }
+        ],
+        "pinctrl-2": [
+          {
+            "base_path": "/pinctrl@10730000/sensor-mclk4-fn",
+            "symbol": "sensor_mclk4_fn"
+          }
+        ],
+        "pinctrl-3": [],
+        "pinctrl-names": [
+          "pin0",
+          "pin1",
+          "pin2",
+          "release"
+        ],
+        "position": [
+          4
+        ],
+        "sensor_i2c_ch": [
+          4
+        ],
+        "sensor_id": [
+          53
+        ],
+        "sensor_maker": [
+          "SLSI"
+        ],
+        "sensor_name": [
+          "S5K2LA"
+        ],
+        "setfile_name": [
+          "setfile_2la.bin"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/af": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/flash": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode0": {
+        "common": [
+          4032,
+          3024,
+          30,
+          0,
+          0,
+          2,
+          1501,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4032,
+          3024,
+          43,
+          0,
+          4032,
+          3024
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode1": {
+        "common": [
+          4032,
+          2268,
+          60,
+          0,
+          1,
+          2,
+          1501,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4032,
+          2268,
+          43,
+          0,
+          4032,
+          2268
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode2": {
+        "common": [
+          4032,
+          2268,
+          30,
+          0,
+          2,
+          2,
+          1501,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4032,
+          2268,
+          43,
+          0,
+          4032,
+          2268
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode3": {
+        "common": [
+          2016,
+          1134,
+          240,
+          0,
+          3,
+          2,
+          1950,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          2016,
+          1134,
+          43,
+          0,
+          2016,
+          1134
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode4": {
+        "common": [
+          2016,
+          1134,
+          120,
+          0,
+          4,
+          2,
+          1950,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          2016,
+          1134,
+          43,
+          0,
+          2016,
+          1134
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/modes/mode5": {
+        "common": [
+          4032,
+          3024,
+          60,
+          0,
+          5,
+          2,
+          1501,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4032,
+          3024,
+          43,
+          0,
+          4032,
+          3024
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/ois": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq": {
+        "gpio_mclk": [
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          3,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/140": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "S2MPB02_BUCK2"
+        ],
+        "share": [
+          2,
+          5,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/20": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/30": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/40": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/50": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/60": {
+        "pin": [
+          7,
+          0,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_off/70": {
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/20": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/30": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/40": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/5": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "S2MPB02_BUCK2"
+        ],
+        "share": [
+          1,
+          5,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/50": {
+        "pin": [
+          6,
+          1,
+          10
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/60": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          1,
+          10
+        ],
+        "pname": [
+          "sen_rst high"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/70": {
+        "pin": [
+          4,
+          2,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_normal_on/80": {
+        "pin": [
+          7,
+          1,
+          2000
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          4
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_off/10": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_off/20": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          4
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_on/10": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_read_rom_on/20": {
+        "pin": [
+          6,
+          1,
+          0
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/20": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/30": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/40": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/50": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/60": {
+        "pin": [
+          7,
+          0,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_off/70": {
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/20": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/30": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/40": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/50": {
+        "pin": [
+          6,
+          1,
+          10
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/60": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm33",
+            "symbol": "gpm33"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          1,
+          10
+        ],
+        "pname": [
+          "sen_rst high"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/70": {
+        "pin": [
+          4,
+          2,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/power_seq/scenario_vision_on/80": {
+        "pin": [
+          7,
+          1,
+          2000
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/preprocessor": {},
+      "/fragment@camera/__overlay__/is_sensor_2la@2D/vc_extra": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A": {
+        "active_height": [
+          6936
+        ],
+        "active_width": [
+          9248
+        ],
+        "bitwidth": [
+          10
+        ],
+        "compatible": [
+          "samsung,sensor-module"
+        ],
+        "id": [
+          2
+        ],
+        "max_framerate": [
+          240
+        ],
+        "mclk_ch": [
+          0
+        ],
+        "pinctrl-0": [],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@10730000/sensor-mclk0-out",
+            "symbol": "sensor_mclk0_out"
+          }
+        ],
+        "pinctrl-2": [
+          {
+            "base_path": "/pinctrl@10730000/sensor-mclk0-fn",
+            "symbol": "sensor_mclk0_fn"
+          }
+        ],
+        "pinctrl-3": [],
+        "pinctrl-names": [
+          "pin0",
+          "pin1",
+          "pin2",
+          "release"
+        ],
+        "position": [
+          2
+        ],
+        "sensor_i2c_ch": [
+          1
+        ],
+        "sensor_id": [
+          54
+        ],
+        "sensor_maker": [
+          "SLSI"
+        ],
+        "sensor_name": [
+          "S5KGW2"
+        ],
+        "setfile_name": [
+          "setfile_gw2.bin"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/af": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/flash": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/mcu": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode0": {
+        "common": [
+          9248,
+          6936,
+          15,
+          0,
+          0,
+          2,
+          2964,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          9248,
+          6936,
+          43,
+          0,
+          9248,
+          6936
+        ],
+        "vc1": [
+          1,
+          43,
+          1152,
+          1720,
+          43,
+          1,
+          1152,
+          1720
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode1": {
+        "common": [
+          7680,
+          4320,
+          30,
+          0,
+          1,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          7680,
+          4320,
+          43,
+          0,
+          7680,
+          4320
+        ],
+        "vc1": [
+          1,
+          43,
+          960,
+          1064,
+          43,
+          1,
+          960,
+          1064
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode2": {
+        "common": [
+          4864,
+          3648,
+          30,
+          0,
+          2,
+          2,
+          2964,
+          3,
+          0,
+          4,
+          0
+        ],
+        "vc0": [
+          0,
+          43,
+          4864,
+          3648,
+          43,
+          0,
+          4864,
+          3648
+        ],
+        "vc1": [
+          1,
+          43,
+          608,
+          904,
+          43,
+          1,
+          608,
+          904
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode3": {
+        "common": [
+          4864,
+          2736,
+          30,
+          0,
+          3,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          4864,
+          2736,
+          43,
+          0,
+          4864,
+          2736
+        ],
+        "vc1": [
+          1,
+          43,
+          608,
+          680,
+          43,
+          1,
+          608,
+          680
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode4": {
+        "common": [
+          4624,
+          3468,
+          30,
+          0,
+          4,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          4624,
+          3468,
+          43,
+          0,
+          4624,
+          3468
+        ],
+        "vc1": [
+          1,
+          43,
+          1152,
+          1712,
+          43,
+          1,
+          1152,
+          1712
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode5": {
+        "common": [
+          4624,
+          2604,
+          30,
+          0,
+          5,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          4624,
+          2604,
+          43,
+          0,
+          4624,
+          2604
+        ],
+        "vc1": [
+          1,
+          43,
+          1152,
+          1280,
+          43,
+          1,
+          1152,
+          1280
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode6": {
+        "common": [
+          4624,
+          2604,
+          60,
+          0,
+          6,
+          2,
+          2964,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          4624,
+          2604,
+          43,
+          0,
+          4624,
+          2604
+        ],
+        "vc1": [
+          1,
+          43,
+          1152,
+          1280,
+          43,
+          1,
+          1152,
+          1280
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode7": {
+        "common": [
+          2432,
+          1824,
+          30,
+          0,
+          7,
+          2,
+          2964,
+          3,
+          0,
+          4
+        ],
+        "vc0": [
+          0,
+          43,
+          2432,
+          1824,
+          43,
+          0,
+          2432,
+          1824
+        ],
+        "vc1": [
+          1,
+          43,
+          608,
+          904,
+          43,
+          1,
+          608,
+          904
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode8": {
+        "common": [
+          1920,
+          1080,
+          120,
+          0,
+          8,
+          2,
+          2236,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          1920,
+          1080,
+          43,
+          0,
+          1920,
+          1080
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/modes/mode9": {
+        "common": [
+          1920,
+          1080,
+          240,
+          0,
+          9,
+          2,
+          2236,
+          3,
+          0,
+          5
+        ],
+        "vc0": [
+          0,
+          43,
+          1920,
+          1080,
+          43,
+          0,
+          1920,
+          1080
+        ],
+        "vc1": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc2": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "vc3": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq": {
+        "gpio_mclk": [
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          0,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm32",
+            "symbol": "gpm32"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/100": {
+        "pin": [
+          4,
+          1,
+          0
+        ],
+        "pname": [
+          "pin"
+        ],
+        "share": [
+          2,
+          1,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/110": {
+        "pin": [
+          4,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/20": {
+        "pin": [
+          5,
+          0,
+          9
+        ],
+        "pname": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/30": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/40": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_CAM"
+        ],
+        "share": [
+          2,
+          2,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/50": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/55": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_VT"
+        ],
+        "share": [
+          2,
+          6,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/60": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/70": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/76": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.8V_OIS"
+        ],
+        "share": [
+          2,
+          4,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/77": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDD_VM_2.8V_OIS"
+        ],
+        "share": [
+          2,
+          3,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/80": {
+        "pin": [
+          7,
+          0,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ],
+        "share": [
+          2,
+          0,
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_off/90": {
+        "pin": [
+          4,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          0
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/10": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/20": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/30": {
+        "pin": [
+          5,
+          1,
+          2000
+        ],
+        "pname": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/35": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDD_VM_2.8V_OIS"
+        ],
+        "share": [
+          1,
+          3,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/36": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.8V_OIS"
+        ],
+        "share": [
+          1,
+          4,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/40": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDDIO_1.8V_CAM"
+        ],
+        "share": [
+          1,
+          2,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/45": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_VT"
+        ],
+        "share": [
+          1,
+          6,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/50": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/60": {
+        "pin": [
+          6,
+          1,
+          10
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/70": {
+        "pin": [
+          4,
+          2,
+          0
+        ],
+        "pname": [
+          "pin"
+        ],
+        "share": [
+          1,
+          1,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/80": {
+        "pin": [
+          7,
+          1,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ],
+        "share": [
+          1,
+          0,
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_normal_on/90": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm32",
+            "symbol": "gpm32"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          1,
+          8000
+        ],
+        "pname": [
+          "sen_rst high"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off": {
+        "gpio_scenario": [
+          1
+        ],
+        "sensor_scenario": [
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/10": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm32",
+            "symbol": "gpm32"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          0,
+          0
+        ],
+        "pname": [
+          "sen_rst low"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/100": {
+        "pin": [
+          4,
+          1,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/110": {
+        "pin": [
+          4,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/20": {
+        "pin": [
+          5,
+          0,
+          9
+        ],
+        "pname": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/30": {
+        "pin": [
+          6,
+          0,
+          0
+        ],
+        "pname": [
+          "off_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/40": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_CAM"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/50": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/60": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/70": {
+        "pin": [
+          5,
+          0,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/80": {
+        "pin": [
+          7,
+          0,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_off/90": {
+        "pin": [
+          4,
+          0,
+          0
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on": {
+        "gpio_scenario": [
+          0
+        ],
+        "sensor_scenario": [
+          1
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/10": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/20": {
+        "pin": [
+          5,
+          1,
+          0
+        ],
+        "pname": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/30": {
+        "pin": [
+          5,
+          1,
+          2000
+        ],
+        "pname": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/40": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDDIO_1.8V_CAM"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/50": {
+        "pin": [
+          5,
+          1,
+          100
+        ],
+        "pname": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/60": {
+        "pin": [
+          6,
+          1,
+          10
+        ],
+        "pname": [
+          "on_i2c"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/70": {
+        "pin": [
+          4,
+          2,
+          10
+        ],
+        "pname": [
+          "pin"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/80": {
+        "pin": [
+          7,
+          1,
+          0
+        ],
+        "pname": [
+          "MCLK"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/power_seq/scenario_vision_on/90": {
+        "gpio": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm32",
+            "symbol": "gpm32"
+          },
+          0,
+          1
+        ],
+        "pin": [
+          1,
+          1,
+          8000
+        ],
+        "pname": [
+          "sen_rst high"
+        ]
+      },
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/preprocessor": {},
+      "/fragment@camera/__overlay__/is_sensor_gw2@5A/vc_extra": {}
+    },
+    "overlay_sha256": "956f6446ee4f4f9c8d35ba663ea026ad48d458d850f40b14c1b4a9876c74b7da",
+    "schema": 1,
+    "status": "offline inventory; no sensor identity or capture verified"
+  }
+]

@@ -11,17 +11,117 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
+#include <mach/mach_time.h>
 
 #include <IOKit/IOKitLib.h>
 
 #include "xf86drm.h"
 
-#define REDWOOD_GPU_SERVICE     "RedwoodGPU"
+int64_t os_time_get_nano(void);       /* Mesa's util/os_time.c: the clock its deadlines are on */
+
+#define REDWOOD_GPU_SERVICE     "RedwoodGPU"    /* the Adreno: Linux's msm */
+#define REDWOOD_MALI_SERVICE    "RedwoodMali"   /* the Mali-G77 (Exynos 990): Linux's panfrost (iokit/Kernel/RedwoodMali.cpp) */
+#define REDWOOD_SYNCOBJ_SET     0x7b            /* RedwoodMali: a syncobj's fence set, and read */
+#define REDWOOD_SYNCOBJ_GET     0x7c
 #define REDWOOD_GPU_SURFACE     0x7e            /* the request that is not Linux's */
 #define REDWOOD_GPU_DESCRIBE    0xffffffffu     /* ... asked only what the buffer would be like */
 
 static io_connect_t connection;
 static int connection_fd = -1;
+static int panfrost;                    /* the connection is RedwoodMali's */
+
+/*
+ * PANFROST'S IDLE QUERY, ANSWERED HERE (PLANS/10-mali2metal.md, item 2 B).
+ *
+ * Panfrost asks WAIT_BO with a deadline already past ("is it idle?") of every buffer it takes from its
+ * cache -- each new batch's descriptor pools -- and on this kernel every ask is an IOKit round trip
+ * (run 6's profile: ~9 % of the compiler library's time). The answer is two numbers the kernel already
+ * has: the buffer's last job and the GPU's completed count. RedwoodMali shares the second read-only (client
+ * memory type 0) and writes the job's number back into SUBMIT when the request is long enough to hold it
+ * (struct redwood_mali_submit_ex), so for a buffer this process made itself -- no other process can have
+ * given it a job -- the query needs no call. Imported or shared buffers, and a wait that may still sleep,
+ * go to the kernel as before.
+ */
+#define PANFROST_SUBMIT         0x40
+#define PANFROST_WAIT_BO        0x41
+#define PANFROST_CREATE_BO      0x42
+#define GEM_CLOSE               0x09
+#define MALI_HANDLES            8192            /* RedwoodMali.cpp: MALI_BUFFERS */
+
+static const volatile uint64_t *mali_completed;        /* the kernel's page, or NULL: no fast answers */
+static uint64_t mali_last_job[MALI_HANDLES + 1];       /* a handle's last job; 0: none yet */
+static uint8_t mali_own[MALI_HANDLES + 1];             /* made by this process's CREATE_BO */
+
+struct submit_ex {
+	uint8_t request[48];                    /* drm_panfrost_submit as the kernel has it (jm_ctx_handle, pad) */
+	uint64_t seqno;
+};
+
+static void
+mali_share_open(void)
+{
+	mach_vm_address_t address = 0;
+	mach_vm_size_t size = 0;
+
+	if (IOConnectMapMemory64(connection, 0, mach_task_self(), &address, &size, kIOMapAnywhere | kIOMapReadOnly) == 0 &&
+	    size >= sizeof(uint64_t)) {
+		mali_completed = (const volatile uint64_t *)(uintptr_t)address;
+	}
+}
+
+/* 1: answered (the result in *result, errno set on -1); 0: the kernel must be asked */
+static int
+mali_fast(unsigned number, void *arg, size_t size, int *result)
+{
+	if (mali_completed == NULL) {
+		return 0;
+	}
+	if (number == PANFROST_WAIT_BO && size >= 16) {
+		uint32_t handle = *(const uint32_t *)arg;
+		int64_t deadline = *(const int64_t *)((const char *)arg + 8);
+		uint64_t job;
+
+		if (handle == 0 || handle > MALI_HANDLES || !__atomic_load_n(&mali_own[handle], __ATOMIC_RELAXED)) {
+			return 0;
+		}
+		job = __atomic_load_n(&mali_last_job[handle], __ATOMIC_ACQUIRE);
+		if (job <= __atomic_load_n(mali_completed, __ATOMIC_ACQUIRE)) {
+			*result = 0;
+			return 1;
+		}
+		if (deadline <= os_time_get_nano()) {
+			errno = ETIMEDOUT;      /* busy, and the caller will not wait: what the kernel would say */
+			*result = -1;
+			return 1;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+/* what a request changes in the tables above, once the kernel has answered it */
+static void
+mali_note(unsigned number, const void *arg, size_t size, uint64_t seqno)
+{
+	if (number == PANFROST_CREATE_BO && size >= 12) {
+		uint32_t handle = ((const uint32_t *)arg)[2];
+
+		if (handle != 0 && handle <= MALI_HANDLES) {
+			__atomic_store_n(&mali_last_job[handle], 0, __ATOMIC_RELAXED);
+			__atomic_store_n(&mali_own[handle], 1, __ATOMIC_RELEASE);
+		}
+	} else if (number == PANFROST_SUBMIT && seqno != 0) {
+		const uint32_t *handles = (const uint32_t *)(uintptr_t)*(const uint64_t *)((const char *)arg + 24);
+		uint32_t count = *(const uint32_t *)((const char *)arg + 32);
+
+		for (uint32_t i = 0; handles != NULL && i < count; i++) {
+			if (handles[i] != 0 && handles[i] <= MALI_HANDLES) {
+				__atomic_store_n(&mali_last_job[handles[i]], seqno, __ATOMIC_RELEASE);
+			}
+		}
+	}
+}
 
 int
 drmOpenWithType(const char *name, const char *busid, int type)
@@ -30,13 +130,15 @@ drmOpenWithType(const char *name, const char *busid, int type)
 
 	(void)busid;
 	(void)type;
-	if (strcmp(name, "msm") != 0) {
+	int mali = strcmp(name, "panfrost") == 0;
+
+	if (strcmp(name, "msm") != 0 && !mali) {
 		return -1;
 	}
 	if (connection_fd >= 0) {
-		return dup(connection_fd);
+		return panfrost == mali ? dup(connection_fd) : -1;
 	}
-	service = IOServiceGetMatchingService(0, IOServiceMatching(REDWOOD_GPU_SERVICE));
+	service = IOServiceGetMatchingService(0, IOServiceMatching(mali ? REDWOOD_MALI_SERVICE : REDWOOD_GPU_SERVICE));
 	if (service == 0) {
 		return -1;
 	}
@@ -46,6 +148,10 @@ drmOpenWithType(const char *name, const char *busid, int type)
 	}
 	IOObjectRelease(service);
 	connection_fd = open("/dev/null", O_RDWR);
+	panfrost = mali;
+	if (mali) {
+		mali_share_open();
+	}
 	return dup(connection_fd);
 }
 
@@ -78,12 +184,40 @@ call(unsigned number, void *data, size_t size)
 int
 drmIoctl(int fd, unsigned long request, void *arg)
 {
-	int error = call((unsigned)(request & 0xff), arg, IOCPARM_LEN(request));
+	unsigned number = (unsigned)(request & 0xff);
+	size_t size = IOCPARM_LEN(request);
+	uint64_t seqno = 0;
+	int error, result;
 
 	(void)fd;
+	if (panfrost) {
+		if (mali_fast(number, arg, size, &result)) {
+			return result;
+		}
+		if (number == GEM_CLOSE && size >= 4) {
+			uint32_t handle = *(const uint32_t *)arg;
+
+			if (handle != 0 && handle <= MALI_HANDLES) {
+				__atomic_store_n(&mali_own[handle], 0, __ATOMIC_RELEASE);
+			}
+		}
+	}
+	if (panfrost && number == PANFROST_SUBMIT && mali_completed != NULL && size <= sizeof(((struct submit_ex *)0)->request)) {
+		struct submit_ex ex;
+
+		memset(&ex, 0, sizeof(ex));
+		memcpy(ex.request, arg, size);
+		error = call(number, &ex, sizeof(ex));
+		seqno = error == 0 ? ex.seqno : 0;
+	} else {
+		error = call(number, arg, size);
+	}
 	if (error != 0) {
 		errno = error;
 		return -1;
+	}
+	if (panfrost) {
+		mali_note(number, arg, size, seqno);
 	}
 	return 0;
 }
@@ -104,7 +238,8 @@ drmCommandWriteRead(int fd, unsigned long index, void *data, unsigned long size)
 
 /*
  * The driver calls itself what Linux's is called, and is of the version whose interface it has:
- * 1.7, buffers at addresses the kernel chooses and tells ("softpin"), nothing newer.
+ * msm 1.7, buffers at addresses the kernel chooses and tells ("softpin"), nothing newer; panfrost
+ * 1.3 (heap and no-exec buffers, the timestamp parameters), which is what Mesa 25.0 asks for.
  */
 drmVersionPtr
 drmGetVersion(int fd)
@@ -114,11 +249,11 @@ drmGetVersion(int fd)
 	(void)fd;
 	if (version != NULL) {
 		version->version_major = 1;
-		version->version_minor = 7;
-		version->name = strdup("msm");
-		version->name_len = 3;
+		version->version_minor = panfrost ? 3 : 7;
+		version->name = strdup(panfrost ? "panfrost" : "msm");
+		version->name_len = (int)strlen(version->name);
 		version->date = strdup("");
-		version->desc = strdup("Adreno on Darwin");
+		version->desc = strdup(panfrost ? "Mali-G77 on Darwin" : "Adreno on Darwin");
 		version->desc_len = (int)strlen(version->desc);
 	}
 	return version;
@@ -186,11 +321,49 @@ redwood_drm_surface(int fd, struct redwood_drm_surface *surface)
 }
 
 int
+redwood_drm_counts(uint64_t counts[4])
+{
+	int error = panfrost ? call(0x7d, counts, 4 * sizeof(uint64_t)) : ENOSYS;
+
+	if (error != 0) {
+		errno = error;
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * A buffer object handed to another part of this same process (a texture laid over a buffer's memory,
+ * air_metal.c's rwa_texture_from_buffer): the "file descriptor" is the handle itself with a tag no
+ * IOSurface ID has, and importing it gives the same handle back -- Panfrost then finds its own buffer object
+ * and takes a reference (panfrost_bo_import). Nothing leaves the process this way.
+ */
+#define REDWOOD_PRIME_LOCAL     0x40000000u
+
+int
+drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
+{
+	(void)fd;
+	(void)flags;
+	if (handle == 0 || (handle & REDWOOD_PRIME_LOCAL) != 0) {
+		errno = EINVAL;
+		return -1;
+	}
+	*prime_fd = (int)(handle | REDWOOD_PRIME_LOCAL);
+	return 0;
+}
+
+int
 drmPrimeFDToHandle(int fd, int surface, uint32_t *handle)
 {
 	struct redwood_drm_surface request = { .surface = (uint32_t)surface };
-	int error = call(REDWOOD_GPU_SURFACE, &request, sizeof(request));
+	int error;
 
+	if (((uint32_t)surface & REDWOOD_PRIME_LOCAL) != 0) {
+		*handle = (uint32_t)surface & ~REDWOOD_PRIME_LOCAL;
+		return 0;
+	}
+	error = call(REDWOOD_GPU_SURFACE, &request, sizeof(request));
 	(void)fd;
 	if (error != 0) {
 		errno = error;
@@ -207,20 +380,168 @@ none(void)
 	return -1;
 }
 
-/* Buffers and fences as file descriptors, for handing them to other programs and drivers: none of that here. */
+/* Buffers and fences as file descriptors for other programs and drivers: none of that here (drmPrimeHandleToFD
+ * above names a buffer only inside this process). */
 #define NONE(name, ...) int name(__VA_ARGS__) { return none(); }
-NONE(drmPrimeHandleToFD, __attribute__((unused)) int fd, __attribute__((unused)) uint32_t handle,
-    __attribute__((unused)) uint32_t flags, __attribute__((unused)) int *prime_fd)
-NONE(drmSyncobjCreate, __attribute__((unused)) int fd, __attribute__((unused)) uint32_t flags,
-    __attribute__((unused)) uint32_t *handle)
-NONE(drmSyncobjDestroy, __attribute__((unused)) int fd, __attribute__((unused)) uint32_t handle)
-NONE(drmSyncobjReset, __attribute__((unused)) int fd, __attribute__((unused)) const uint32_t *handles,
-    __attribute__((unused)) uint32_t count)
-NONE(drmSyncobjFDToHandle, __attribute__((unused)) int fd, __attribute__((unused)) int obj_fd,
-    __attribute__((unused)) uint32_t *handle)
-NONE(drmSyncobjHandleToFD, __attribute__((unused)) int fd, __attribute__((unused)) uint32_t handle,
-    __attribute__((unused)) int *obj_fd)
-NONE(drmSyncobjImportSyncFile, __attribute__((unused)) int fd, __attribute__((unused)) uint32_t handle,
-    __attribute__((unused)) int sync_file_fd)
-NONE(drmSyncobjExportSyncFile, __attribute__((unused)) int fd, __attribute__((unused)) uint32_t handle,
-    __attribute__((unused)) int *sync_file_fd)
+
+/*
+ * Syncobjs: the kernel's (RedwoodMali; RedwoodGPU has none). A sync file -- a fence as a file
+ * descriptor, for other drivers and programs -- is a descriptor of /dev/null here, with the fence
+ * it stands for kept beside it in this process: nothing outside it is handed one.
+ */
+#define SYNC_FILES 4096
+static uint64_t sync_file_fence[SYNC_FILES];
+
+struct syncobj_fence {
+	uint32_t handle, pad;
+	uint64_t fence;
+};
+
+static int
+fail(int error)
+{
+	if (error != 0) {
+		errno = error;
+		return -1;
+	}
+	return 0;
+}
+
+int
+drmSyncobjCreate(int fd, uint32_t flags, uint32_t *handle)
+{
+	struct drm_syncobj_create c = { .flags = flags };
+	int error = call(0xbf, &c, sizeof(c));
+
+	(void)fd;
+	if (error == 0) {
+		*handle = c.handle;
+	}
+	return fail(error);
+}
+
+int
+drmSyncobjDestroy(int fd, uint32_t handle)
+{
+	struct drm_syncobj_destroy d = { .handle = handle };
+
+	(void)fd;
+	return fail(call(0xc0, &d, sizeof(d)));
+}
+
+int
+drmSyncobjReset(int fd, const uint32_t *handles, uint32_t count)
+{
+	struct drm_syncobj_array a = { .handles = (uint64_t)(uintptr_t)handles, .count_handles = count };
+
+	(void)fd;
+	return fail(call(0xc4, &a, sizeof(a)));
+}
+
+int
+drmSyncobjSignal(int fd, const uint32_t *handles, uint32_t count)
+{
+	struct drm_syncobj_array a = { .handles = (uint64_t)(uintptr_t)handles, .count_handles = count };
+
+	(void)fd;
+	return fail(call(0xc5, &a, sizeof(a)));
+}
+
+int
+drmSyncobjWait(int fd, uint32_t *handles, unsigned num_handles, int64_t timeout_nsec, unsigned flags,
+    uint32_t *first_signaled)
+{
+	/*
+	 * The deadline is Mesa's (os_time_get_nano: timespec_get TIME_MONOTONIC) and the kernel reads
+	 * it against mach_continuous_time. On the phone the two were 22 s apart, so every wait with a
+	 * deadline had already expired when it was made: CoreAnimation on Metal saw 986 "the GPU did not
+	 * finish" in two minutes, the kernel no failed job at all (24 October). What is left of the wait
+	 * is carried over to the kernel's clock instead.
+	 */
+	if (timeout_nsec > 0 && timeout_nsec != INT64_MAX) {
+		static mach_timebase_info_data_t base;
+		int64_t left = timeout_nsec - os_time_get_nano();
+		uint64_t now;
+
+		if (base.denom == 0) {
+			mach_timebase_info(&base);
+		}
+		now = mach_continuous_time() * base.numer / base.denom;
+		timeout_nsec = left <= 0 ? 1 : (int64_t)now + left;
+	}
+	struct drm_syncobj_wait w = {
+		.handles = (uint64_t)(uintptr_t)handles, .timeout_nsec = timeout_nsec, .count_handles = num_handles, .flags = flags,
+	};
+	int error = call(0xc3, &w, sizeof(w));
+
+	(void)fd;
+	if (error == 0 && first_signaled != NULL) {
+		*first_signaled = w.first_signaled;
+	}
+	return fail(error);                     /* (a timeout: ETIMEDOUT, as call() has it) */
+}
+
+int
+drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd)
+{
+	struct syncobj_fence f = { .handle = handle };
+	int error = call(REDWOOD_SYNCOBJ_GET, &f, sizeof(f)), file;
+
+	(void)fd;
+	if (error != 0) {
+		return fail(error);
+	}
+	file = open("/dev/null", O_RDWR | O_CLOEXEC);
+	if (file < 0) {
+		return -1;
+	}
+	if (file < SYNC_FILES) {
+		sync_file_fence[file] = f.fence;
+	}
+	*sync_file_fd = file;
+	return 0;
+}
+
+int
+drmSyncobjImportSyncFile(int fd, uint32_t handle, int sync_file_fd)
+{
+	struct syncobj_fence f = {
+		.handle = handle, .fence = sync_file_fd >= 0 && sync_file_fd < SYNC_FILES ? sync_file_fence[sync_file_fd] : 0,
+	};
+
+	(void)fd;
+	return fail(call(REDWOOD_SYNCOBJ_SET, &f, sizeof(f)));
+}
+
+int
+drmSyncobjHandleToFD(int fd, uint32_t handle, int *obj_fd)
+{
+	return drmSyncobjExportSyncFile(fd, handle, obj_fd);
+}
+
+int
+drmSyncobjFDToHandle(int fd, int obj_fd, uint32_t *handle)
+{
+	if (drmSyncobjCreate(fd, 0, handle) != 0) {
+		return -1;
+	}
+	return drmSyncobjImportSyncFile(fd, *handle, obj_fd);
+}
+
+int
+drmCloseBufferHandle(int fd, uint32_t handle)
+{
+	struct drm_gem_close c = { .handle = handle };
+
+	(void)fd;
+	return fail(call(DRM_IOCTL_GEM_CLOSE & 0xff, &c, sizeof(c)));
+}
+
+/* (timeline syncobjs are for the GPUs Mesa drives through panthor, newer than this one) */
+NONE(drmSyncobjTimelineWait, __attribute__((unused)) int fd, __attribute__((unused)) uint32_t *handles,
+    __attribute__((unused)) uint64_t *points, __attribute__((unused)) unsigned num_handles,
+    __attribute__((unused)) int64_t timeout_nsec, __attribute__((unused)) unsigned flags,
+    __attribute__((unused)) uint32_t *first_signaled)
+NONE(drmSyncobjTransfer, __attribute__((unused)) int fd, __attribute__((unused)) uint32_t dst_handle,
+    __attribute__((unused)) uint64_t dst_point, __attribute__((unused)) uint32_t src_handle,
+    __attribute__((unused)) uint64_t src_point, __attribute__((unused)) uint32_t flags)

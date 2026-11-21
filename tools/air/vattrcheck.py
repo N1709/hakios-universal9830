@@ -43,7 +43,7 @@ real modules say the rules are the ones Apple's compiler writes.
 NO VALUE IS COMPARED HERE and none can be: air_run's only vertex stage is the
 generated quad (air_run.c, quad_vertex_shader), so there is no path on this
 machine that draws with a translated vertex shader, and the contract the Metal
-driver uses carries no vertex layout at all yet (docs/air.md, docs/metal.md
+driver uses carries no vertex layout at all yet (docs/dev/air.md, docs/metal.md
 10.18). What a fetched attribute is worth is a question for the phone.
 
 usage: vattrcheck.py [-v]

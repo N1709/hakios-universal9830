@@ -5,7 +5,7 @@
 buffers and names 14 whose loop leaves on a value *loaded from* a buffer. For
 those, `(i * 7 + 13) & 0xff` -- or zeros, or `0xff` -- is not an input: the
 value the loop compares against is a count, an index, or a sentinel, and the
-pattern contains none of them. docs/air.md section 5 records what one such
+pattern contains none of them. docs/dev/air.md section 5 records what one such
 dispatch costs: `gpuWait` latches after a single timeout, every later wait
 returns false at once, so every dispatch after it reads as "finished and
 empty", and the next boot panics in the GPU ramp. That is why
@@ -25,7 +25,7 @@ two producer kernels scan x from `bounds.x` to `bounds.z` of a constant buffer,
 which the pattern makes 943 million pixels apart, with a texture read each time
 round. Both numbers are printed at the end of this tool's own table, computed
 from the same fill, so they can be checked rather than quoted -- and they
-correct docs/air.md section 5, which says of the first "runs about four billion
+correct docs/dev/air.md section 5, which says of the first "runs about four billion
 times whenever the second is smaller". Backwards: when the second is smaller the
 guard means it is not entered at all. The MetalFaceMask chain walks are the ones
 that genuinely do not end -- they leave only on a next-id of -1, and a chain of
@@ -54,7 +54,7 @@ Three things make the result mean something:
                            measurement and not a default.
   the recorded runs        AddSeedPoint and DrawSpans return on zeros and
                            fbs_bistochastize_iter returns on zeros, which is
-                           what the device measured (docs/air.md section 5).
+                           what the device measured (docs/dev/air.md section 5).
                            ConnectSpans on zeros returns here too, and the
                            device is recorded as hanging on it three boots out
                            of three -- see the note on that kernel.
@@ -498,7 +498,7 @@ def k_connectspans():
                "association at byte %d, 900 KiB past a 4096-byte buffer. The evidence "
                "for this one is the fence, not the buffer." % TABLE["associations"],
         host="returned from all 16 threads with not one byte changed, as above",
-        risk="docs/air.md section 5 records this kernel as NOT finishing with air_run "
+        risk="docs/dev/air.md section 5 records this kernel as NOT finishing with air_run "
              "--zero, three boots out of three. On this machine the module returns on "
              "zeros at once, and it must: rowCount is then 0, `%14 = icmp ugt i32 "
              "%13, %2` is false, so the walk is handed the literal -1 and leaves "
@@ -780,7 +780,7 @@ def k_pcg_init():
              "have tid == 0, so four of them add the same sum. Two boots of these bytes "
              "gave 0x00400000 and 0xe2180000. It is not a hang; r_out and d_out are "
              "per-thread and unaffected. A 128x1x1 group, which is what the array and the "
-             "literal 128 are written for, would make it an equality -- docs/air.md "
+             "literal 128 are written for, would make it an equality -- docs/dev/air.md "
              "section 5.")
 
 
@@ -1033,7 +1033,7 @@ def report(kernels, hexonly, jobs):
 # must not take writes 900 KiB out of bounds).
 #
 # Reproducing the reference is a shell script's worth of work and is written
-# down in docs/air.md section 5; it is deliberately not a repo tool, because it
+# down in docs/dev/air.md section 5; it is deliberately not a repo tool, because it
 # carries Apple's modules as text.
 AFTER = {
     "MetalFaceMask_AddSeedPoint":      dict(bufs=[(3, 28, "5a")]),
@@ -1065,7 +1065,7 @@ AFTER = {
     # with gid == 0 re-zeroes the counter before adding, so only the last of the
     # four adds survives -- walk the same sixteen threads with x in the outer
     # loop instead and the same bytes give 0x00040000 instead of 0x00100000.
-    # docs/air.md section 5 has the four measurements this is read off.
+    # docs/dev/air.md section 5 has the four measurements this is read off.
     "fbs_pcg_init":                    dict(bufs=[(6, 2, "80bf"), (6, 6, "80bf"),
                                                   (6, 10, "80bf"), (6, 14, "80bf"),
                                                   (7, 2, "80be"), (7, 6, "80be"),

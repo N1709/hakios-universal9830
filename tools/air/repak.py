@@ -3,7 +3,7 @@
 
 A game does not ship `.metallib` files. Resident Evil 4's are inside
 `re_chunk_000.pak` -- Capcom's own archive, 383 MB of the `.ipa` -- and reach
-Metal through `newLibraryWithData:`, so measuring them (docs/air.md section 8)
+Metal through `newLibraryWithData:`, so measuring them (docs/dev/air.md section 8)
 starts with reading that archive.
 
 The format is KPKA, version 4: a 16-byte header (magic, version, file count, a

@@ -636,6 +636,10 @@ serve(void)
 	say("torch: the light is given up on (%u times lit, %u cut at %u s)\n", times, cut, max_secs);
 }
 
+void redwood_s2mpb02_torch_init(void);
+void redwood_s2mpb02_torch_quiesce(void);
+static bool s2mpb02;
+
 /* ---- the start ------------------------------------------------------------------------------------- */
 
 static void
@@ -728,7 +732,15 @@ redwood_torch_init(void)
 {
 	thread_t thread;
 
+	char chip[16] = "";
+
 	if (!PE_parse_boot_argn("torch", &level, sizeof(level)) || level == 0) {
+		return;
+	}
+	/* x1slte: the Galaxy S20's light is the S2MPB02's (redwood_s2mpb02_torch.c); nothing of the PMIC below is touched */
+	if (PE_parse_boot_argn("torch_chip", chip, sizeof(chip)) && strcmp(chip, "s2mpb02") == 0) {
+		s2mpb02 = true;
+		redwood_s2mpb02_torch_init();
 		return;
 	}
 	level = level > 3 ? 3 : level;
@@ -743,6 +755,10 @@ redwood_torch_quiesce(void)
 {
 	uint8_t module = 0xff, channels = 0xff, target = 0xff;
 
+	if (s2mpb02) {
+		redwood_s2mpb02_torch_quiesce();
+		return;
+	}
 	if (level < 2 || flash.write == 0) {
 		return;
 	}

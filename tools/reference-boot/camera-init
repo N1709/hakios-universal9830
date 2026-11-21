@@ -1,0 +1,244 @@
+#!/bin/busybox sh
+# Temporary Samsung kernel reference boot; never let PID 1 exit.
+/bin/busybox --install -s /bin
+export PATH=/bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /sys/kernel/debug /sys/kernel/config /tmp /vendor/firmware
+mount -t debugfs debugfs /sys/kernel/debug
+mount -t configfs configfs /sys/kernel/config
+echo /vendor/firmware > /sys/module/firmware_class/parameters/path 2>/dev/null
+
+T=/tmp/camera-reference.txt
+: > "$T"
+# If an ioctl stalls, still return to Download Mode for the saved BOOT restore.
+( sleep 50; /bin/reboot-download ) &
+say() { echo "$*" >> "$T"; }
+LOGDEV=
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    for block in /sys/class/block/*; do
+        if grep -q '^PARTNAME=super$' "$block/uevent" 2>/dev/null; then
+            sectors=$(cat "$block/size")
+            [ "$sectors" -ge 16062496 ] && LOGDEV=/dev/${block##*/}
+            break
+        fi
+    done
+    [ -n "$LOGDEV" ] && break
+    sleep 1
+done
+flush() {
+    [ -n "$LOGDEV" ] && dd if="$T" of="$LOGDEV" bs=4096 seek=2005764 count=256 conv=notrunc 2>/dev/null && sync
+}
+[ -n "$LOGDEV" ] && dd if=/dev/zero of="$LOGDEV" bs=4096 seek=2005764 count=256 conv=notrunc 2>/dev/null
+# A separate crash breadcrumb survives if the foreground ioctl stalls before
+# the main script's next flush. Keep it outside both the loader and main log.
+(
+    while true; do
+        {
+            echo '=== live helper output'
+            cat /tmp/camera-ref-result.txt 2>/dev/null
+            echo '=== live kernel tail'
+            dmesg | grep -iE 'camera|3j1|csis|mipi-phy|is_sensor|is_video|ss1|panic|call trace|unable to handle|bug:' | tail -180
+        } > /tmp/camera-breadcrumb.txt
+        [ -n "$LOGDEV" ] && dd if=/tmp/camera-breadcrumb.txt of="$LOGDEV" bs=4096 seek=2006020 count=128 conv=notrunc 2>/dev/null
+        sleep 1
+    done
+) &
+say "=== camera reference boot $(cat /proc/version)"
+say "=== log device $LOGDEV"
+say '=== video devices'
+ls -l /dev/video* >> "$T" 2>&1
+say '=== camera registration'
+dmesg | grep -iE '3j1|csis|is_sensor1|camera|mipi-phy' | tail -160 >> "$T"
+flush
+
+# Samsung's camera driver registers sensor1 as /dev/video102. The helper selects
+# front position 1, requests 1824x1368 RAW10, then starts the sensor for five seconds.
+PMICDEV=
+for path in /sys/bus/i2c/devices/*-0059; do
+    [ -d "$path" ] || continue
+    bus=${path##*/}; bus=${bus%-0059}
+    [ -c "/dev/i2c-$bus" ] && PMICDEV="/dev/i2c-$bus" && break
+done
+say "=== S2MPB02 bus $PMICDEV"
+SENSORDEV=
+for path in /sys/bus/i2c/devices/*-0010; do
+    [ -d "$path" ] || continue
+    case "$(cat "$path/name" 2>/dev/null) $(readlink "$path/driver" 2>/dev/null)" in
+        *3j1*) bus=${path##*/}; bus=${bus%-0010}; SENSORDEV="/dev/i2c-$bus"; break ;;
+    esac
+done
+say "=== SAK3J1 bus $SENSORDEV"
+# Capture the actual sensor write sequence when Samsung's event tracer exists.
+# Filter to this adapter/address; avoid unrelated I2C traffic filling the log.
+TRACE=/sys/kernel/debug/tracing
+if [ -f "$TRACE/kprobe_events" ]; then
+    echo 0 > "$TRACE/tracing_on"
+    echo 1024 > "$TRACE/buffer_size_kb"
+    : > "$TRACE/trace"
+    # ARM64 argument registers; all reads below are driver argument RAM, not
+    # guessed physical mappings. Log failures (static functions may be inlined).
+    while IFS= read -r probe; do
+        if echo "$probe" >> "$TRACE/kprobe_events" 2>> "$T"; then
+            say "=== registered $probe"
+        else
+            say "=== unavailable $probe"
+        fi
+    done <<'PROBES'
+p:camera/clk_enable cal_clk_enable id=%x0:x32
+p:camera/clk_disable cal_clk_disable id=%x0:x32
+p:camera/clk_setrate cal_clk_setrate id=%x0:x32 rate=%x1:u64
+p:camera/clk_getrate cal_clk_getrate id=%x0:x32
+r:camera/clk_rate cal_clk_getrate rate=$retval:u64
+p:camera/qch_set ra_set_qch id=%x0:x32 en=%x1:u32 req=%x2:u32 expire=%x3:u32
+p:camera/qch_enable ra_enable_qch id=+0(%x0):x32 pa=+4(%x0):x32 name=+0(+16(%x0)):string va=+24(%x0):x64 en=%x1:u32
+p:camera/gate_set ra_set_gate id=+0(%x0):x32 pa=+4(%x0):x32 name=+0(+16(%x0)):string va=+24(%x0):x64 en=%x1:u32
+p:camera/divmux_set ra_set_div_mux id=+0(%x0):x32 pa=+4(%x0):x32 name=+0(+16(%x0)):string va=+24(%x0):x64 value=%x1:u32
+p:camera/hwacg_set ra_set_enable_hwacg id=+0(%x0):x32 pa=+4(%x0):x32 name=+0(+16(%x0)):string va=+24(%x0):x64 en=%x1:u32
+r:camera/clock_node cmucal_get_node id=+0($retval):x32 pa=+4($retval):x32 name=+0(+16($retval)):string va=+24($retval):x64
+p:camera/phy_reset __set_phy_reset map=%x0:x64 bit=%x1:u32 on=%x2:u32
+p:camera/phy_isolation __set_phy_isolation map=%x0:x64 offset=%x1:x32 on=%x2:u32
+p:camera/phy_config __set_phy_cfg_0503_0000_dcphy regs=%x0:x64 option=%x1:u32 version=+0(%x2):x32 type=+4(%x2):x32 lanes=+8(%x2):u32 speed=+12(%x2):u32 settle=+16(%x2):u32
+p:camera/csi_reset csi_hw_reset regs=%x0:x64
+p:camera/csi_enable csi_hw_enable regs=%x0:x64 cphy=%x1:u32
+p:camera/csi_disable csi_hw_disable regs=%x0:x64
+p:camera/csi_irq csi_hw_g_irq_src regs=%x0:x64
+PROBES
+    if [ -d "$TRACE/events/camera" ]; then
+        if [ -d "$TRACE/events/camera/clock_node" ]; then
+            echo '(pa >= 0x17000000 && pa < 0x17008000) || (pa >= 0x1a330000 && pa < 0x1a338000)' > "$TRACE/events/camera/clock_node/filter"
+        fi
+        echo 1 > "$TRACE/events/camera/enable"
+        echo 1 > "$TRACE/tracing_on"
+        say '=== camera clock and PHY tracing enabled'
+    fi
+else
+    say '=== dynamic kprobe events unavailable'
+fi
+if [ -n "$SENSORDEV" ] && [ -f "$TRACE/events/i2c/i2c_write/enable" ]; then
+    sensor_bus=${SENSORDEV##*-}
+    echo 0 > "$TRACE/tracing_on"
+    echo 1024 > "$TRACE/buffer_size_kb"
+    : > "$TRACE/trace"
+    if echo "adapter_nr == $sensor_bus && addr == 16" > "$TRACE/events/i2c/i2c_write/filter"; then
+        echo 1 > "$TRACE/events/i2c/i2c_write/enable"
+        echo 1 > "$TRACE/tracing_on"
+        say '=== sensor I2C write tracing enabled'
+    fi
+else
+    say '=== sensor I2C write tracing unavailable'
+fi
+for parameter in /sys/module/*/parameters/debug_csi; do
+    [ -f "$parameter" ] || continue
+    echo 1 > "$parameter"
+    say "=== CSI debug enabled at $parameter"
+    break
+done
+for parameter in /sys/module/*/parameters/debug_irq; do
+    [ -f "$parameter" ] || continue
+    echo 2 > "$parameter"
+    say "=== CSI IRQ debug enabled at $parameter"
+    break
+done
+flush
+timeout -s KILL 25 /bin/camera-ref "$LOGDEV" "$PMICDEV" "$SENSORDEV" > /tmp/camera-ref-result.txt 2>&1 &
+TEST_PID=$!
+for attempt in 1 2 3 4 5 6 7 8; do
+    grep -q 'S_CTRL stream started' /tmp/camera-ref-result.txt 2>/dev/null && break
+    kill -0 "$TEST_PID" 2>/dev/null || break
+    sleep 1
+done
+# Resolve CMU mappings from actual CAL clock nodes observed during this run.
+# Sample only documented, aligned clock-control registers while the camera is
+# active. Never derive addresses from stale initdata or access SYSREG +0x504.
+clock_snapshot() {
+    region=$1
+    event=$2
+    shift 2
+    pair=$(awk -v region="$region" '
+        /clock_node:/ {
+            pa=""; va=""
+            for (i=1; i<=NF; i++) {
+                if ($i ~ /^pa=/) pa=substr($i,4)
+                if ($i ~ /^va=/) va=substr($i,4)
+            }
+            if (index(pa,region)==1 && va ~ /^0xffffff/) { print pa, va; exit }
+        }' "$TRACE/trace")
+    if [ -z "$pair" ]; then
+        say "=== $event mapping unavailable"
+        return
+    fi
+    pa=${pair%% *}; va=${pair#* }
+    base=$((va - (pa & 65535)))
+    probe="p:camera/$event is_ssx_video_g_ctrl"
+    for offset in "$@"; do
+        addr=$(printf '0x%x' "$((base + offset))")
+        probe="$probe r${offset#0x}=@$addr:x32"
+    done
+    if echo "$probe" >> "$TRACE/kprobe_events" 2>> "$T"; then
+        echo 1 > "$TRACE/events/camera/$event/enable"
+        say "=== registered active snapshot $probe (pa=$pa va=$va)"
+    else
+        say "=== active snapshot unavailable $event"
+    fi
+}
+if [ -d "$TRACE/events/camera/clock_node" ] && grep -q 'S_CTRL stream started' /tmp/camera-ref-result.txt; then
+    clock_snapshot 0x1700 cmu_csis 0x0600 0x0604 0x1800 0x1804 0x3058 0x3064 0x3078 0x307c 0x2000 0x2018 0x202c 0x2030
+    clock_snapshot 0x1a33 cmu_top 0x0180 0x0280 0x101c 0x1818 0x2020 0x3008 0x104c 0x1848 0x204c
+fi
+say '=== camera-ref result during run'
+cat /tmp/camera-ref-result.txt >> "$T"
+say '=== active CSIS clocks'
+grep -iE 'csis|cis_clk|pdp' /sys/kernel/debug/clk/clk_summary >> "$T" 2>/dev/null
+# Exynos990 uses Samsung CAL rather than the common clock framework for these
+# clocks. clk_info writes select a query; they do not set a rate or gate.
+if [ -f /sys/kernel/debug/vclk/clk_info ]; then
+    for clock_name in MUX_CLKCMU_CSIS_BUS CLKCMU_CSIS_BUS GATE_CLKCMU_CSIS_BUS \
+        MUX_CLKCMU_CSIS_BUS_USER DIV_CLK_CSIS_BUS DIV_CLK_CSIS_BUSP \
+        PLL_SHARED0 PLL_SHARED4 MUX_CLKCMU_CIS_CLK1 CLKCMU_CIS_CLK1; do
+        echo "$clock_name" > /sys/kernel/debug/vclk/clk_info
+        cat /sys/kernel/debug/vclk/clk_info >> "$T" 2>&1
+    done
+else
+    say 'Samsung CAL clock debug interface unavailable'
+fi
+say '=== active camera rails'
+cat /sys/kernel/debug/regulator/regulator_summary >> "$T" 2>/dev/null
+# s2mps22_read_store selects and reads a PMIC register; it never writes it.
+for reader in $(find /sys/devices -name s2mps22_read 2>/dev/null); do
+    say "=== active sub-PMIC $reader"
+    for reg in 0x2e 0x2f 0x48 0x49 0x4a 0x4b 0x4c; do
+        echo "$reg" > "$reader" && cat "$reader" >> "$T"
+    done
+done
+say '=== camera interrupts'
+cat /proc/interrupts >> "$T" 2>/dev/null
+say '=== sensor and receiver kernel log'
+dmesg | grep -iE '3j1|csis|is_sensor1|camera|mipi-phy|is_video|ss1' | tail -300 >> "$T"
+say '=== CSI register dump during stream'
+dmesg | grep -iE 'CSIS_CMN|CSIS_PHY|CSIS_CONFIG|FRM_CNT|PHY_STATUS|CSI.*SFR|CSI.*0x0' | tail -180 >> "$T"
+say '=== CSI1 core SFR before sensor stream'
+dmesg | awk '/CSI Core SFR DUMP/{inside=1;next} /CSI PHY SFR DUMP/{if(inside) exit} inside && /\[SFR\]/{print}' | tail -100 >> "$T"
+say '=== CSI1 PHY SFR before sensor stream'
+dmesg | awk '/CSI PHY SFR DUMP/{inside=1;next} /CSI VC\/DMA SFR DUMP/{inside=0} inside && /\[SFR\]/{print}' | tail -120 >> "$T"
+say '=== CSI IRQ source during stream'
+dmesg | grep -iE 'link: ERR|CSIS.*ERR|Lost.*interrupt' | tail -80 >> "$T"
+flush
+wait "$TEST_PID"
+say "=== camera-ref exit status $?"
+say '=== active camera SFR reads (sec_debug single-address read command)'
+dmesg | grep -E 'simulate_SFR|sec_debug_set_force_error.*SFR' >> "$T"
+if [ -f "$TRACE/events/i2c/i2c_write/enable" ]; then
+    echo 0 > "$TRACE/tracing_on"
+    say '=== sensor I2C write trace'
+    cat "$TRACE/trace" >> "$T"
+fi
+cat /tmp/camera-ref-result.txt >> "$T"
+say '=== final camera kernel log'
+dmesg | grep -iE '3j1|csis|is_sensor1|camera|mipi-phy|is_video|ss1' | tail -300 >> "$T"
+flush
+say '=== returning to Download Mode'
+flush
+/bin/reboot-download
+while true; do sleep 30; done

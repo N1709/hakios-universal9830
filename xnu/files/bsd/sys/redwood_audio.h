@@ -51,6 +51,8 @@ void redwood_audio_set_sink(const char *name, redwood_audio_sink_t sink);
 bool redwood_audio_volume(uint32_t *below, bool *muted, uint32_t *generation);
 void redwood_audio_init(void);
 void redwood_virtio_sound_init(void);   /* boot-arg virtio_sound=1: QEMU's virtio sound device */
+void redwood_exynos_sound_init(void);   /* boot-arg snd=1: the S20+'s speakers (bsd/dev/redwood_exynos_sound.c) */
+void redwood_exynos_sound_quiesce(void); /* its amplifiers into reset, its DMA stopped: at the run's end and on a panic's way out */
 void redwood_speaker_init(void);        /* boot-arg speaker_probe=N: a look at the phone's speaker amplifiers */
 void redwood_haptic_init(void);         /* boot-arg haptic=N: the phone's vibration motor (bsd/dev/redwood_haptic.c) */
 void redwood_haptic_quiesce(void);      /* its chip back into reset: at the run's end and on a panic's way out */
@@ -58,6 +60,7 @@ void redwood_haptic_pretend(uint32_t peak); /* a test's stand-in for iOS's wavef
 void redwood_torch_init(void);          /* boot-arg torch=N: the phone's flashlight (bsd/dev/redwood_torch.c) */
 void redwood_torch_quiesce(void);       /* the light off: at the run's end and on a panic's way out */
 void redwood_camera_init(void);         /* boot-arg cam=N: the phone's cameras (bsd/dev/redwood_camera.c) */
+void redwood_exynos_camera_s20_init(void); /* boot-arg cam_s20=1: read-only S20 camera pin inventory */
 void redwood_camera_quiesce(void);      /* whatever of them was switched on, off: at the run's end and on a panic's way out */
 
 /*

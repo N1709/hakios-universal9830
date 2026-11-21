@@ -161,7 +161,7 @@
 #
 #      - a 16-BIT ATTRIBUTE through the hardware fetch. std_vert0_lph's [[attribute(3)]] is
 #        `half4`, so the fetch delivers a 32-bit register and the shader narrows it with an
-#        f2f16 -- the regime docs/air.md 3.1 chose and which softpipe cannot compile at all
+#        f2f16 -- the regime docs/dev/air.md 3.1 chose and which softpipe cannot compile at all
 #        (it asserts on the 16-bit opcode, which is why 28 of QuartzCore's modules are
 #        measurable only here). Whether ir3 and the VFD agree about that register is a
 #        question only this line asks.

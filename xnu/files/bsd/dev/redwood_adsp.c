@@ -961,9 +961,8 @@ step_survey(void)
 
 /* ---- step 2: the firmware -------------------------------------------------------------------------- */
 
-static uint32_t adsp_memory = 0x86700000u, adsp_memory_size = 0x04000000u;
-#define ADSP_MEMORY             adsp_memory /* 0x86700000u */     /* dt: reserved-memory adsp@86700000, memory-region of qcom,lpass@3700000 */
-#define ADSP_MEMORY_SIZE        adsp_memory_size
+#define ADSP_MEMORY             0x86700000u     /* dt: reserved-memory adsp@86700000, memory-region of qcom,lpass@3700000 */
+#define ADSP_MEMORY_SIZE        0x04000000u
 #define PAS_ADSP                1               /* dt: qcom,pas-id */
 
 
@@ -1122,20 +1121,6 @@ step_firmware(void)
 		    header[1], header[2], header[3], count, size);
 		goto fail;
 	}
-	/* MDT relocatable images retain their link addresses in the signed header.
-	 * Load them relative to the lowest PT_LOAD address, into the DT carveout. */
-	uint32_t link_base = ADSP_MEMORY;
-	bool relocatable = false;
-	uint32_t load_min = ~0u;
-	for (uint32_t i = 0; i < count; i++) {
-		memcpy(&segment, header + 52 + 32 * i, sizeof(segment));
-		if (segment.type != 1 || MDT_HASH(segment.flags) || segment.memory_size == 0) continue;
-		if (segment.flags & (1u << 27)) {
-			relocatable = true;
-			if (segment.paddr < load_min) load_min = segment.paddr;
-		}
-	}
-	if (relocatable) link_base = load_min;
 	for (uint32_t i = 0; i < count; i++) {
 		char name[16];
 
@@ -1146,13 +1131,6 @@ step_firmware(void)
 		if (segment.type != 1 || MDT_HASH(segment.flags) || segment.memory_size == 0) {
 			continue;
 		}
-		uint32_t segment_base = (segment.flags & (1u << 27)) ? link_base : ADSP_MEMORY;
-		if (segment.paddr < segment_base ||
-		    (uint64_t)(segment.paddr - segment_base) + segment.memory_size > ADSP_MEMORY_SIZE) {
-			printf("adsp: %u: segment %u exceeds the selected carveout\n", step, i);
-			goto fail;
-		}
-		segment.paddr = ADSP_MEMORY + (segment.paddr - segment_base);
 		if (segment.paddr < ADSP_MEMORY || segment.file_size > segment.memory_size ||
 		    (uint64_t)segment.paddr + segment.memory_size > (uint64_t)ADSP_MEMORY + ADSP_MEMORY_SIZE) {
 			printf("adsp: %u: segment %u (%#x, %#x bytes) is not within the DSP's memory\n", step, i, segment.paddr,
@@ -3227,16 +3205,6 @@ redwood_adsp_init(void)
 	if (pe_arm_get_soc_base_phys() != REDWOOD_SOC_BASE) {
 		printf("adsp: adsp=1 and adsp_step=N are for the phone's audio DSP, and this is not the phone\n");
 		return;
-	}
-	if (redwood_platform_is("y2q")) {
-		/* z3q DT: pil_adsp_region@8a700000, 44 MiB. Samsung's
-		 * power/GLINK/CS35L41 playback path is not validated yet. */
-		adsp_memory = 0x8a700000u;
-		adsp_memory_size = 0x02c00000u;
-		if (last_step == 0 || last_step > 2) {
-			printf("adsp: Samsung bring-up currently supports adsp_step=1 or 2 only; no hardware start\n");
-			return;
-		}
 	}
 	if (last_step == 0) {
 		/* all of it, on a thread of its own, and left up */

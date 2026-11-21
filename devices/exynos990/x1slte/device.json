@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "id": "x1slte",
+  "name": "Galaxy S20 LTE",
+  "platform": "exynos990",
+  "status": "development",
+  "maintainers": [],
+  "models": [
+    "SM-G980F"
+  ],
+  "recovery_products": [
+    "x1s",
+    "x1slte"
+  ],
+  "bootloaders": [
+    "G980FXXSNHYB7"
+  ],
+  "installer_validated": true,
+  "qualification": "docs/release/qualification-x1slte.md",
+  "partitions": {
+    "boot": 61865984,
+    "recovery": 69009408,
+    "super": 9437184000,
+    "userdata": 116253523968
+  },
+  "layout": {
+    "system_offset": 0,
+    "system_max_bytes": 4294967296,
+    "log_offset": 16777216,
+    "log_bytes": 8388608,
+    "kernel_offset": 33554432,
+    "kernel_max_bytes": 16777216,
+    "root_offset": 54525952,
+    "super_log_offset": 8198832128
+  },
+  "evidence": "docs/release/device-evidence.md",
+  "splash_partition_bytes": 8388608
+}

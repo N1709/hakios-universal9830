@@ -34,6 +34,7 @@
  * what the loader read itself before the kernel started.
  */
 #include <kern/clock.h>
+#include <stdarg.h>
 #include <kern/locks.h>
 #include <kern/thread.h>
 #include <os/atomic_private.h>
@@ -45,6 +46,8 @@
 #include <sys/buf.h>
 #include <sys/conf.h>
 #include <sys/disk.h>
+#include <sys/mount.h>
+#include <sys/vnode.h>
 #include <sys/errno.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
@@ -52,6 +55,7 @@
 #include <sys/uio.h>
 #include <sys/redwood_input.h>
 #include <libkern/crc.h>
+#include <libkern/crypto/md5.h>
 #include <vm/memory_types.h>
 #include "redwood_ufshc.h"
 
@@ -65,38 +69,31 @@ extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);   /* osfmk/arm
 #define BLOCK_VERSION      3
 #define BLOCK_MAX_PARTS    160
 #define BLOCK_MAX_UNITS    16
+#define BLOCK_NATIVE_ONLY  1u                          /* native.flags: nobody serves the page while this kernel runs */
 #define BLOCK_PART_UNIT    1u                          /* a whole logical unit, not a partition */
 #define BLOCK_OP_READ      0u
 #define BLOCK_OP_WRITE     1u
 
 /*
- * Where a write may go, and nowhere else: darwin, the port's own partition at the end of logical
+ * Where a write may go, and nowhere else: darwin, the port's own 20 GiB at the end of logical
  * unit 0, and in it only past what the build puts there from the computer -- the iOS volume
  * (blocks 0..1374207) and the two cryptexes behind it (..2042367). The loader keeps the same
  * bounds and the GUIDs of the partition besides (xnuloader/loader.c, BLOCK_WRITE_FIRST).
  */
 #define UFS_WRITE_FIRST    2042368ULL                  /* darwin's blocks of 4096 */
-/*
- * Where darwin is: each phone's own (the loader keeps the same, xnuloader/loader.c, struct platform).
- * redwood: LBA 25374720 on, 20 GiB; y2q (Galaxy S20+): sda38, LBA 28904192 on, 128 GiB.
- */
-static uint64_t ufs_darwin_first, ufs_darwin_blocks;
+#define UFS_DARWIN_FIRST   25374720ULL                 /* its first LBA on the unit, as the GPT has it */
+#define UFS_DARWIN_BLOCKS  5242875ULL
 
-static void
-ufs_darwin_place(void)
-{
-	if (redwood_platform_is("redwood")) {
-		ufs_darwin_first = 25374720ULL;
-		ufs_darwin_blocks = 5242875ULL;
-	} else if (redwood_platform_exact("z3q")) {
-		/* Galaxy S20 Ultra: sda38, 128 GiB made out of userdata's end (tools/userdata-carve.py) */
-		ufs_darwin_first = 28904448ULL;
-		ufs_darwin_blocks = 33554427ULL;
-	} else if (redwood_platform_is("y2q")) {
-		ufs_darwin_first = 28904192ULL;
-		ufs_darwin_blocks = 33554683ULL;
-	}
-}
+/*
+ * The S20+ (PLANS/09-standalone.md, P6): userdata -- Android's data partition, given up for it -- is
+ * iOS's data volume, an HFS+ (bsd/hfs) mounted on /private/var, and the one partition that takes
+ * writes, all of it and nothing else. It must be the one this phone has: LUN 0, from LBA 2850304,
+ * 28382208 blocks of 4096. (UFS_Y2S_STORE_*: var_store's two slots in it, from before.)
+ */
+#define UFS_Y2S_DATA_FIRST   2850304ULL
+#define UFS_Y2S_DATA_BLOCKS  28382208ULL
+#define UFS_Y2S_STORE_FIRST  16384ULL                  /* the partition's blocks: 64 MiB in */
+#define UFS_Y2S_STORE_BLOCKS 1048576ULL                /* 4 GiB */
 
 struct loader_block_part {
 	char name[36];
@@ -144,6 +141,9 @@ struct loader_block {
 		uint64_t area_pa;
 		uint32_t area_size, ucd_offset, ucd_size, slots;
 		uint32_t uefi_utrlba, uefi_utrlbau;
+		uint32_t flags;                /* BLOCK_NATIVE_ONLY */
+		uint32_t gpt_units;            /* with BLOCK_NATIVE_ONLY: unit k's block 1 at gpt_pa + k * 4096 */
+		uint64_t gpt_pa;
 	} native __attribute__((aligned(128)));
 	struct {
 		volatile uint32_t take_back;   /* the loader's: it takes the controller back, send nothing more */
@@ -185,6 +185,32 @@ static bool ufs_native_mapped;
 static uint32_t ufs_native_luns;                /* how many units are mapped (LUN 0..n-1) */
 static volatile bool ufs_native_on;
 static uint64_t ufs_native_fallbacks, ufs_mailbox_refused;
+/*
+ * The S20+: this kernel runs on the loader's own core, so nothing answers the page; this kernel's
+ * own driver is the only way to the storage, and the one thing it would have asked the loader for
+ * -- each unit's GPT header, block 1 -- the loader read before the start into its buffer, unit k's
+ * at k * 4096.
+ */
+static bool ufs_native_only;
+static const volatile uint8_t *ufs_gpt;          /* the loader's copies of those headers (not cached here) */
+static uint32_t ufs_gpt_units;
+
+extern void loader_log_line(const char *line);
+
+/* printf, and into the console's log as well: the message buffer keeps only the run's last half minute */
+static void ufs_log(const char *format, ...) __printflike(1, 2);
+static void
+ufs_log(const char *format, ...)
+{
+	char line[256];
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(line, sizeof(line), format, list);
+	va_end(list);
+	printf("%s", line);
+	loader_log_line(line);
+}
 
 static LCK_GRP_DECLARE(ufs_lck_grp, "redwood-ufs");
 static LCK_MTX_DECLARE(ufs_lock, &ufs_lck_grp);
@@ -220,12 +246,16 @@ static LCK_MTX_DECLARE(ufs_write_mtx, &ufs_lck_grp);
 
 static volatile int ufs_var_save = VAR_SAVE_NONE;
 static int ufs_var_busy_pid;
+static volatile int ufs_var_saver_pid;          /* the one that registered (VAR_SAVE_IDLE) */
 
 /* ufs_write=1 and the one partition it is for: everything else answers EROFS as it always did */
 static int ufs_write_part = -1;
 static volatile bool ufs_write_busy;            /* a write of ours has this kernel's list out: not a failure */
 static bool ufs_write_out, ufs_write_was_native;        /* the list is out for writing, and was in before */
 static uint64_t ufs_writes, ufs_write_bytes, ufs_write_errors, ufs_write_refused;
+/* the partition's blocks a write may go to: [first, end) (darwin: past what the build writes; the S20+: the store) */
+static uint64_t ufs_write_first = UFS_WRITE_FIRST, ufs_write_end = ~0ULL;
+static uint64_t ufs_write_verify_failed;
 
 SYSCTL_DECL(_kern_redwood);
 SYSCTL_QUAD(_kern_redwood, OID_AUTO, ufs_requests, CTLFLAG_RD | CTLFLAG_LOCKED, &ufs_requests,
@@ -259,6 +289,7 @@ ufs_sysctl_var_save(__unused struct sysctl_oid *oidp, __unused void *arg1, __unu
 	}
 	if (value == VAR_SAVE_IDLE && ufs_var_save != VAR_SAVE_WANTED) {
 		ufs_var_save = VAR_SAVE_IDLE;           /* a saver is there; it is the one that will be asked */
+		ufs_var_saver_pid = proc_selfpid();
 	} else if (value == VAR_SAVE_DONE && ufs_var_save == VAR_SAVE_WANTED) {
 		ufs_var_save = VAR_SAVE_DONE;           /* and it has finished: the way out may go on */
 	} else if (value == VAR_SAVE_NONE) {
@@ -364,7 +395,7 @@ ufs_request(uint32_t op, uint32_t part, uint64_t lba, uint64_t count, uint8_t *d
 		IOSleep(1);
 		if (++waited_ms > UFS_TIMEOUT_MS) {
 			/* no answer: the loader is gone or stuck; nothing more is asked of it */
-			printf("ufs: no answer from the loader to request %u in %u s: the storage is off from now on\n",
+			ufs_log("ufs: no answer from the loader to request %u in %u s: the storage is off from now on\n",
 			    seq, UFS_TIMEOUT_MS / 1000);
 			ufs_dead = true;
 			ufs_errors++;
@@ -380,7 +411,7 @@ ufs_request(uint32_t op, uint32_t part, uint64_t lba, uint64_t count, uint8_t *d
 	}
 	status = ufs_page->answer.status;
 	if (status != 0) {
-		printf("ufs: %s: blocks %llu..%llu: the loader's %s failed (status %llx)\n",
+		ufs_log("ufs: %s: blocks %llu..%llu: the loader's %s failed (status %llx)\n",
 		    ufs_page->part[part].name, lba, lba + count - 1,
 		    op == BLOCK_OP_WRITE ? "write" : "read", (uint64_t)status);
 		ufs_errors++;
@@ -442,12 +473,12 @@ redwood_ufs_report(const char *when)
 	}
 	ufshc_report(when);
 	absolutetime_to_nanoseconds(ufs_page->answer.ticks, &loader_ns);
-	printf("ufs: %s: %llu requests (%llu of 4 KB or less, %llu to 64 KB, %llu more; %llu right after "
+	ufs_log("ufs: %s: %llu requests (%llu of 4 KB or less, %llu to 64 KB, %llu more; %llu right after "
 	    "the one before), %llu errors, %llu bytes; waiting %llu ms, of it in ReadBlocks %llu ms; "
 	    "copying %llu ms\n", when, ufs_requests, ufs_small, ufs_medium, ufs_large, ufs_sequential,
 	    ufs_errors, ufs_bytes, ufs_wait_us / 1000, loader_ns / 1000000, ufs_copy_us / 1000);
 	if (ufs_write_part >= 0 || ufs_writes != 0 || ufs_write_refused != 0) {
-		printf("ufs: %s: %llu writes into darwin, %llu bytes, read back by the loader; %llu did not "
+		ufs_log("ufs: %s: %llu writes into darwin, %llu bytes, read back by the loader; %llu did not "
 		    "finish, %llu refused here\n", when, ufs_writes, ufs_write_bytes, ufs_write_errors,
 		    ufs_write_refused);
 	}
@@ -471,6 +502,18 @@ ufs_read_mailbox(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 	static uint8_t *bounce;
 	int error = 0;
 
+	if (ufs_native_only) {
+		volatile struct loader_block_part *e = &ufs_page->part[part];
+
+		if ((e->flags & BLOCK_PART_UNIT) && offset == 4096 && len == 4096 && ufs_gpt != NULL &&
+		    e->unit < ufs_gpt_units) {
+			for (uint32_t k = 0; k < 4096; k++) {
+				dst[k] = ufs_gpt[e->unit * 4096 + k];
+			}
+			return 0;
+		}
+		return EIO;
+	}
 	if (bounce == NULL) {
 		bounce = kalloc_data(ufs_buffer_size, Z_WAITOK);
 		if (bounce == NULL) {
@@ -481,7 +524,7 @@ ufs_read_mailbox(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 	if (ufshc_list_in()) {
 		/* this kernel's own transfer list is in the controller: UEFI's driver must not be asked to ring */
 		if (ufs_mailbox_refused++ < 4) {
-			printf("ufs: %s: not asked of the loader while this kernel's own transfer list is in\n",
+			ufs_log("ufs: %s: not asked of the loader while this kernel's own transfer list is in\n",
 			    ufs_page->part[part].name);
 		}
 		lck_mtx_unlock(&ufs_lock);
@@ -555,8 +598,8 @@ ufs_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 	if (ufs_native_on && ufs_lun[part] != 0xff) {
 		int error = ufs_read_native(part, offset, dst, len);
 
-		if (error == 0) {
-			return 0;
+		if (error == 0 || ufs_native_only) {
+			return error;
 		}
 		if (ufs_write_busy) {
 			/* the list is out for a write of ours, not broken: this read goes the other way */
@@ -565,7 +608,7 @@ ufs_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 		if (ufs_native_on) {
 			ufs_native_on = false;
 			ufs_native_fallbacks++;
-			printf("ufs: %s: bytes %llu..%llu: this kernel's own read failed (%d); through the loader from now on\n",
+			ufs_log("ufs: %s: bytes %llu..%llu: this kernel's own read failed (%d); through the loader from now on\n",
 			    ufs_page->part[part].name, offset, offset + len - 1, error);
 		}
 		ufs_native_out("a read failed");
@@ -595,11 +638,50 @@ ufs_write(uint32_t part, uint64_t offset, const uint8_t *src, uint64_t len)
 	if (len == 0 || offset % nbs != 0 || len % nbs != 0) {
 		return EINVAL;          /* whole blocks only: nothing is read before a write */
 	}
-	if (offset / nbs < UFS_WRITE_FIRST || offset > ufs_part_bytes(part) ||
+	if (offset / nbs < ufs_write_first || (offset + len) / nbs > ufs_write_end || offset > ufs_part_bytes(part) ||
 	    len > ufs_part_bytes(part) - offset) {
 		/* the iOS volume, the cryptexes, and anything past the partition's end: never */
 		ufs_write_refused++;
 		return EROFS;
+	}
+	if (ufs_native_only) {
+		/*
+		 * The S20+: through this kernel's own driver, a bufferful at a time, each read back and
+		 * compared before the next -- the controller's whitelist allows only the store's window.
+		 */
+		uint8_t *back = kalloc_data(ufs_buffer_size, Z_WAITOK);
+
+		if (back == NULL) {
+			return ENOMEM;
+		}
+		lck_mtx_lock(&ufs_write_mtx);
+		while (len > 0 && error == 0) {
+			uint64_t n = len < ufs_buffer_size ? len : ufs_buffer_size;
+
+			error = ufshc_write(ufs_lun[part], ufs_lun_offset[part] + offset, src, n);
+			if (error == 0) {
+				error = ufs_read_native(part, offset, back, n);
+			}
+			if (error == 0 && memcmp(back, src, (size_t)n) != 0) {
+				ufs_write_verify_failed++;
+				ufs_log("ufs: write: %s+%llu, %llu bytes: read back DIFFERENT\n", ufs_page->part[part].name, offset, n);
+				error = EIO;
+			}
+			if (error == 0) {
+				ufs_writes++;
+				ufs_write_bytes += n;
+			}
+			offset += n;
+			src += n;
+			len -= n;
+		}
+		lck_mtx_unlock(&ufs_write_mtx);
+		kfree_data(back, ufs_buffer_size);
+		if (error != 0) {
+			ufs_write_errors++;
+			ufs_log("ufs: write into %s failed (%d)\n", ufs_page->part[part].name, error);
+		}
+		return error;
 	}
 	per = ufs_buffer_size / nbs;
 	lck_mtx_lock(&ufs_write_mtx);
@@ -645,10 +727,55 @@ ufs_write(uint32_t part, uint64_t offset, const uint8_t *src, uint64_t len)
 	return error;
 }
 
+/*
+ * The S20+'s data volume (HFS+ on userdata): whole blocks straight through this kernel's own driver, as a
+ * file system's buffers come -- its journal, and SYNCHRONIZE CACHE at a transaction's end, are what keep
+ * it whole; the whitelist in redwood_ufshc.c allows no block outside userdata.
+ */
+static int
+ufs_write_direct(uint32_t part, uint64_t offset, const uint8_t *src, uint64_t len)
+{
+	uint64_t nbs = ufs_page->part[part].block_size;
+	int error;
+
+	if (!ufs_ready || !ufs_native_only || ufs_write_part < 0 || part != (uint32_t)ufs_write_part ||
+	    ufs_lun[part] == 0xff) {
+		ufs_write_refused++;
+		return EROFS;
+	}
+	if (len == 0 || offset % nbs != 0 || len % nbs != 0) {
+		return EINVAL;
+	}
+	if (offset / nbs < ufs_write_first || (offset + len) / nbs > ufs_write_end || offset + len > ufs_part_bytes(part)) {
+		ufs_write_refused++;
+		return EROFS;
+	}
+	error = ufshc_write(ufs_lun[part], ufs_lun_offset[part] + offset, src, len);
+	if (error == 0) {
+		os_atomic_inc(&ufs_writes, relaxed);
+		os_atomic_add(&ufs_write_bytes, len, relaxed);
+	} else {
+		os_atomic_inc(&ufs_write_errors, relaxed);
+		ufs_log("ufs: write: %s+%llu, %llu bytes: failed (%d)\n", ufs_page->part[part].name, offset, len, error);
+	}
+	return error;
+}
+
 /* The writing over: this kernel's own transfer list back in, and reads through it again. */
 static void
 ufs_write_restore(void)
 {
+	if (ufs_native_only) {
+		/* the last close of the store: what the unit holds in its cache, into the flash */
+		if (ufs_write_part >= 0) {
+			int e = ufshc_sync(ufs_lun[ufs_write_part]);
+
+			if (e != 0) {
+				ufs_log("ufs: write: SYNCHRONIZE CACHE failed (%d)\n", e);
+			}
+		}
+		return;
+	}
 	lck_mtx_lock(&ufs_write_mtx);
 	if (ufs_write_out) {
 		if (ufs_write_was_native && ufs_native_in(false) == 0) {
@@ -668,8 +795,8 @@ ufs_open(dev_t dev, int flags, __unused int devtype, __unused proc_t p)
 	if (!ufs_ready || (uint32_t)minor(dev) >= ufs_parts || (ufs_page->part[minor(dev)].flags & BLOCK_PART_UNIT)) {
 		return ENXIO;
 	}
-	if (flags & FWRITE) {
-		return EROFS;           /* a block device of this driver never writes */
+	if ((flags & FWRITE) && !(ufs_native_only && ufs_write_part >= 0 && (uint32_t)minor(dev) == (uint32_t)ufs_write_part)) {
+		return EROFS;           /* a block device of this driver never writes -- but the S20+'s data volume */
 	}
 	return 0;
 }
@@ -714,8 +841,8 @@ ufs_strategy(buf_t bp)
 		buf_biodone(bp);
 		return;
 	}
-	if (!(buf_flags(bp) & B_READ)) {
-		buf_seterror(bp, EROFS);         /* this device never writes */
+	if (!(buf_flags(bp) & B_READ) && !(ufs_native_only && ufs_write_part >= 0 && part == (uint32_t)ufs_write_part)) {
+		buf_seterror(bp, EROFS);         /* this device never writes (but the S20+'s data volume) */
 		buf_biodone(bp);
 		return;
 	}
@@ -731,7 +858,22 @@ ufs_strategy(buf_t bp)
 	if (offset + len > size) {
 		len = size - offset;
 	}
-	error = ufs_read(part, offset, (uint8_t *)buf_dataptr(bp), len);
+	{
+		/* a file system's buffers may be pages without a kernel address yet (cluster I/O): mapped here */
+		caddr_t va = NULL;
+
+		if (buf_map(bp, &va) != 0 || va == NULL) {
+			buf_seterror(bp, ENOMEM);
+			buf_biodone(bp);
+			return;
+		}
+		if (buf_flags(bp) & B_READ) {
+			error = ufs_read(part, offset, (uint8_t *)va, len);
+		} else {
+			error = ufs_write_direct(part, offset, (const uint8_t *)va, len);
+		}
+		buf_unmap(bp);
+	}
 	buf_setresid(bp, (uint32_t)(buf_count(bp) - (error ? 0 : len)));
 	if (error) {
 		buf_seterror(bp, error);
@@ -771,10 +913,21 @@ ufs_ioctl(dev_t dev, u_long cmd, caddr_t data, __unused int fflag, __unused proc
 		*(uint64_t *)data = ufs_part_bytes(part) / ufs_bsize[part];
 		return 0;
 	case DKIOCISWRITABLE:
-		*(uint32_t *)data = 0;  /* the block device, which is what a filesystem would ask */
+		/* the block device, which is what a filesystem would ask: only the S20+'s data volume */
+		*(uint32_t *)data = ufs_native_only && ufs_write_part >= 0 && part == (uint32_t)ufs_write_part;
 		return 0;
 	case DKIOCGETMAXBLOCKCOUNTREAD:
+	case DKIOCGETMAXBLOCKCOUNTWRITE:
 		*(uint64_t *)data = ufs_buffer_size / ufs_bsize[part];
+		return 0;
+	case DKIOCSYNCHRONIZE:
+		/* the unit's write cache into the flash (HFS+'s journal asks for it at every transaction's end) */
+		if (ufs_native_only && ufs_write_part >= 0 && part == (uint32_t)ufs_write_part) {
+			return ufshc_sync(ufs_lun[part]);
+		}
+		return 0;
+	case DKIOCGETFEATURES:
+		*(uint32_t *)data = 0;  /* no FUA, no unmap: SYNCHRONIZE CACHE it is */
 		return 0;
 	default:
 		return ENOTTY;
@@ -849,7 +1002,7 @@ ufs_cwrite(dev_t dev, struct uio *uio, __unused int ioflag)
 	if (!ufs_ready || part >= ufs_parts || ufs_write_part < 0 || part != (uint32_t)ufs_write_part) {
 		return EROFS;
 	}
-	if (ufs_var_busy_pid != proc_selfpid()) {
+	if (!ufs_native_only && ufs_var_busy_pid != proc_selfpid()) {
 		/* one writer of the store at a time, and it says so first (kern.redwood.var_busy) */
 		ufs_write_refused++;
 		return EPERM;
@@ -918,6 +1071,51 @@ static const struct cdevsw ufs_cdevsw = {
  * so twenty seconds here is well inside both. Nothing else of the way out has happened yet: the
  * GPU, the DSPs and this kernel's transfer list are still as the run had them.
  */
+/*
+ * Before the kernel gives the phone back to the loader (the keys' way out): every writable local file
+ * system -- the S20+'s data volume, HFS+ on userdata -- synced and waited for (its journal and its
+ * dirty files on the flash), then the unit's write cache flushed. The journal would have the volume
+ * whole either way; this keeps what was written last as well.
+ */
+void redwood_sync_filesystems(void);
+
+static int
+ufs_sync_one(mount_t mp, __unused void *arg)
+{
+	if ((vfs_flags(mp) & MNT_LOCAL) && !vfs_isrdonly(mp)) {
+		int e = VFS_SYNC(mp, MNT_WAIT, vfs_context_kernel());
+
+		ufs_log("ufs: %s synced (%d)\n", vfs_statfs(mp)->f_mntonname, e);
+	}
+	return VFS_RETURNED;
+}
+
+void
+redwood_sync_filesystems(void)
+{
+	vfs_iterate(0, ufs_sync_one, NULL);
+	if (ufs_native_only && ufs_write_part >= 0) {
+		(void)ufshc_sync(ufs_lun[ufs_write_part]);
+	}
+}
+
+/* kern_sig.c: a SIGTERM to the registered saver is a request to save (it has no handler of its own) */
+bool redwood_var_saver_sigterm(int pid);
+
+bool
+redwood_var_saver_sigterm(int pid)
+{
+	if (pid <= 0 || pid != ufs_var_saver_pid) {
+		return false;
+	}
+	if (ufs_var_save == VAR_SAVE_IDLE) {
+		ufs_var_save = VAR_SAVE_WANTED;
+		printf("var_store: the saver (%d) was told to stop: it saves the data volume first\n", pid);
+		return true;
+	}
+	return ufs_var_save == VAR_SAVE_WANTED;   /* (already saving: let it finish) */
+}
+
 void
 redwood_var_save_on_return(void)
 {
@@ -975,7 +1173,7 @@ ufs_check(void *arg, __unused wait_result_t wr)
 	if (arg == NULL) {
 		IOSleep(40000);
 	}
-	printf("ufs: check: %u partitions of the phone's storage, read through %s\n", ufs_parts,
+	ufs_log("ufs: check: %u partitions of the phone's storage, read through %s\n", ufs_parts,
 	    ufs_native_on ? "this kernel's own UFS driver" : "the loader's page");
 	for (uint32_t part = 0; chunk != NULL && part < ufs_parts; part++) {
 		for (unsigned r = 0; r < sizeof(ufs_references) / sizeof(ufs_references[0]); r++) {
@@ -997,9 +1195,9 @@ ufs_check(void *arg, __unused wait_result_t wr)
 			}
 			absolutetime_to_nanoseconds(mach_absolute_time() - started, &ns);
 			if (error) {
-				printf("ufs: check %s: read failed (%d)\n", ufs_page->part[part].name, error);
+				ufs_log("ufs: check %s: read failed (%d)\n", ufs_page->part[part].name, error);
 			} else {
-				printf("ufs: check %s: fnv %llx over %llu bytes, %llu ms\n", ufs_page->part[part].name,
+				ufs_log("ufs: check %s: fnv %llx over %llu bytes, %llu ms\n", ufs_page->part[part].name,
 				    h, bytes, ns / 1000000);
 			}
 		}
@@ -1007,7 +1205,7 @@ ufs_check(void *arg, __unused wait_result_t wr)
 	if (chunk != NULL) {
 		kfree_data(chunk, 1 << 20);
 	}
-	printf("ufs: check done: %llu requests, %llu errors, %llu bytes, %llu ms waiting\n",
+	ufs_log("ufs: check done: %llu requests, %llu errors, %llu bytes, %llu ms waiting\n",
 	    ufs_requests, ufs_errors, ufs_bytes, ufs_wait_us / 1000);
 }
 
@@ -1032,7 +1230,7 @@ ufs_bench(__unused void *arg, __unused wait_result_t wr)
 		}
 	}
 	if (dst == NULL || part == BLOCK_MAX_PARTS) {
-		printf("ufs: bench: no partition darwin, or no memory\n");
+		ufs_log("ufs: bench: no partition darwin, or no memory\n");
 		return;
 	}
 	for (unsigned z = 0; z < sizeof(sizes) / sizeof(sizes[0]); z++) {
@@ -1048,7 +1246,7 @@ ufs_bench(__unused void *arg, __unused wait_result_t wr)
 		}
 		absolutetime_to_nanoseconds(mach_absolute_time() - started, &ns);
 		absolutetime_to_nanoseconds(ufs_page->answer.ticks - loader0, &loader_ns);
-		printf("ufs: bench: %7u bytes a request: %4llu MB/s, %llu requests, %llu us each: "
+		ufs_log("ufs: bench: %7u bytes a request: %4llu MB/s, %llu requests, %llu us each: "
 		    "ReadBlocks %llu, the rest of waiting %llu, copying %llu%s\n", sizes[z],
 		    ns ? (done * 1000ULL) / ns : 0, n, ns / 1000 / n, loader_ns / 1000 / n,
 		    (ufs_wait_us - wait0 - loader_ns / 1000) / n, (ufs_copy_us - copy0) / n,
@@ -1107,7 +1305,12 @@ ufs_native_map(bool all_units)
 		}
 		if (e->block_size != 4096 || ufs_read_mailbox(i, 4096, theirs + n * 4096, 4096) != 0 ||
 		    memcmp(theirs + n * 4096, "EFI PART", 8) != 0) {
-			printf("ufs: native: %s: no GPT header to know it by (block size %u)\n", e->name, e->block_size);
+			if (ufs_native_only && e->unit != 0) {
+				/* (the S20+'s LUNs 1, 2 and 4 have no GPT, and no partitions: nothing to read there) */
+				ufs_log("ufs: native: %s: no GPT header to know it by: no read goes to it\n", e->name);
+				continue;
+			}
+			ufs_log("ufs: native: %s: no GPT header to know it by (block size %u)\n", e->name, e->block_size);
 			good = false;
 			break;
 		}
@@ -1116,7 +1319,7 @@ ufs_native_map(bool all_units)
 		ufs_native_luns = n;
 	}
 	if (good && !all_units && (n != 1 || ufs_page->part[units[0]].unit != 0)) {
-		printf("ufs: native: darwin is not on the first unit the loader lists: not LUN 0, not read here\n");
+		ufs_log("ufs: native: darwin is not on the first unit the loader lists: not LUN 0, not read here\n");
 		good = false;
 	}
 	ufshc_set_luns(mask);
@@ -1127,10 +1330,10 @@ ufs_native_map(bool all_units)
 		volatile struct loader_block_part *e = &ufs_page->part[units[k]];
 
 		if (ufshc_read((uint8_t)e->unit, 4096, mine, 4096) != 0 || memcmp(mine, theirs + k * 4096, 4096) != 0) {
-			printf("ufs: native: %s: LUN %u's block 1 is NOT what the loader reads as its block 1\n", e->name, e->unit);
+			ufs_log("ufs: native: %s: LUN %u's block 1 is NOT what the loader reads as its block 1\n", e->name, e->unit);
 			good = false;
 		} else {
-			printf("ufs: native: %s is LUN %u: its GPT header read both ways is the same\n", e->name, e->unit);
+			ufs_log("ufs: native: %s is LUN %u: its GPT header read both ways is the same\n", e->name, e->unit);
 		}
 	}
 	if (!good) {
@@ -1198,7 +1401,7 @@ ufs_compare_batch(const struct ufs_span *s, uint32_t n, const char *what, bool q
 	ufs_cmp_mailbox_ns += mailbox_ns;
 	ufs_cmp_native_ns += native_ns;
 	if (e != 0) {
-		printf("ufs: native check: %s: a read failed (%d): STOP\n", what, e);
+		ufs_log("ufs: native check: %s: a read failed (%d): STOP\n", what, e);
 		ufs_cmp_failed++;
 		return false;
 	}
@@ -1210,7 +1413,7 @@ ufs_compare_batch(const struct ufs_span *s, uint32_t n, const char *what, bool q
 			while (ufs_cmp_x[at + k] == ufs_cmp_y[at + k]) {
 				k++;
 			}
-			printf("ufs: native check: %s %s: DIFFERENT at byte %llu (%02x through the loader, %02x here): STOP\n",
+			ufs_log("ufs: native check: %s %s: DIFFERENT at byte %llu (%02x through the loader, %02x here): STOP\n",
 			    ufs_page->part[s[i].part].name, what, s[i].offset + k, ufs_cmp_x[at + k], ufs_cmp_y[at + k]);
 			same = false;
 			ufs_cmp_differ++;
@@ -1223,7 +1426,7 @@ ufs_compare_batch(const struct ufs_span *s, uint32_t n, const char *what, bool q
 	ufs_cmp_spans += n;
 	ufs_cmp_bytes += bytes;
 	if (!quiet || !same) {
-		printf("ufs: native check: %s %s: %u span(s), %llu bytes from %llu: %s (fnv %llx / %llx); loader %llu ms, here "
+		ufs_log("ufs: native check: %s %s: %u span(s), %llu bytes from %llu: %s (fnv %llx / %llx); loader %llu ms, here "
 		    "%llu ms (switches included)\n", ufs_page->part[s[0].part].name, what, n, bytes, s[0].offset,
 		    same ? "the same" : "NOT THE SAME", hx, hy, mailbox_ns / 1000000, native_ns / 1000000);
 	}
@@ -1246,7 +1449,7 @@ ufs_compare(uint32_t part, uint64_t offset, uint64_t len, uint64_t ref, const ch
 		}
 		done += s.len;
 	}
-	printf("ufs: native check: %s %s: %llu bytes from %llu: %s%s", ufs_page->part[part].name, what, done, offset,
+	ufs_log("ufs: native check: %s %s: %llu bytes from %llu: %s%s", ufs_page->part[part].name, what, done, offset,
 	    same ? "the same" : "NOT THE SAME", ref ? "" : "\n");
 	if (ref) {
 		printf("; fnv %llx over the first %llu bytes (the loader's own survey hashes them)\n", href, ref);
@@ -1264,10 +1467,10 @@ ufs_native_check(void)
 	ufs_cmp_x = kalloc_data(UFS_CMP_BUFFER, Z_WAITOK);
 	ufs_cmp_y = kalloc_data(UFS_CMP_BUFFER, Z_WAITOK);
 	if (h == NULL || ufs_cmp_x == NULL || ufs_cmp_y == NULL) {
-		printf("ufs: native check: no memory\n");
+		ufs_log("ufs: native check: no memory\n");
 		return;
 	}
-	printf("ufs: native check: through the loader and through this kernel's own driver, compared\n");
+	ufs_log("ufs: native check: through the loader and through this kernel's own driver, compared\n");
 	/* every unit's GPT: protective MBR, header, table; the backup table and header at the end */
 	for (uint32_t i = 0; going && i < ufs_parts; i++) {
 		volatile struct loader_block_part *e = &ufs_page->part[i];
@@ -1289,14 +1492,14 @@ ufs_native_check(void)
 		want = *(uint32_t *)(h + 16);
 		*(uint32_t *)(h + 16) = 0;
 		got = crc32(0, h, *(uint32_t *)(h + 12));
-		printf("ufs: native check: %s (LUN %u): GPT header crc %s (%x), table at block %llu, %llu entries of %llu bytes, "
+		ufs_log("ufs: native check: %s (LUN %u): GPT header crc %s (%x), table at block %llu, %llu entries of %llu bytes, "
 		    "backup header at block %llu\n", e->name, ufs_lun[i], got == want ? "right" : "WRONG", got, entries_lba, count,
 		    size, alt);
 		going = ufs_compare(i, 0, (entries_lba + table) * 4096, 0, "GPT (MBR, header, table)");
 		if (!going || alt >= e->blocks || ufs_native_out("the loader reads, to compare") != 0 ||
 		    ufs_read_mailbox(i, alt * 4096, h, 4096) != 0 || memcmp(h, "EFI PART", 8) != 0 ||
 		    (alt_entries = *(uint64_t *)(h + 72)) > alt) {
-			printf("ufs: native check: %s: no backup GPT header at block %llu: STOP\n", e->name, alt);
+			ufs_log("ufs: native check: %s: no backup GPT header at block %llu: STOP\n", e->name, alt);
 			going = false;
 			break;
 		}
@@ -1339,7 +1542,7 @@ ufs_native_check(void)
 		going = going && ufs_compare_batch(s, 32, "unaligned pieces", false);
 	}
 	kfree_data(h, 4096);
-	printf("ufs: native check %s: %llu spans, %llu bytes, %llu NOT THE SAME, %llu failed reads; through the loader %llu ms, "
+	ufs_log("ufs: native check %s: %llu spans, %llu bytes, %llu NOT THE SAME, %llu failed reads; through the loader %llu ms, "
 	    "through this kernel's own driver %llu ms (list switches included)\n", going ? "done" : "STOPPED", ufs_cmp_spans,
 	    ufs_cmp_bytes, ufs_cmp_differ, ufs_cmp_failed, ufs_cmp_mailbox_ns / 1000000, ufs_cmp_native_ns / 1000000);
 	ufs_native_out("after the check");
@@ -1391,7 +1594,7 @@ ufs_native_bench(void)
 	uint32_t part = ufs_entry("darwin");
 
 	if (part >= BLOCK_MAX_PARTS || ufs_lun[part] == 0xff) {
-		printf("ufs: native bench: no darwin\n");
+		ufs_log("ufs: native bench: no darwin\n");
 		return;
 	}
 	for (unsigned z = 0; z < sizeof(sizes) / sizeof(sizes[0]); z++) {
@@ -1421,12 +1624,81 @@ ufs_native_bench(void)
 			lck_mtx_unlock(&ufs_lock);
 			absolutetime_to_nanoseconds(mach_absolute_time() - started, &ns);
 			bytes = (uint64_t)nb.per_thread * threads[t] * sizes[z];
-			printf("ufs: native bench: %6u bytes, %2u in flight: %4llu MB/s, %6llu reads/s, %5llu us a read%s\n",
+			ufs_log("ufs: native bench: %6u bytes, %2u in flight: %4llu MB/s, %6llu reads/s, %5llu us a read%s\n",
 			    sizes[z], threads[t], ns ? bytes * 1000 / ns : 0, ns ? (bytes / sizes[z]) * 1000000000ULL / ns : 0,
 			    ns / 1000 * threads[t] / (bytes / sizes[z]), nb.error ? " (ERRORS)" : "");
 		}
 	}
 	ufshc_report("after the bench");
+}
+
+/*
+ * ufs_native_md5=1 (the S20+, PLANS/09-standalone.md P5): MD5 of what this kernel's own driver reads,
+ * in a thread of its own, to be compared on the computer with backup-y2s/MD5SUMS (partitions nothing
+ * writes, and logical unit 3 whole: lun-sdd.img) and with userland/system.apfs, which is in super
+ * at 0x184b00000.
+ */
+static void
+ufs_md5_one(const char *name, uint64_t offset, uint64_t len, uint8_t *buf, uint64_t chunk)
+{
+	uint32_t part = ufs_entry(name);
+	uint64_t done = 0, started = mach_absolute_time(), ns;
+	unsigned char digest[MD5_DIGEST_LENGTH];
+	char hex[2 * MD5_DIGEST_LENGTH + 1];
+	MD5_CTX ctx;
+	int error = 0;
+
+	if (part == BLOCK_MAX_PARTS) {
+		ufs_log("ufs: md5: %s: no such partition\n", name);
+		return;
+	}
+	if (len == 0) {
+		len = ufs_page->part[part].blocks * ufs_page->part[part].block_size - offset;
+	}
+	MD5Init(&ctx);
+	while (done < len && error == 0) {
+		uint64_t n = len - done < chunk ? len - done : chunk;
+
+		error = ufs_read(part, offset + done, buf, n);
+		if (error == 0) {
+			MD5Update(&ctx, buf, (unsigned int)n);
+			done += n;
+		}
+	}
+	MD5Final(digest, &ctx);
+	for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
+		snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+	}
+	absolutetime_to_nanoseconds(mach_absolute_time() - started, &ns);
+	if (error != 0) {
+		ufs_log("ufs: md5: %s: read FAILED (%d) at byte %llu of %llu\n", name, error, offset + done, len);
+	} else {
+		ufs_log("ufs: md5: %s %s +%llx %llu bytes, %llu MB/s\n", hex, name, offset, len,
+		    ns ? len * 1000 / ns : 0);
+	}
+}
+
+static void
+ufs_md5_test(__unused void *arg, __unused wait_result_t wr)
+{
+	static const char *const names[] = {
+		"radio", "optics", "spu", "omr", "bota", "dtbo", "keystorage", "uh", "harx", "vbmeta", "blcmd", "unit3",
+	};
+	const uint64_t chunk = 4u << 20;
+	uint8_t *buf = kalloc_data(chunk, Z_WAITOK);
+
+	if (buf == NULL) {
+		return;
+	}
+	IOSleep(5000);
+	ufs_log("ufs: md5: what this kernel's own driver reads, to compare with backup-y2s/MD5SUMS\n");
+	for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+		ufs_md5_one(names[i], 0, 0, buf, chunk);
+	}
+	ufs_md5_one("super", 0x184b00000ULL, 0x948c0000ULL, buf, chunk);
+	redwood_ufs_report("after the md5 test");
+	ufs_log("ufs: md5: done\n");
+	kfree_data(buf, chunk);
 }
 
 /* kern.redwood.ufs_native: 1 while reads go through this kernel's own driver; 0 or 1 may be set */
@@ -1457,13 +1729,381 @@ SYSCTL_QUAD(_kern_redwood, OID_AUTO, ufs_native_fallbacks, CTLFLAG_RD | CTLFLAG_
 
 /* ---- bringing it up ---- */
 
+/*
+ * ---- the root on the flash (PLANS/09-standalone.md, P5b) ----
+ * ufs_root=PART:HEXOFFSET:HEXSIZE: a window of a partition as one more block device, /dev/ufs_root,
+ * read only, for the kernel to mount its root from (iokit/bsddev/IOKitBSDInit.cpp, IOFindBSDRoot):
+ * on the S20+ the system image the loader used to copy into memory (md0) is read where it lies,
+ * super+0x184b00000. Only through this kernel's own driver: the loader serves nothing here.
+ */
+static uint32_t ufs_root_part = BLOCK_MAX_PARTS;
+static uint64_t ufs_root_off, ufs_root_size;
+static uint32_t ufs_root_bsize = 4096;
+static dev_t ufs_root_dev = NODEV;
+
+static int
+ufs_root_open(dev_t dev, int flags, __unused int devtype, __unused proc_t p)
+{
+	if (ufs_root_part == BLOCK_MAX_PARTS || minor(dev) != 0) {
+		return ENXIO;
+	}
+	return (flags & FWRITE) ? EROFS : 0;
+}
+
+static void
+ufs_root_strategy(buf_t bp)
+{
+	uint64_t offset = (uint64_t)buf_blkno(bp) * ufs_root_bsize, len = buf_count(bp);
+	int error;
+
+	if (ufs_root_part == BLOCK_MAX_PARTS || !(buf_flags(bp) & B_READ)) {
+		buf_seterror(bp, ufs_root_part == BLOCK_MAX_PARTS ? ENXIO : EROFS);
+		buf_biodone(bp);
+		return;
+	}
+	if (offset >= ufs_root_size) {
+		buf_seterror(bp, offset == ufs_root_size ? 0 : EINVAL);
+		buf_setresid(bp, buf_count(bp));
+		buf_biodone(bp);
+		return;
+	}
+	if (offset + len > ufs_root_size) {
+		len = ufs_root_size - offset;
+	}
+	error = ufs_read(ufs_root_part, ufs_root_off + offset, (uint8_t *)buf_dataptr(bp), len);
+	buf_setresid(bp, (uint32_t)(buf_count(bp) - (error ? 0 : len)));
+	if (error) {
+		buf_seterror(bp, error);
+	}
+	buf_biodone(bp);
+}
+
+static int
+ufs_root_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int fflag, __unused proc_t p)
+{
+	switch (cmd) {
+	case DKIOCGETBLOCKSIZE:
+		*(uint32_t *)data = ufs_root_bsize;
+		return 0;
+	case DKIOCSETBLOCKSIZE:
+		if (*(uint32_t *)data < 512 || *(uint32_t *)data > 4096 || (*(uint32_t *)data & (*(uint32_t *)data - 1)) != 0) {
+			return EINVAL;
+		}
+		ufs_root_bsize = *(uint32_t *)data;
+		return 0;
+	case DKIOCGETPHYSICALBLOCKSIZE:
+		*(uint32_t *)data = 4096;
+		return 0;
+	case DKIOCGETBLOCKCOUNT:
+		*(uint64_t *)data = ufs_root_size / ufs_root_bsize;
+		return 0;
+	case DKIOCISWRITABLE:
+		*(uint32_t *)data = 0;
+		return 0;
+	case DKIOCGETMAXBLOCKCOUNTREAD:
+		*(uint64_t *)data = (1u << 20) / ufs_root_bsize;
+		return 0;
+	default:
+		return ENOTTY;
+	}
+}
+
+static int
+ufs_root_psize(__unused dev_t dev)
+{
+	return (int)ufs_root_bsize;
+}
+
+static const struct bdevsw ufs_root_bdevsw = {
+	.d_open     = ufs_root_open,
+	.d_close    = ufs_close,
+	.d_strategy = ufs_root_strategy,
+	.d_ioctl    = ufs_root_ioctl,
+	.d_dump     = eno_dump,
+	.d_psize    = ufs_root_psize,
+	.d_type     = D_DISK,
+};
+
+/*
+ * x1slte (SM-G980F): /dev/ufs_var and /dev/rufs_var, the ufs_win window of userdata (the pinned /data/darwin/var.img)
+ * as a disk of its own, block 0 at the window's start, for iOS's /private/var (userland/src/init.c). Every access
+ * goes through ufs_read, ufs_write and ufs_write_direct at the window's offset, so the write window's bounds
+ * (ufs_write_first/end) still decide what is written.
+ */
+static uint64_t ufs_var_off, ufs_var_size;     /* bytes, inside the partition ufs_write_part */
+static uint32_t ufs_var_bsize = 4096;
+static bool ufs_var_on;
+
+static int
+ufs_var_open(dev_t dev, __unused int flags, __unused int devtype, __unused proc_t p)
+{
+	return (!ufs_var_on || minor(dev) != 0 || ufs_write_part < 0) ? ENXIO : 0;
+}
+
+static int
+ufs_var_cclose(__unused dev_t dev, __unused int flags, __unused int devtype, __unused proc_t p)
+{
+	ufs_write_restore();            /* (the unit's write cache into the flash) */
+	return 0;
+}
+
+static void
+ufs_var_strategy(buf_t bp)
+{
+	uint64_t offset = (uint64_t)buf_blkno(bp) * ufs_var_bsize, len = buf_count(bp);
+	caddr_t va = NULL;
+	int error;
+
+	if (!ufs_var_on || ufs_write_part < 0) {
+		buf_seterror(bp, ENXIO);
+		buf_biodone(bp);
+		return;
+	}
+	if (offset >= ufs_var_size) {
+		buf_seterror(bp, offset == ufs_var_size ? 0 : EINVAL);
+		buf_setresid(bp, buf_count(bp));
+		buf_biodone(bp);
+		return;
+	}
+	if (offset + len > ufs_var_size) {
+		len = ufs_var_size - offset;
+	}
+	if (buf_map(bp, &va) != 0 || va == NULL) {
+		buf_seterror(bp, ENOMEM);
+		buf_biodone(bp);
+		return;
+	}
+	if (buf_flags(bp) & B_READ) {
+		error = ufs_read((uint32_t)ufs_write_part, ufs_var_off + offset, (uint8_t *)va, len);
+	} else {
+		error = ufs_write_direct((uint32_t)ufs_write_part, ufs_var_off + offset, (const uint8_t *)va, len);
+	}
+	buf_unmap(bp);
+	buf_setresid(bp, (uint32_t)(buf_count(bp) - (error ? 0 : len)));
+	if (error) {
+		buf_seterror(bp, error);
+	}
+	buf_biodone(bp);
+}
+
+static int
+ufs_var_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int fflag, __unused proc_t p)
+{
+	if (!ufs_var_on || ufs_write_part < 0) {
+		return ENXIO;
+	}
+	switch (cmd) {
+	case DKIOCGETBLOCKSIZE:
+		*(uint32_t *)data = ufs_var_bsize;
+		return 0;
+	case DKIOCSETBLOCKSIZE:
+		if (*(uint32_t *)data < 512 || *(uint32_t *)data > 4096 || (*(uint32_t *)data & (*(uint32_t *)data - 1)) != 0) {
+			return EINVAL;
+		}
+		ufs_var_bsize = *(uint32_t *)data;
+		return 0;
+	case DKIOCGETPHYSICALBLOCKSIZE:
+		*(uint32_t *)data = 4096;
+		return 0;
+	case DKIOCGETBLOCKCOUNT:
+		*(uint64_t *)data = ufs_var_size / ufs_var_bsize;
+		return 0;
+	case DKIOCISWRITABLE:
+		*(uint32_t *)data = 1;
+		return 0;
+	case DKIOCGETMAXBLOCKCOUNTREAD:
+	case DKIOCGETMAXBLOCKCOUNTWRITE:
+		*(uint64_t *)data = ufs_buffer_size / ufs_var_bsize;
+		return 0;
+	case DKIOCSYNCHRONIZE:
+		return ufshc_sync(ufs_lun[ufs_write_part]);
+	case DKIOCGETFEATURES:
+		*(uint32_t *)data = 0;
+		return 0;
+	default:
+		return ENOTTY;
+	}
+}
+
+static int
+ufs_var_psize(__unused dev_t dev)
+{
+	return (int)ufs_var_bsize;
+}
+
+/* reads and writes of /dev/rufs_var: through a bounce buffer and uiomove, as ufs_cread/ufs_cwrite (PAN) */
+static int
+ufs_var_crw(struct uio *uio, bool write)
+{
+	uint8_t *bounce;
+	int error = 0;
+
+	if (!ufs_var_on || ufs_write_part < 0) {
+		return ENXIO;
+	}
+	if (uio_offset(uio) < 0 || (write && ((uint64_t)uio_offset(uio) % 4096 != 0 || (uint64_t)uio_resid(uio) % 4096 != 0))) {
+		return EINVAL;
+	}
+	bounce = kalloc_data(ufs_buffer_size, Z_WAITOK);
+	if (bounce == NULL) {
+		return ENOMEM;
+	}
+	while (error == 0 && uio_resid(uio) > 0 && (uint64_t)uio_offset(uio) < ufs_var_size) {
+		uint64_t at = (uint64_t)uio_offset(uio), want = (uint64_t)uio_resid(uio);
+
+		if (want > ufs_buffer_size) {
+			want = ufs_buffer_size;
+		}
+		if (want > ufs_var_size - at) {
+			want = ufs_var_size - at;
+		}
+		if (write) {
+			error = uiomove((caddr_t)bounce, (int)want, uio);
+			if (error == 0) {
+				error = ufs_write((uint32_t)ufs_write_part, ufs_var_off + at, bounce, want);
+				if (error != 0) {
+					uio_setoffset(uio, (off_t)at);
+					uio_setresid(uio, uio_resid(uio) + (user_ssize_t)want);
+				}
+			}
+		} else {
+			error = ufs_read((uint32_t)ufs_write_part, ufs_var_off + at, bounce, want);
+			if (error == 0) {
+				error = uiomove((caddr_t)bounce, (int)want, uio);
+			}
+		}
+	}
+	kfree_data(bounce, ufs_buffer_size);
+	return error;
+}
+
+static int
+ufs_var_cread(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	return ufs_var_crw(uio, false);
+}
+
+static int
+ufs_var_cwrite(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	return ufs_var_crw(uio, true);
+}
+
+static const struct bdevsw ufs_var_bdevsw = {
+	.d_open     = ufs_var_open,
+	.d_close    = ufs_close,
+	.d_strategy = ufs_var_strategy,
+	.d_ioctl    = ufs_var_ioctl,
+	.d_dump     = eno_dump,
+	.d_psize    = ufs_var_psize,
+	.d_type     = D_DISK,
+};
+
+static const struct cdevsw ufs_var_cdevsw = {
+	.d_open       = ufs_var_open,
+	.d_close      = ufs_var_cclose,
+	.d_read       = ufs_var_cread,
+	.d_write      = ufs_var_cwrite,
+	.d_ioctl      = ufs_var_ioctl,
+	.d_stop       = eno_stop,
+	.d_reset      = eno_reset,
+	.d_ttys       = NULL,
+	.d_select     = eno_select,
+	.d_mmap       = eno_mmap,
+	.d_strategy   = eno_strat,
+	.d_reserved_1 = eno_getc,
+	.d_reserved_2 = eno_putc,
+	.d_type       = D_DISK,
+};
+
+/* the window as /dev/ufs_var and /dev/rufs_var (from the ufs_win branch of the write set-up) */
+static void
+ufs_var_publish(uint64_t first_block, uint64_t blocks)
+{
+	int bmaj, cmaj;
+
+	if (ufs_var_on) {
+		return;
+	}
+	bmaj = bdevsw_add(-1, &ufs_var_bdevsw);
+	cmaj = bmaj < 0 ? -1 : cdevsw_add(-1, &ufs_var_cdevsw);
+	if (bmaj < 0 || cmaj < 0) {
+		ufs_log("ufs: var: no device numbers for /dev/ufs_var\n");
+		return;
+	}
+	ufs_var_off = first_block * 4096;
+	ufs_var_size = blocks * 4096;
+	ufs_var_on = true;
+	(void)devfs_make_node(makedev(bmaj, 0), DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "ufs_var");
+	(void)devfs_make_node(makedev(cmaj, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rufs_var");
+	ufs_log("ufs: var: /dev/ufs_var and /dev/rufs_var are userdata blocks %llu..%llu (%llu MB)\n", first_block,
+	    first_block + blocks, (blocks * 4096) >> 20);
+}
+
+void redwood_ufs_init(void);
+dev_t redwood_ufs_root(void);
+
+/* The root's device (IOFindBSDRoot, before the root is mounted), or NODEV and why said */
+dev_t
+redwood_ufs_root(void)
+{
+	char arg[64], *colon, *end;
+	uint64_t off, size, part_bytes;
+	uint32_t part;
+	int major;
+
+	if (ufs_root_dev != NODEV) {
+		return ufs_root_dev;
+	}
+	if (!PE_parse_boot_argn("ufs_root", arg, sizeof(arg)) || (colon = strchr(arg, ':')) == NULL) {
+		ufs_log("ufs: root: ufs_root=PART:HEXOFFSET:HEXSIZE is not on the command line\n");
+		return NODEV;
+	}
+	*colon = 0;
+	off = strtouq(colon + 1, &end, 16);
+	size = *end == ':' ? strtouq(end + 1, NULL, 16) : 0;
+	redwood_ufs_init();                     /* (here, before the root: it runs once) */
+	part = ufs_ready ? ufs_entry(arg) : BLOCK_MAX_PARTS;
+	if (part == BLOCK_MAX_PARTS) {
+		ufs_log("ufs: root: no partition %s (the storage %s)\n", arg, ufs_ready ? "is there" : "is not set up");
+		return NODEV;
+	}
+	part_bytes = ufs_part_bytes(part);
+	if (!ufs_native_on || ufs_lun[part] == 0xff) {
+		ufs_log("ufs: root: %s is not read by this kernel's own driver: no root from it\n", arg);
+		return NODEV;
+	}
+	if (size == 0 || (off & 4095) || (size & 4095) || off + size > part_bytes) {
+		ufs_log("ufs: root: %s+%llx, %llx bytes: not a window of its %llu bytes\n", arg, off, size, part_bytes);
+		return NODEV;
+	}
+	major = bdevsw_add(-1, &ufs_root_bdevsw);
+	if (major < 0) {
+		ufs_log("ufs: root: no device number\n");
+		return NODEV;
+	}
+	ufs_root_part = part;
+	ufs_root_off = off;
+	ufs_root_size = size;
+	ufs_root_dev = makedev(major, 0);
+	(void)devfs_make_node(ufs_root_dev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "ufs_root");
+	ufs_log("ufs: root: /dev/ufs_root is %s+%llx, %llu MB, read only, through this kernel's own driver\n", arg, off,
+	    size >> 20);
+	return ufs_root_dev;
+}
+
 void
 redwood_ufs_init(void)
 {
 	uint64_t pa = 0, buffer_pa;
 	uint32_t check = 0, made = 0;
 	vm_offset_t base;
+	static bool started;
 
+	if (started) {
+		return;                 /* (IOFindBSDRoot may have run it already, for ufs_root=) */
+	}
+	started = true;
 	if (!PE_parse_boot_argn("ufs_shared_pa", &pa, sizeof(pa)) || pa == 0) {
 		return;                 /* the loader was not asked for ufs=2: there is nothing to read through */
 	}
@@ -1472,7 +2112,7 @@ redwood_ufs_init(void)
 	ufs_page = (volatile struct loader_block *)(base + (pa & (UFS_PAGE - 1)));
 	if (ufs_page->magic != BLOCK_MAGIC || ufs_page->version != BLOCK_VERSION ||
 	    ufs_page->size != sizeof(struct loader_block) || ufs_page->parts > BLOCK_MAX_PARTS) {
-		printf("ufs: the loader's page at %llx is not one this kernel knows (magic %llx, version %u, size %u)\n",
+		ufs_log("ufs: the loader's page at %llx is not one this kernel knows (magic %llx, version %u, size %u)\n",
 		    pa, ufs_page->magic, ufs_page->version, ufs_page->size);
 		return;
 	}
@@ -1483,11 +2123,20 @@ redwood_ufs_init(void)
 	    ((buffer_pa & (UFS_PAGE - 1)) + ufs_buffer_size + UFS_PAGE - 1) & ~(UFS_PAGE - 1), VM_WIMG_DEFAULT) +
 	    (buffer_pa & (UFS_PAGE - 1)));
 	ufs_seq = ufs_page->answer.answered;      /* a loader that served an earlier kernel counts on from there */
+	ufs_native_only = (ufs_page->native.flags & BLOCK_NATIVE_ONLY) != 0;
+	if (ufs_native_only && ufs_page->native.gpt_pa != 0 && ufs_page->native.gpt_units - 1 < BLOCK_MAX_UNITS) {
+		uint64_t g = ufs_page->native.gpt_pa;
+
+		ufs_gpt_units = ufs_page->native.gpt_units;
+		ufs_gpt = (const volatile uint8_t *)(ml_io_map_unmappable((vm_offset_t)(g & ~(UFS_PAGE - 1)),
+		    ((g & (UFS_PAGE - 1)) + ufs_gpt_units * 4096 + UFS_PAGE - 1) & ~(UFS_PAGE - 1), VM_WIMG_WCOMB) +
+		    (g & (UFS_PAGE - 1)));
+	}
 
 	ufs_bmajor = bdevsw_add(-1, &ufs_bdevsw);
 	ufs_cmajor = ufs_bmajor < 0 ? -1 : cdevsw_add_with_bdev(-1, &ufs_cdevsw, ufs_bmajor);
 	if (ufs_cmajor < 0) {
-		printf("ufs: no device numbers to be had\n");
+		ufs_log("ufs: no device numbers to be had\n");
 		return;
 	}
 	for (uint32_t i = 0; i < ufs_parts; i++) {
@@ -1499,7 +2148,7 @@ redwood_ufs_init(void)
 		}
 		snprintf(name, sizeof(name), "ufs_%s", ufs_page->part[i].name);
 		if (devfs_make_node(makedev(ufs_bmajor, i), DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "%s", name) == NULL) {
-			printf("ufs: no node for %s (the same name twice?)\n", name);
+			ufs_log("ufs: no node for %s (the same name twice?)\n", name);
 			continue;
 		}
 		snprintf(name, sizeof(name), "rufs_%s", ufs_page->part[i].name);
@@ -1507,7 +2156,7 @@ redwood_ufs_init(void)
 		made++;
 	}
 	ufs_ready = true;
-	printf("ufs: %u partitions of the phone's storage as /dev/ufs_NAME and /dev/rufs_NAME, read only, "
+	ufs_log("ufs: %u partitions of the phone's storage as /dev/ufs_NAME and /dev/rufs_NAME, read only, "
 	    "through the loader's page at %llx and its %u KB buffer\n", made, pa, ufs_buffer_size >> 10);
 
 	/*
@@ -1516,12 +2165,11 @@ redwood_ufs_init(void)
 	 * it; the loader looks at its GUIDs besides, and refuses the same bounds of its own accord.
 	 */
 	check = 0;
-	if (PE_parse_boot_argn("ufs_write", &check, sizeof(check)) && check == 1) {
-		ufs_darwin_place();
+	if (!ufs_native_only && PE_parse_boot_argn("ufs_write", &check, sizeof(check)) && check == 1) {
 		uint32_t offered = ufs_page->write_part_plus_one;
 
 		if (offered == 0 || offered > ufs_parts || ufs_page->write_first != UFS_WRITE_FIRST) {
-			printf("ufs: the loader offers no partition to write into (ufs_write=1 on its command "
+			ufs_log("ufs: the loader offers no partition to write into (ufs_write=1 on its command "
 			    "line too, and a loader that knows about writes)\n");
 		}
 		for (uint32_t i = 0; offered != 0 && i < ufs_parts; i++) {
@@ -1539,27 +2187,25 @@ redwood_ufs_init(void)
 				 * has compared with the loader's reads; the device path this firmware gives
 				 * says no logical unit number at all, so part[].lun is 0xff for every unit */
 				why = "it is not on the first logical unit";
-			} else if (ufs_darwin_blocks == 0) {
-				why = "this phone has no darwin of the port's";
-			} else if (ufs_page->part[i].start_lba != ufs_darwin_first) {
+			} else if (ufs_page->part[i].start_lba != UFS_DARWIN_FIRST) {
 				why = "it does not begin where it did";
-			} else if (ufs_page->part[i].blocks != ufs_darwin_blocks) {
+			} else if (ufs_page->part[i].blocks != UFS_DARWIN_BLOCKS) {
 				why = "it is not the size it was";
 			} else if (ufs_page->part[i].block_size != 4096) {
 				why = "its blocks are not 4096 bytes";
 			}
 			if (why != NULL) {
-				printf("ufs: darwin: no write will be asked for: %s\n", why);
+				ufs_log("ufs: darwin: no write will be asked for: %s\n", why);
 				continue;
 			}
 			ufs_write_part = (int)i;
 		}
 		if (ufs_write_part >= 0) {
-			printf("ufs: /dev/rufs_darwin takes writes, whole blocks from %llu on (%llu MB of it); "
+			ufs_log("ufs: /dev/rufs_darwin takes writes, whole blocks from %llu on (%llu MB of it); "
 			    "everything else of the storage is read only\n", UFS_WRITE_FIRST,
-			    (ufs_darwin_blocks - UFS_WRITE_FIRST) * 4096 >> 20);
+			    (UFS_DARWIN_BLOCKS - UFS_WRITE_FIRST) * 4096 >> 20);
 		} else {
-			printf("ufs: nothing takes writes: darwin is not among the partitions\n");
+			ufs_log("ufs: nothing takes writes: darwin is not among the partitions\n");
 		}
 	}
 
@@ -1580,22 +2226,24 @@ redwood_ufs_init(void)
 			.switched_in = (uint32_t *)&ufs_page->kernel_native.switched_in,
 			.switched_out = (uint32_t *)&ufs_page->kernel_native.switched_out,
 			.cnr_at_switch = &ufs_page->kernel_native.cnr_at_switch,
+			/* the S20+: the loader's buffer (low memory, idle while this kernel runs on its core) */
+			.data_pa = ufs_native_only ? ufs_page->buffer_pa : 0, .data_size = ufs_native_only ? ufs_buffer_size : 0,
 		};
 		uint32_t mode = check, compare = 0;
 
 		PE_parse_boot_argn("ufs_native_check", &compare, sizeof(compare));
 		if (!ufshc_probe(&offer, mode == 2)) {
 			if (mode != 2) {
-				printf("ufs: this kernel's own UFS driver is not used: through the loader\n");
+				ufs_log("ufs: this kernel's own UFS driver is not used: through the loader\n");
 			}
 		} else if (mode == 3) {
-			printf("ufs: native: dry run: this kernel's list in and out, no command\n");
+			ufs_log("ufs: native: dry run: this kernel's list in and out, no command\n");
 			if (ufs_native_in(false) == 0) {
 				IOSleep(1000);
 				ufs_native_out("dry run");
 				IOSleep(500);
 				ufs_native_in(false);
-				printf("ufs: native: dry run: the list stays in for the end of the run\n");
+				ufs_log("ufs: native: dry run: the list stays in for the end of the run\n");
 			}
 		} else if (ufs_native_map(true)) {
 			ufs_native_mapped = true;
@@ -1612,12 +2260,114 @@ redwood_ufs_init(void)
 				redwood_ufs_report("after the bench");
 				loader_return();
 			}
-			printf("ufs: the partitions (LUN 0-%u) are read by this kernel's own UFS driver, its list in the "
+			ufs_log("ufs: the partitions (LUN 0-%u) are read by this kernel's own UFS driver, its list in the "
 			    "controller (kern.redwood.ufs_native=0: through the loader)\n", ufs_native_luns - 1);
+			compare = 0;
+			if (PE_parse_boot_argn("ufs_native_md5", &compare, sizeof(compare)) && compare != 0) {
+				thread_t thread;
+
+				if (kernel_thread_start(ufs_md5_test, NULL, &thread) == KERN_SUCCESS) {
+					thread_deallocate(thread);
+				}
+			}
 		} else {
-			printf("ufs: this kernel's own UFS driver is not used: through the loader\n");
+			ufs_log("ufs: this kernel's own UFS driver is not used: through the loader\n");
 		}
 	}
+
+	/*
+	 * The S20+ with ufs_write=1: the data volume's store in userdata (UFS_Y2S_*), through this
+	 * kernel's own driver only, and only if userdata is where and what it was on this phone.
+	 */
+	check = 0;
+	if (ufs_native_only && PE_parse_boot_argn("ufs_write", &check, sizeof(check)) && check == 1) {
+		uint32_t i = ufs_entry("userdata");
+		const char *why = NULL;
+
+		/*
+		 * x1slte (SM-G980F): userdata has exactly the S20+'s start and size, but it is Android's live data.
+		 * So the whole partition is never given away by default. Writes go only to an explicit window,
+		 * ufs_win=FIRST:BLOCKS (4096-byte blocks inside userdata: the extent of a pinned, preallocated
+		 * f2fs file such as /data/darwin/var.img, read with FIEMAP). The old S20+ behaviour (all of
+		 * userdata) needs ufs_userdata_all=1 as well.
+		 */
+		char win[64] = { 0 };
+		uint64_t win_first = 0, win_blocks = 0;
+		int all = 0;
+		bool have_win = PE_parse_boot_arg_str("ufs_win", win, sizeof(win)) && win[0] != 0;
+		(void)PE_parse_boot_argn("ufs_userdata_all", &all, sizeof(all));
+		if (have_win) {
+			char *p = win;
+			win_first = strtoq(p, &p, 0);
+			if (*p == ':') {
+				win_blocks = strtoq(p + 1, NULL, 0);
+			}
+		}
+
+		if (i == BLOCK_MAX_PARTS) {
+			why = "there is no userdata";
+		} else if (!ufs_native_on || ufs_lun[i] != 0) {
+			why = "it is not read by this kernel's own driver, on LUN 0";
+		} else if (ufs_page->part[i].start_lba != UFS_Y2S_DATA_FIRST || ufs_page->part[i].blocks != UFS_Y2S_DATA_BLOCKS ||
+		    ufs_page->part[i].block_size != 4096) {
+			why = "it is not where, or the size, it was";
+		} else if (!have_win && all != 1) {
+			why = "no ufs_win=FIRST:BLOCKS given (the whole of userdata needs ufs_userdata_all=1)";
+		} else if (have_win && (win_blocks == 0 || win_first + win_blocks > UFS_Y2S_DATA_BLOCKS ||
+		    win_first + win_blocks < win_first)) {
+			why = "ufs_win is empty or outside userdata";
+		} else if (have_win) {
+			if (!ufshc_set_write_window(0, UFS_Y2S_DATA_FIRST + win_first, win_blocks)) {
+				why = "the driver took no window";
+			}
+		} else if (!ufshc_set_write_window(0, UFS_Y2S_DATA_FIRST, UFS_Y2S_DATA_BLOCKS)) {
+			why = "the driver took no window";
+		}
+		if (why != NULL) {
+			ufs_log("ufs: nothing takes writes: userdata: %s\n", why);
+		} else if (have_win) {
+			ufs_write_part = (int)i;
+			ufs_write_first = win_first;
+			ufs_write_end = win_first + win_blocks;
+			ufs_var_publish(win_first, win_blocks);
+			ufs_log("ufs: userdata takes writes only in blocks %llu..%llu (%llu MB, ufs_win); "
+			    "everything else of the storage is read only\n", win_first, win_first + win_blocks, (win_blocks * 4096) >> 20);
+		} else {
+			ufs_write_part = (int)i;
+			ufs_write_first = 0;
+			ufs_write_end = UFS_Y2S_DATA_BLOCKS;
+			ufs_log("ufs: /dev/ufs_userdata and /dev/rufs_userdata take writes (iOS's data volume, %llu MB, "
+			    "ufs_userdata_all=1); everything else of the storage is read only\n", (UFS_Y2S_DATA_BLOCKS * 4096) >> 20);
+		}
+	}
+
+	/* the whole storage, every logical unit, for iOS's capacity (iokit/Kernel/RedwoodStorage.cpp) */
+	{
+		extern void RedwoodStorageReport(unsigned long long bytes);
+		uint64_t total = 0;
+
+		for (uint32_t i = 0; i < ufs_parts; i++) {
+			const struct loader_block_part *e = &ufs_page->part[i];
+
+			if (e->flags & BLOCK_PART_UNIT) {
+				ufs_log("ufs: %s (LUN %u): %llu blocks of %u bytes, %llu MB\n", e->name, e->lun, e->blocks,
+				    e->block_size, (e->blocks * e->block_size) >> 20);
+				total += e->blocks * e->block_size;
+			}
+		}
+		/* with ufs_win (IOS_DATA_GB in release.conf) the rest of userdata is not iOS's: leave it out of the capacity */
+		if (ufs_write_part >= 0 && ufs_write_end - ufs_write_first < UFS_Y2S_DATA_BLOCKS) {
+			total -= (UFS_Y2S_DATA_BLOCKS - (ufs_write_end - ufs_write_first)) * 4096ULL;
+		}
+		ufs_log("ufs: the storage: %llu MB in all, given to iOS as disk0\n", total >> 20);
+		RedwoodStorageReport(total);
+	}
+
+	check = 0;
+	if (ufs_native_only && ufs_write_part >= 0 && PE_parse_boot_argn("ufs_tw", &check, sizeof(check)) && check == 1) {
+		(void)ufshc_turbo_write();      /* the device's SLC write cache (Samsung TurboWrite) */
+	}
+	check = 0;
 
 	if (PE_parse_boot_argn("ufs_bench", &check, sizeof(check)) && check != 0) {
 		/* right here, in bsd_init's thread, and then back to the loader: nothing else is wanted */

@@ -62,6 +62,7 @@
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <sys/sysctl.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -197,7 +198,8 @@ enum {
 	OBJECT_CODEC, OBJECT_CODEC_INPUT,
 	OBJECT_SPEAKER_VOLUME,          /* the speaker output's volume control */
 	OBJECT_CODEC_SOURCE,            /* the codec input's data source control: its microphones */
-	OBJECT_LAST = OBJECT_CODEC_SOURCE
+	OBJECT_RECEIVER, OBJECT_RECEIVER_OUTPUT,
+	OBJECT_LAST = OBJECT_RECEIVER_OUTPUT
 };
 
 #define VOLUME_RANGE_DB         48.0    /* from the loudest the kernel allows down to the quietest step above 0 */
@@ -219,6 +221,11 @@ static struct device devices[] = {
 	{ .object = OBJECT_HAWKING, .uid = CFSTR("Hawking"), .input = OBJECT_HAWKING_INPUT, .input_channels = 1 },
 	{ .object = OBJECT_ACTUATOR, .uid = CFSTR("Actuator"), .output = OBJECT_ACTUATOR_OUTPUT, .output_channels = 1 },
 	{ .object = OBJECT_CODEC, .uid = CFSTR("Codec"), .input = OBJECT_CODEC_INPUT, .input_channels = 1 },
+	/* (A, 2026-11-14) the earpiece: the virtual audio device makes its receiver port of a device named "Receiver",
+	 * the route calls take by default and the call screen's speaker button leaves. Its samples go the same way as the
+	 * speaker's; which of the two runs tells the kernel the route (kern.redwood.snd_route: 1 = top amplifier only,
+	 * at earpiece level). During a VoLTE call (kern.redwood.snd_call) neither writes: redwood-ims plays the voice. */
+	{ .object = OBJECT_RECEIVER, .uid = CFSTR("Receiver"), .output = OBJECT_RECEIVER_OUTPUT, .output_channels = REDWOOD_AUDIO_CHANNELS },
 };
 #define DEVICES                 (sizeof(devices) / sizeof(devices[0]))
 
@@ -287,6 +294,25 @@ volume_to_kernel(void)
 	}
 	say("redwood: audio: the volume is %.3f: %s%.1f dB under the loudest\n", volume, v.muted ? "silence, " : "",
 	    v.below / 8.0);
+}
+
+/* a VoLTE call in progress (redwood-ims sets kern.redwood.snd_call), asked at most every 100 ms (4800 frames' time) */
+static int
+in_call(void)
+{
+	static UInt64 asked;
+	static int value;
+	UInt64 now = mach_absolute_time();
+
+	if (asked == 0 || (Float64)(now - asked) > ticks_per_frame * (REDWOOD_AUDIO_RATE / 10)) {
+		size_t sz = sizeof(value);
+
+		if (sysctlbyname("kern.redwood.snd_call", &value, &sz, NULL, 0) != 0) {
+			value = 0;
+		}
+		asked = now;
+	}
+	return value;
 }
 
 /* The device with this object number, or the one this stream belongs to; NULL = neither. */
@@ -859,6 +885,25 @@ codec_close(void)
 static void
 codec_read(int16_t *samples, UInt32 frames)
 {
+	/* a VoLTE call: the microphone is redwood-ims's (one reader at a time); iOS's input gets silence meanwhile */
+	if (in_call()) {
+		if (mic >= 0) {
+			close(mic);
+			mic = -1;
+			say("redwood: audio: the microphone handed to the call\n");
+		}
+		memset(samples, 0, (size_t)frames * 2);
+		return;
+	}
+	if (mic < 0) {                  /* (after a call: listen again, at most once a second) */
+		static UInt64 tried;
+		UInt64 now = mach_absolute_time();
+
+		if ((Float64)(now - tried) > ticks_per_frame * REDWOOD_AUDIO_RATE) {
+			tried = now;
+			codec_open();
+		}
+	}
 	ssize_t got = mic >= 0 ? read(mic, samples, (size_t)frames * 2) : -1;
 	UInt32 have = got > 0 ? (UInt32)got / 2 : 0;
 
@@ -894,6 +939,11 @@ start_io(__unused AudioServerPlugInDriverRef driver, AudioObjectID object, __unu
 		if (d->output != 0) {
 			written = refused = 0;
 			say("redwood: audio: playing\n");
+		}
+		if ((d->object == OBJECT_RECEIVER || d->object == OBJECT_SPEAKER) && !in_call()) {  /* (a call keeps its own route) */
+			int route = d->object == OBJECT_RECEIVER;
+			(void)sysctlbyname("kern.redwood.snd_route", NULL, NULL, &route, sizeof(route));
+			say("redwood: audio: route %s\n", route ? "earpiece" : "speakers");
 		}
 		if (d->object == OBJECT_CODEC) {
 			codec_open();
@@ -1015,6 +1065,8 @@ do_io_operation(__unused AudioServerPlugInDriverRef driver, __unused AudioObject
 		memset(buffer, 0, (size_t)frames * 2 * d->input_channels);
 	} else if (operation == kAudioServerPlugInIOOperationWriteMix && stream == OBJECT_ACTUATOR_OUTPUT) {
 		actuator_write(buffer, frames);
+	} else if (operation == kAudioServerPlugInIOOperationWriteMix && stream == d->output && in_call()) {
+		/* a VoLTE call: redwood-ims writes the voice itself; what iOS mixes here (silence) is left out */
 	} else if (operation == kAudioServerPlugInIOOperationWriteMix && stream == d->output) {
 		/* the kernel takes it all or leaves it: this thread must not wait */
 		if (sink < 0 || write(sink, buffer, (size_t)frames * REDWOOD_AUDIO_FRAME) < 0) {
