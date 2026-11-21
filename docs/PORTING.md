@@ -14,6 +14,11 @@ Get the device tree from the phone's `vendor_boot` image, or from a running Andr
 
 ## 1. The UEFI
 
+If the phone has no UEFI path yet (for example an Exynos phone that boots through Samsung S-Boot), set
+`BOOT_CHAIN=none` in its profile. `common/build.sh` then builds the kernel and userland but skips the
+loader and the boot image, and `common/run.sh` refuses to start. Fill in the rest of the profile as the
+boot chain is designed; see [Z3S.md](Z3S.md) for the z3s case.
+
 The phone needs a UEFI that our loader can run under. Port [Mu-Silicium](https://github.com/Project-Silicium/Mu-Silicium)
 the way `uefi/` ports redwood (it follows `lisa`, the same SoC package):
 
