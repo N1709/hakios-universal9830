@@ -13,7 +13,7 @@ on hardware yet**, and its partition table has not been measured.
 | XNU kernel | builds from the shared Exynos 990 sources (GICv2) |
 | xnuloader | builds; selects `platform_exynos990` by the `0xF1000000` display window (verify on z3s) |
 | z3s UEFI | FD builds from `uefi-z3s/` (2 MiB, SHA-256 `e749b567…65fa7`); not run |
-| boot image | builds structurally (6,789,120 bytes); not flashed or booted |
+| boot image | builds structurally (6,789,120 bytes, placeholder identity); not flashed or booted |
 | iOS userland | not built: needs the private Apple inputs |
 | installer | none: the GPT is not measured |
 
@@ -48,6 +48,13 @@ sboot -> recovery (boot.img v2)
           after the FD:   kernel + cmdline XNUP -> 0xF0000000 (BootShim)
        -> UEFI -> xnuloader -> XNU
 ```
+
+`xnuloader/identity.h` is generated from the builder's own IPSW device tree
+and is not committed. The current image uses `xnuloader/mkidentity.sh
+--placeholder` (no Apple data), so it can test the boot chain but iOS user
+space will not identify the phone as an iPhone. Rebuild with a real
+`DeviceTree.<board>.im4p` before expecting an iOS boot; CI builds the same
+placeholder and the `z3s-boot` artifact is structural only.
 
 The stock boot header of this phone:
 

@@ -119,6 +119,17 @@ jobs:
           path: dist/z3s-uefi/
           if-no-files-found: error
 
+      - name: Prepare the loader identity
+        run: |
+          set -e
+          # identity.h is generated from the builder's own IPSW device tree and
+          # is deliberately not committed. CI has no Apple inputs, so build the
+          # structural image with the placeholder: it exercises the boot chain,
+          # but iOS will not identify the phone. Rebuild locally with a real
+          # DeviceTree.im4p before expecting iOS user space to boot.
+          ./xnuloader/mkidentity.sh --placeholder
+          head -1 xnuloader/identity.h
+
       - name: Build the loader for the z3s payload window
         run: |
           set -e
