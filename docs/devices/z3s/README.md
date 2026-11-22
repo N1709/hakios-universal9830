@@ -138,9 +138,14 @@ tar mtime), so the artifact hash is reproducible.
 
 ## Before flashing
 
-1. Dump the GPT (`sgdisk --backup`) and record `recovery`, `super`, `userdata`,
-   `boot` and `dtbo` sizes. Fill `partitions` and `layout` in `device.json`,
-   and `SUPER_TAIL_START` in `common/devices/z3s.conf`.
+1. Measure the partition map. The BL RAR has no PIT or GPT. Use one of:
+   - Heimdall `print-pit`/`download-pit`, or the `.pit` in the Samsung CSC,
+     for Samsung's PIT (names and sizes as the bootloader sees them);
+   - root or TWRP `sgdisk --backup=gpt.bin /dev/block/sda` (or `dd` of LBA
+     0-33) for the real GPT.
+   Record `recovery`, `super`, `userdata`, `boot` and `dtbo` sizes, then fill
+   `partitions` and `layout` in `device.json` and `SUPER_TAIL_START` in
+   `common/devices/z3s.conf`.
 2. Build and boot the z3s UEFI on the phone with a serial log first.
 3. Only then assemble an installer. Until step 1 is done, `SUPER_TAIL_START=0`
    makes the loader refuse every write inside `super`, and the log goes to
