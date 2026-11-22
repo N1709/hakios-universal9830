@@ -251,10 +251,10 @@ downloaded and re-verified this way.
 
 ## Before flashing
 
-1. The PIT sizes are measured (see above), but the phone's GPT has not been
-   dumped. Dump it with root or TWRP:
-   `sgdisk --backup=gpt.bin /dev/block/sda` (or `dd` of LBA 0-33). This
-   confirms the live partition names, the disk total and the AVB footer.
+1. The PIT and the live layout are measured (see above). The on-disk GPT header
+   reads as zero at LBA 1, so `sgdisk --backup` and `dd` of LBA 0-33 do not
+   produce a usable table; use the `/sys/block/sda` map. The AVB footer is
+   checked on the boot/recovery dumps instead.
 2. Build and boot the z3s UEFI on the phone with a serial log first.
 3. Only then assemble an installer. `SUPER_TAIL_START=0` makes the loader
    refuse every write inside `super`, and the log goes to `recovery+16 MiB`.
@@ -262,8 +262,7 @@ downloaded and re-verified this way.
 The z3s chain follows x1slte and starts from `recovery`; the Odin tar contains
 `recovery.img`. Flash `recovery.img` first. `boot.img` carries the same payload
 for the `boot` partition and is the alternative if the recovery path is
-rejected. Do not flash both at once, and do not flash until the GPT confirms
-the partition names and sizes.
+rejected. Do not flash both at once.
 
 The payload window at `0xF0000000` overlaps the stock `cp_rmem`
 (`0xF0000000` + 8 MiB, `exynos,modem_if`). The port does not start the modem,

@@ -8,7 +8,8 @@ sboot -> recovery -> BootShim -> z3s UEFI -> loader.efi -> XNU
 
 It does **not** test iOS user space: `identity.h` is the placeholder, there is
 no `system.apfs`, and `installer_validated` stays false. Keep
-`TARGET_STATUS=unmaintained` until a hardware boot log and a GPT dump exist.
+`TARGET_STATUS=unmaintained` until the HakiOS chain produces a hardware boot
+log; TWRP already boots and the layout is measured.
 
 ## Files
 
@@ -339,15 +340,15 @@ Do not flash both `boot.img` and `recovery.img` at once.
 - **Android/TWRP still boots after the test**: the rollback path works.
 
 A successful kernel start is **not** an iOS boot. Do not mark the device
-maintained or the installer validated until there is a hardware log, a GPT
-dump and a working rollback.
+maintained or the installer validated until there is a HakiOS hardware log and
+a working rollback.
 
 ## Evidence to save
 
 - photos/video of every screen, especially error text;
 - `z3s-log-*.bin` and its SHA-256;
 - Odin log and the exact tar/image hashes;
-- TWRP backup hashes and the GPT dump;
+- TWRP backup hashes and the measured layout;
 - phone model, bootloader and firmware;
 - date/time and what was flashed.
 
