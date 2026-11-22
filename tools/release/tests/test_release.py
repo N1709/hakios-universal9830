@@ -248,18 +248,24 @@ class SafetyTests(unittest.TestCase):
             profile('../x1slte')
 
     def test_roadmap_targets_are_not_marked_supported(self):
-        # Identity is not support: z3s has one measured model, but no measured
-        # partition map, no installer and no boot evidence, so it stays out of
-        # the supported set with every other bring-up alias.
+        # Identity is not support: z3s has one measured model and PIT sizes,
+        # but no GPT layout, no installer and no boot evidence, so it stays out
+        # of the supported set with every other bring-up alias.
         for name in ('x1s', 'y2s', 'z3s', 'c1s', 'c2s', 'r8s'):
             d = profile(name)
             self.assertEqual(d['status'], 'unmaintained')
             self.assertFalse(d['installer_validated'])
-            self.assertEqual(d['partitions'], {})
             self.assertEqual(d['layout'], {})
         self.assertEqual(profile('z3s')['models'], ['SM-G988B'])
+        self.assertEqual(profile('z3s')['partitions'], {
+            'boot': 61865984,
+            'recovery': 69009408,
+            'super': 9437184000,
+            'dtbo': 8388608,
+        })
         for name in ('x1s', 'y2s', 'c1s', 'c2s', 'r8s'):
             self.assertEqual(profile(name)['models'], [])
+            self.assertEqual(profile(name)['partitions'], {})
 
     def test_unified_plan_covers_every_alias(self):
         import targets

@@ -15,7 +15,13 @@
     "G988BXXUBDUI5"
   ],
   "installer_validated": false,
-  "partitions": {},
+  "partitions": {
+    "boot": 61865984,
+    "recovery": 69009408,
+    "super": 9437184000,
+    "dtbo": 8388608
+  },
   "layout": {},
+  "splash_partition_bytes": 8388608,
   "evidence": "docs/devices/z3s/README.md"
 }

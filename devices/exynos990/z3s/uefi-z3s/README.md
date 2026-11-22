@@ -66,9 +66,9 @@ The XNU loader payload is the same `xnuloader/loader.efi` used by x1slte.
 
 S-Boot verifies an Android boot image v2 in the `recovery` partition, the
 BootShim copies the UEFI FD to `0xE8000000` and jumps to it, the UEFI starts
-`xnuloader`, and the loader hands over to XNU. This is the x1slte chain; z3s
-still needs its own recovery partition size and AVB footer, measured from the
-phone's GPT, before an image can be flashed.
+`xnuloader`, and the loader hands over to XNU. This is the x1slte chain. The
+PIT gives z3s `recovery` 69,009,408 bytes at `0xb490000`; the phone's GPT and
+AVB footer still need to be dumped before an image can be flashed.
 
 ## Payload slots
 
@@ -104,6 +104,6 @@ workflow: 2 MiB, SHA-256
 REA's `inspect-uefi-firmware` maps it with complete coverage (2 volumes, 60 FFS
 files) and the `[XNU]` hook is present in `BdsDxe`. The boot image now builds
 with both payloads and passes the structural verifier, but it has not been
-booted on a z3s, and the phone's partition map is not measured. Treat every
-address above as a starting point to verify on hardware, not as a working
-configuration.
+booted on a z3s. The PIT measures `boot`, `recovery`, `super` and `dtbo`, but
+the phone's GPT is not dumped. Treat every address above as a starting point
+to verify on hardware, not as a working configuration.

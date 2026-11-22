@@ -3,7 +3,8 @@
 Exynos 990, 12 or 16 GB RAM, 1440x3200 60/120 Hz, 5G, ultrasonic fingerprint.
 This profile is the first target of the unified Exynos 990 tree. It is a
 bring-up profile: the kernel and loader build, but **nothing has been tested
-on hardware yet**, and its partition table has not been measured.
+on hardware yet**. The partition sizes are measured from the stock PIT; the
+phone's GPT has not been dumped.
 
 ## Status
 
@@ -14,13 +15,14 @@ on hardware yet**, and its partition table has not been measured.
 | xnuloader | builds; selects `platform_exynos990` by the `0xF1000000` display window (verify on z3s) |
 | z3s UEFI | FD builds from `uefi-z3s/` (2 MiB, SHA-256 `e749b567…65fa7`); not run |
 | boot image | builds structurally (6,789,120 bytes, placeholder identity); not flashed or booted |
+| partition map | PIT `PICASSO3_EUR_OPEN.pit` from the `G988BXXUBDUI5` CSC; GPT not dumped |
 | iOS userland | not built: needs the private Apple inputs |
-| installer | none: the GPT is not measured |
+| installer | none: PIT sizes are known, but the GPT is not dumped and nothing has booted |
 
-`TARGET_STATUS=unmaintained` is deliberate: the identity and board facts are
-measured, but the partition map is not, and nothing has booted. The kernel is
-still buildable through the bring-up path. The release tools skip the target
-for installers because `installer_validated` is false.
+`TARGET_STATUS=unmaintained` is deliberate: the identity, board facts and PIT
+sizes are measured, but the GPT is not dumped and nothing has booted. The
+kernel is still buildable through the bring-up path. The release tools skip
+the target for installers because `installer_validated` is false.
 
 ## Identity
 
@@ -33,6 +35,33 @@ for installers because `installer_validated` is false.
 - PMIC/gauge: MAX77705; haptics: CS40L25A; torch: S2MPB02
 - Wi-Fi/BT: Broadcom BCM4375 (brcmfmac, no ath11k)
 - modem: Exynos 5123, 5G
+
+## Partition map (PIT)
+
+Source: `CSC_OMC_OXM_G988BOXMBDUI5_CL22520152_QB44083655_REV01_user_low_ship_MULTI_CERT.tar.md5`,
+file `PICASSO3_EUR_OPEN.pit` (43 entries, SHA-256
+`a1c7842cd03fcae5231588e602827e7e219dccdf2aeffaf8283c78b472d2b392`). The PIT
+metadata names `SM-G988B` and `G988BXXUBDUI5`, so it matches the profile's
+bootloader. Offsets and sizes are in bytes; PIT blocks are 4096 bytes.
+
+| partition | offset | size |
+|---|---:|---:|
+| `dtbo` | `0x7180000` (119,013,376) | 8,388,608 |
+| `boot` | `0x7990000` (127,467,520) | 61,865,984 |
+| `recovery` | `0xb490000` (189,333,504) | 69,009,408 |
+| `super` | `0x19400000` (423,624,704) | 9,437,184,000 |
+| `up_param` | `0x3400000` (54,525,952) | 8,388,608 |
+| `vbmeta` | `0x173e0000` (389,939,200) | 65,536 |
+| `metadata` | `0x17400000` (390,070,272) | 33,554,432 |
+| `userdata` | `0x2b7e00000` (11,674,845,184) | remainder |
+
+`userdata` has no fixed PIT size: it fills the rest of the disk, so its size
+depends on the 128/256/512 GB variant and is not recorded until the GPT is
+dumped. The z3s image is 6,789,120 bytes, so it fits `recovery`
+(69,009,408 bytes) with room to spare.
+
+The PIT is Samsung's firmware map. It does not replace the phone's GPT dump:
+the GPT confirms the live partition names, the disk total and the AVB footer.
 
 ## Boot chain
 
@@ -141,23 +170,18 @@ downloaded and re-verified this way.
 
 ## Before flashing
 
-1. Measure the partition map. The BL RAR has no PIT or GPT. Use one of:
-   - Heimdall `print-pit`/`download-pit`, or the `.pit` in the Samsung CSC,
-     for Samsung's PIT (names and sizes as the bootloader sees them);
-   - root or TWRP `sgdisk --backup=gpt.bin /dev/block/sda` (or `dd` of LBA
-     0-33) for the real GPT.
-   Record `recovery`, `super`, `userdata`, `boot` and `dtbo` sizes, then fill
-   `partitions` and `layout` in `device.json` and `SUPER_TAIL_START` in
-   `common/devices/z3s.conf`.
+1. The PIT sizes are measured (see above), but the phone's GPT has not been
+   dumped. Dump it with root or TWRP:
+   `sgdisk --backup=gpt.bin /dev/block/sda` (or `dd` of LBA 0-33). This
+   confirms the live partition names, the disk total and the AVB footer.
 2. Build and boot the z3s UEFI on the phone with a serial log first.
-3. Only then assemble an installer. Until step 1 is done, `SUPER_TAIL_START=0`
-   makes the loader refuse every write inside `super`, and the log goes to
-   `recovery+16 MiB`.
+3. Only then assemble an installer. `SUPER_TAIL_START=0` makes the loader
+   refuse every write inside `super`, and the log goes to `recovery+16 MiB`.
 
-The image is 6.8 MB and fits either partition, but the z3s chain follows
-x1slte and starts from `recovery`; the Odin tar contains `recovery.img`. Do not
-flash it until the GPT confirms the partition name and size. A `boot.img`
-target is a different experiment, not this chain.
+The image is 6.8 MB and fits `recovery` (69,009,408 bytes), but the z3s chain
+follows x1slte and starts from `recovery`; the Odin tar contains
+`recovery.img`. Do not flash it until the GPT confirms the partition name and
+size. A `boot.img` target is a different experiment, not this chain.
 
 The payload window at `0xF0000000` overlaps the stock `cp_rmem`
 (`0xF0000000` + 8 MiB, `exynos,modem_if`). The port does not start the modem,
