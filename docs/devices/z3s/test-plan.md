@@ -48,14 +48,15 @@ marked **DO-NOT-FLASH-RAW-FDT.txt**. Do not flash it.
 ## Safety rules
 
 1. Do not flash `recovery.img` and `boot.img` at the same time.
-2. Do not flash the stock recovery. TWRP is the backup path once the
-   ExtremeXT build boots; until then the LineageOS recovery tar is the rollback.
+2. Do not flash the stock recovery. TWRP 3.7.1_12 now boots on hardware and is
+   the backup path; the LineageOS recovery tar is the rollback.
 3. **Extract the log before writing anything to `recovery`.** The loader log
    lives at `recovery+16 MiB` (8 MiB). A TWRP or stock recovery image is
    larger than 16 MiB and overwrites it.
 4. Keep the phone above 50% charge, use a good USB cable, and do not
    interrupt Odin.
-5. The GPT has not been dumped. `SUPER_TAIL_START=0` makes the loader refuse
+5. The partition map is measured (`/sys/block/sda`), but the on-disk GPT header
+   reads as zero at LBA 1. `SUPER_TAIL_START=0` still makes the loader refuse
    every write inside `super`; do not enable writes there.
 6. The modem stays off: the payload at `0xF0000000` overlaps `cp_rmem`.
 
@@ -77,12 +78,12 @@ Expected: model `SM-G988B`, bootloader `G988BXXSNHYB1` (the earlier
 `G988BXXUBDUI5` is stale), sizes 69,009,408 and 61,865,984, DT magic
 `d7b7ab1e`. If any hash fails, stop.
 
-## Phase 1 — TWRP backup and GPT dump
+## Phase 1 — TWRP backup and layout record
 
 1. Boot TWRP (do not flash the stock recovery). If TWRP is already installed,
    use `adb reboot recovery` or the key combo. The official TWRP 3.7.0 z3s
    image reboots at the Samsung logo on `G988BXXSNHYB1`; use the ExtremeXT
-   `twrp_z3s` build instead.
+   `twrp_z3s` 3.7.1_12 build instead.
 2. Back up `boot` and `recovery` to an external SD card or USB OTG. Use the
    TWRP GUI: **Backup -> Boot, Recovery**.
 3. Pull the backup to the laptop and record its hashes:
@@ -92,19 +93,19 @@ Expected: model `SM-G988B`, bootloader `G988BXXSNHYB1` (the earlier
    sha256sum twrp-backup-z3s/*.win
    ```
 
-4. Dump the GPT while TWRP is running:
+4. Record the live layout from sysfs. The on-disk GPT header reads as zero at
+   LBA 1, so `sgdisk --backup` and `dd` of sectors 0..33 do not produce a usable
+   table:
 
    ```sh
-   adb shell sgdisk --backup=/external_sd/gpt-z3s.bin /dev/block/sda
-   adb pull /external_sd/gpt-z3s.bin .
+   adb shell 'for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32; do
+     echo "$n $(cat /sys/block/sda/sda$n/start) $(cat /sys/block/sda/sda$n/size)"; done'
+   adb shell 'ls -l /dev/block/by-name'
    ```
 
-   If `sgdisk` is missing:
-
-   ```sh
-   adb shell 'dd if=/dev/block/sda of=/external_sd/gpt-head.bin bs=512 count=34'
-   adb pull /external_sd/gpt-head.bin .
-   ```
+   The measured map (2026-11-22, 128 GB unit) is in
+   [`README.md`](README.md#partition-map-pit). `super` ends where `prism`
+   starts, and the dynamic group has 4,826,603,520 bytes free in its tail.
 
 5. Keep the backup. It is the rollback if the HakiOS image does not boot.
 

@@ -2,9 +2,10 @@
 
 Exynos 990, 12 or 16 GB RAM, 1440x3200 60/120 Hz, 5G, ultrasonic fingerprint.
 This profile is the first target of the unified Exynos 990 tree. It is a
-bring-up profile: the kernel and loader build, but **nothing has been tested
-on hardware yet**. The partition sizes are measured from the stock PIT; the
-phone's GPT has not been dumped.
+bring-up profile: the kernel and loader build, TWRP 3.7.1_12 boots on hardware,
+but **the HakiOS kernel has not booted on hardware yet**. The live partition
+layout is measured from `/sys/block/sda`; the on-disk GPT header is not exposed
+at LBA 1 (reads return zero), so the sysfs map is the reference.
 
 ## Status
 
@@ -14,15 +15,16 @@ phone's GPT has not been dumped.
 | XNU kernel | builds from the shared Exynos 990 sources (GICv2) |
 | xnuloader | builds; selects `platform_exynos990` by the `0xF1000000` display window (verify on z3s) |
 | z3s UEFI | FD builds from `uefi-z3s/` (2 MiB, SHA-256 `e749b567…65fa7`); not run |
-| boot image | builds structurally: sparse 6,789,120 bytes; full-size `recovery.img` 69,009,408 and `boot.img` 61,865,984 with AVB; not flashed or booted |
-| partition map | PIT `PICASSO3_EUR_OPEN.pit` from the `G988BXXUBDUI5` CSC; GPT not dumped |
+| boot image | builds structurally: sparse 6,789,120 bytes; full-size `recovery.img` 69,009,408 and `boot.img` 61,865,984 with AVB; not booted |
+| TWRP | 3.7.1_12 from the ExtremeXT tree boots on `G988BXXSNHYB1`; adb, panel and USB work |
+| partition map | measured from `/sys/block/sda`; matches the PIT offsets |
 | iOS userland | not built: needs the private Apple inputs |
-| installer | none: PIT sizes are known, but the GPT is not dumped and nothing has booted |
+| installer | none: the layout is measured, but nothing HakiOS has booted |
 
-`TARGET_STATUS=unmaintained` is deliberate: the identity, board facts and PIT
-sizes are measured, but the GPT is not dumped and nothing has booted. The
-kernel is still buildable through the bring-up path. The release tools skip
-the target for installers because `installer_validated` is false.
+`TARGET_STATUS=unmaintained` is deliberate: the identity, board facts and
+partition layout are measured, TWRP boots, but the HakiOS kernel has not
+booted. The kernel is still buildable through the bring-up path. The release
+tools skip the target for installers because `installer_validated` is false.
 
 ## Identity
 
@@ -55,13 +57,63 @@ bootloader. Offsets and sizes are in bytes; PIT blocks are 4096 bytes.
 | `metadata` | `0x17400000` (390,070,272) | 33,554,432 |
 | `userdata` | `0x2b7e00000` (11,674,845,184) | remainder |
 
-`userdata` has no fixed PIT size: it fills the rest of the disk, so its size
-depends on the 128/256/512 GB variant and is not recorded until the GPT is
-dumped. The z3s image is 6,789,120 bytes, so it fits `recovery`
-(69,009,408 bytes) with room to spare.
+`userdata` has no fixed PIT size: it fills the rest of the disk. The measured
+unit is the 128 GB variant: `userdata` starts at sector 22,802,432
+(11,674,845,184 bytes) and is 116,253,523,968 bytes. The z3s head image is
+6,789,120 bytes, so it fits `recovery` (69,009,408 bytes) with room to spare.
 
-The PIT is Samsung's firmware map. It does not replace the phone's GPT dump:
-the GPT confirms the live partition names, the disk total and the AVB footer.
+The PIT is Samsung's firmware map. The live map below was read from the kernel
+on 2026-11-22 (bootloader `G988BXXSNHYB1`) and matches the PIT offsets exactly:
+
+```text
+sda1   efs          8192 sectors
+sda2   sec_efs     49152
+sda3   param       90112
+sda4   up_param   106496
+sda5   bota       122880
+sda6   keystorage 204800
+sda7   steady     205824
+sda8   harx       214016
+sda9   uh         220160
+sda10  uhcfg      224256
+sda11  dtbo       232448
+sda12  blcmd      248832
+sda13  boot       248960   120832 sectors = 61,865,984 B
+sda14  recovery   369792   134784 sectors = 69,009,408 B
+sda15  radio      504576
+sda16  cp_debug   647936
+sda17  nad_refer  658176
+sda18  persistent 660224
+sda19  misc       661248
+sda20  keyrefuge  663296
+sda21  keydata    696064
+sda22  dqmdbg     728832
+sda23  vbmeta     761600
+sda24  vbmeta_samsung 761728
+sda25  metadata   761856
+sda26  super      827392   18,432,000 sectors = 9,437,184,000 B
+sda27  prism      19,259,392
+sda28  optics     21,307,392
+sda29  cache      21,368,832
+sda30  omr        22,597,632
+sda31  spu        22,700,032
+sda32  userdata   22,802,432  227,057,664 sectors = 116,253,523,968 B
+disk total 249,872,384 sectors = 127,934,660,608 B
+```
+
+`super` is followed immediately by `prism`; there is no free gap after it. The
+free space is **inside** the dynamic group. `lpdump` reports
+`samsung_dynamic_partitions` max 9,432,989,696 bytes and the used extents end at
+sector 8,996,848, leaving 9,426,960 sectors = **4,826,603,520 bytes (~4.49 GiB)**
+free in the tail.
+
+The on-disk GPT header is not readable at LBA 1: reading sectors 0..33 and the
+last 33 sectors of `/dev/block/sda` returned all zero bytes, both in TWRP and
+Android. The sysfs start/size map above is the measured reference.
+
+The TWRP hardware evidence (props, `last_kmsg` lines, layout) is attached to the
+[`twrp-z3s-3.7.1_12-20261122`](https://github.com/N1709/hakios-universal9830/releases/tag/twrp-z3s-3.7.1_12-20261122)
+pre-release as `HARDWARE-BOOT-EVIDENCE.txt`.
 
 ## Boot chain
 
