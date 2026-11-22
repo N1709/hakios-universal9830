@@ -25,13 +25,22 @@ Release folder:
 | `z3s-dtb-table.img` | 342,016 | Samsung DT table, magic `d7b7ab1e` |
 | `build.json`, `SHA256SUMS`, `README.txt` | | hashes and record |
 
-Rollback files on the laptop:
+Rollback files (public pre-release
+[`z3s-rollback-20261122`](https://github.com/N1709/hakios-universal9830/releases/tag/z3s-rollback-20261122)
+and the laptop):
 
 | file | size | use |
 |---|---:|---|
-| `~/Downloads/twrp-3.7.0_11-0-z3s.img.tar.md5` | 57,456,673 | Odin AP, restore TWRP on `recovery` |
-| `~/Downloads/twrp-boot-z3s.tar.md5` | 57,456,673 | Odin AP, TWRP on `boot` — reads the log without touching `recovery` |
-| `~/Downloads/stock-boot-G988BXXUBDUI5.tar.md5` | 61,870,113 | Odin AP, restore stock `boot` |
+| `lineage-recovery-vbmeta-z3s.tar.md5` | 69,027,873 | Odin AP, restore LineageOS recovery + `vbmeta` |
+| `lineage-boot-z3s.tar.md5` | 61,870,113 | Odin AP, restore the LineageOS `boot` |
+| `~/Downloads/twrp-boot-z3s.tar.md5` | 57,456,673 | TWRP on `boot`; built from the **old** TWRP 3.7.0 and expected to fail on `G988BXXSNHYB1` |
+
+The official TWRP 3.7.0 z3s image (`~/Downloads/twrp-3.7.0_11-0-z3s.img.tar.md5`)
+is **known bad** on the current bootloader: it carries the old 340,908-byte DT
+table at `dtb_addr=0x11f00000`, so S-Boot shows the Samsung logo and reboots.
+Do not reuse it. The replacement is the ExtremeXT `twrp_z3s` build
+(`.github/workflows/build-z3s-twrp.yml`, branch `feat/twrp-z3s`), whose prebuilt
+DT table is byte-identical to the current boot image.
 
 The old `Jesvi-iOS_0.1.2_20261122_z3s/` folder is the raw-FDT build and is
 marked **DO-NOT-FLASH-RAW-FDT.txt**. Do not flash it.
@@ -39,7 +48,8 @@ marked **DO-NOT-FLASH-RAW-FDT.txt**. Do not flash it.
 ## Safety rules
 
 1. Do not flash `recovery.img` and `boot.img` at the same time.
-2. Do not flash the stock recovery. TWRP is the backup/rollback path.
+2. Do not flash the stock recovery. TWRP is the backup path once the
+   ExtremeXT build boots; until then the LineageOS recovery tar is the rollback.
 3. **Extract the log before writing anything to `recovery`.** The loader log
    lives at `recovery+16 MiB` (8 MiB). A TWRP or stock recovery image is
    larger than 16 MiB and overwrites it.
@@ -63,13 +73,16 @@ stat -c '%n %s' recovery.img boot.img
 xxd -s 0x626000 -l 4 recovery.img        # d7b7ab1e
 ```
 
-Expected: model `SM-G988B`, bootloader `G988BXXUBDUI5`, sizes
-69,009,408 and 61,865,984, DT magic `d7b7ab1e`. If any hash fails, stop.
+Expected: model `SM-G988B`, bootloader `G988BXXSNHYB1` (the earlier
+`G988BXXUBDUI5` is stale), sizes 69,009,408 and 61,865,984, DT magic
+`d7b7ab1e`. If any hash fails, stop.
 
 ## Phase 1 — TWRP backup and GPT dump
 
 1. Boot TWRP (do not flash the stock recovery). If TWRP is already installed,
-   use `adb reboot recovery` or the key combo.
+   use `adb reboot recovery` or the key combo. The official TWRP 3.7.0 z3s
+   image reboots at the Samsung logo on `G988BXXSNHYB1`; use the ExtremeXT
+   `twrp_z3s` build instead.
 2. Back up `boot` and `recovery` to an external SD card or USB OTG. Use the
    TWRP GUI: **Backup -> Boot, Recovery**.
 3. Pull the backup to the laptop and record its hashes:
@@ -177,8 +190,9 @@ itself. It does **not** replace the TWRP backup: do Phase 1 first.
 
 **Fastbootd only exists while TWRP is running.** After the HakiOS image is on
 `recovery`, there is no fastbootd to return to: rollback goes through Download
-Mode + Odin (`twrp-3.7.0_11-0-z3s.img.tar.md5`). Extract the log before
-flashing TWRP; a 57 MB TWRP image overwrites `recovery+16 MiB`.
+Mode + Odin (`lineage-recovery-vbmeta-z3s.tar.md5` restores LineageOS recovery).
+Extract the log before writing a recovery image; any recovery larger than
+16 MiB overwrites `recovery+16 MiB`.
 
 ## Phase 3 — extract the log
 
