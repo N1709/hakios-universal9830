@@ -1,0 +1,80 @@
+# TWRP for the Galaxy S20 Ultra 5G (z3s / SM-G988B), built on GitHub's
+# machines. Source: TWRP's minimal manifest (twrp-12.1) + ExtremeXT's unified
+# Exynos 990 tree. This is the tree the x1s branch found keeps USB working on
+# the current Samsung bootloader; the official 3.7.0 z3s image does not.
+#
+# Output: recovery.img, an Odin AP tar, SHA256SUMS and BUILD-SOURCES.txt.
+name: TWRP z3s
+on:
+  push:
+    branches: [feat/twrp-z3s]
+    paths: ['.github/workflows/build-z3s-twrp.yml']
+  workflow_dispatch:
+concurrency: {group: twrp-z3s, cancel-in-progress: true}
+permissions: {contents: read}
+env:
+  TWRP_VERSION: "3.7.1_12"
+  TWRP_RECOVERY_REV: 5c3d206a5eeb3d446bcda8248a405a4b278bab5c
+  TWRP_DEVICE_REV: eb8805d3a76df92aa52b3b96bafcd1a07a06253f
+jobs:
+  recovery:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - name: Free disk space (the TWRP tree needs ~40 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+                      /usr/share/swift /usr/local/.ghcup /usr/lib/jvm || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          sudo apt-get -qq remove --purge '^llvm-.*' '^dotnet-.*' 'php.*' '^mongodb-.*' '^mysql-.*' azure-cli google-chrome-stable firefox powershell >/dev/null 2>&1 || true
+          df -h /
+      - name: Build tools
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev libc6-dev-i386 \
+            libncurses5 lib32z1-dev libxml2-utils xsltproc unzip fontconfig python3 python-is-python3 ccache rsync
+          mkdir -p ~/bin && curl -sSL https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo && chmod +x ~/bin/repo
+          git config --global user.name ci && git config --global user.email ci@localhost
+      - name: Sync TWRP (shallow)
+        run: |
+          mkdir -p ~/twrp && cd ~/twrp
+          ~/bin/repo init --depth=1 -q -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
+          ~/bin/repo sync -q -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
+          git -C bootable/recovery fetch -q --depth=1 https://github.com/TeamWin/android_bootable_recovery.git "$TWRP_RECOVERY_REV"
+          git -C bootable/recovery checkout -q --detach FETCH_HEAD
+          awk -v version="$TWRP_VERSION" '$2 == "TW_MAIN_VERSION_STR" && $3 == "\"" version "\"" { found=1 } END { exit !found }' bootable/recovery/variables.h
+          mkdir -p device/samsung/exynos990
+          git -C device/samsung/exynos990 init -q
+          git -C device/samsung/exynos990 fetch -q --depth=1 https://github.com/ExtremeXT/android_device_samsung_exynos990.git "$TWRP_DEVICE_REV"
+          git -C device/samsung/exynos990 checkout -q --detach FETCH_HEAD
+          test -f device/samsung/exynos990/twrp_z3s.mk
+          test -f device/samsung/exynos990/z3s/prebuilt/dtb.img
+          printf '\nPRODUCT_MODEL := Galaxy S20 Ultra 5G (SM-G988B)\n' >> device/samsung/exynos990/twrp_z3s.mk
+          grep -Fxq 'PRODUCT_MODEL := Galaxy S20 Ultra 5G (SM-G988B)' device/samsung/exynos990/twrp_z3s.mk
+          df -h /
+      - name: Build recovery.img
+        run: |
+          cd ~/twrp
+          export ALLOW_MISSING_DEPENDENCIES=true USE_CCACHE=1
+          source build/envsetup.sh
+          lunch twrp_z3s-eng
+          mka -j"$(nproc)" recoveryimage
+          ls -la out/target/product/z3s/recovery.img
+          test -s out/target/product/z3s/recovery.img
+      - name: Odin tar
+        run: |
+          cd ~/twrp/out/target/product/z3s
+          tar -H ustar -cf twrp-z3s.tar recovery.img
+          sha256sum recovery.img twrp-z3s.tar | tee SHA256SUMS
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp recovery.img twrp-z3s.tar SHA256SUMS "$GITHUB_WORKSPACE/out/"
+          printf 'TWRP %s\nRecovery source %s\nDevice source %s\nJesvi source %s\n' \
+            "$TWRP_VERSION" "$TWRP_RECOVERY_REV" "$TWRP_DEVICE_REV" "$GITHUB_SHA" > "$GITHUB_WORKSPACE/out/BUILD-SOURCES.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: twrp-z3s
+          path: out/
+          retention-days: 30
+          if-no-files-found: error
