@@ -70,15 +70,31 @@ BootShim copies the UEFI FD to `0xE8000000` and jumps to it, the UEFI starts
 still needs its own recovery partition size and AVB footer, measured from the
 phone's GPT, before an image can be flashed.
 
-## Payload slot
+## Payload slots
 
-The FD artifact is 2 MiB and its `0x100000..0x200000` tail is erased. Both
-`XnuLoader.h` and `xnuloader/loader.c` read the `XNUP` payload at `0xE8100000`
-(FD + `0x100000`), so this FD alone cannot start `loader.efi`. Splice the
-payload into the FD tail the way `x1slte.sh payload` does. The generic
-`xnu/mkxnuimg.py` path appends the payload after the FD and the BootShim copies
-it to `PAYLOAD_BASE` (`0xF0000000` for z3s), which does not satisfy either
-loader; fix that path before building a z3s boot image.
+The FD artifact is 2 MiB and its `0x100000..0x200000` tail is erased. The
+BootManager hook reads the `XNUP` payload at `0xE8100000` (FD + `0x100000`) and
+starts `loader.efi` from it. The loader then reads the kernel `XNUP` from
+`0xF0000000`, where `BootShim` copies the payload appended after the FD.
+
+`devices/exynos990/z3s/build-boot.sh` builds both slots:
+
+| slot | contents | limit |
+|---|---|---|
+| FD + `0x100000` | `loader.efi` only, for the UEFI hook | 1 MiB (`XnuLoader.h`) |
+| after the FD | `kernel` + `cmdline`, copied to `0xF0000000` | 15 MiB |
+
+The loader must be built for the second window:
+
+```sh
+PAYLOAD_BASE=0xF0000000 PAYLOAD_MAX_SIZE=0x00F00000 PANIC_LOG_BASE=0xF0F00000 \
+    ./xnuloader/build.sh
+```
+
+A default loader (`PAYLOAD_BASE=0xE8100000`) would read the FD tail instead of
+the kernel; `tools/z3s-boot-verify.py` rejects that build. The verifier also
+checks the shim constants, the FD-tail `loader.efi` hash, the appended kernel
+hash, the Mach-O magic and the `cmdline` entry. It is a structural check only.
 
 ## Status
 
@@ -86,7 +102,8 @@ The FD builds with `build.sh` and in the `build-z3s-uefi` GitHub Actions
 workflow: 2 MiB, SHA-256
 `e749b56787c003856ef33646416ac733b9760fc0d82f94455d86bd1aa7065fa7`.
 REA's `inspect-uefi-firmware` maps it with complete coverage (2 volumes, 60 FFS
-files) and the `[XNU]` hook is present in `BdsDxe`, but the payload slot is
-empty. It has not been booted on a z3s, and the phone's partition map is not
-measured. Treat every address above as a starting point to verify on hardware,
-not as a working configuration.
+files) and the `[XNU]` hook is present in `BdsDxe`. The boot image now builds
+with both payloads and passes the structural verifier, but it has not been
+booted on a z3s, and the phone's partition map is not measured. Treat every
+address above as a starting point to verify on hardware, not as a working
+configuration.

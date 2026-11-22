@@ -8,7 +8,10 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'devices/exynos990/z3s/uefi-z3s/**'
+      - 'devices/exynos990/z3s/**'
+      - 'xnuloader/**'
+      - 'xnu/mkxnuimg.py'
+      - 'tools/z3s-boot-verify.py'
       - '.github/workflows/build-z3s-uefi.yml'
 
 permissions:
@@ -114,6 +117,36 @@ jobs:
         with:
           name: z3s-uefi
           path: dist/z3s-uefi/
+          if-no-files-found: error
+
+      - name: Build the loader for the z3s payload window
+        run: |
+          set -e
+          cd xnuloader
+          PAYLOAD_BASE=0xF0000000 PAYLOAD_MAX_SIZE=0x00F00000 \
+            PANIC_LOG_BASE=0xF0F00000 ./build.sh
+          cd ..
+          test -f xnuloader/loader.efi
+          sha256sum xnuloader/loader.efi
+
+      - name: Build the boot shim and the z3s recovery image
+        run: |
+          set -e
+          # z3s/uefi-z3s/build.sh copied the z3s BootShim.S into the Mu tree.
+          make -C Mu-Silicium/BootShim REQUIRES_KERNEL_HEADER=1 \
+            FD_BASE=0xE8000000 FD_SIZE=0x200000 \
+            CFLAGS="--target=aarch64-linux-gnu -DPAYLOAD_BASE=0xF0000000"
+          MU="$GITHUB_WORKSPACE/Mu-Silicium" \
+            ./devices/exynos990/z3s/build-boot.sh \
+              "$GITHUB_WORKSPACE/Mu-Silicium/Build/z3sPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd" \
+              dist/z3s-boot
+          ls -l dist/z3s-boot
+
+      - name: Upload the boot image
+        uses: actions/upload-artifact@v4
+        with:
+          name: z3s-boot
+          path: dist/z3s-boot/
           if-no-files-found: error
 
       - name: Upload the build log

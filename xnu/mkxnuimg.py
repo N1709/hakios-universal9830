@@ -29,7 +29,9 @@ FD_BASE, FD_SIZE = env_int('FD_BASE', 0x9FD00000), env_int('FD_SIZE', 0x200000)
 PAYLOAD_BASE, PAYLOAD_MAX = env_int('PAYLOAD_BASE', 0xF0000000), 0x04000000
 
 ap = argparse.ArgumentParser()
-ap.add_argument('-p', '--payload')
+ap.add_argument('-p', '--payload', help='XNUP payload appended after the FD (copied to PAYLOAD_BASE)')
+ap.add_argument('--fd-payload', help='XNUP payload spliced into the FD tail (for the UEFI XnuLoader hook)')
+ap.add_argument('--ramdisk', help='ramdisk file (default: the UEFI tree ramdisk, or /dev/null)')
 ap.add_argument('-o', '--output', default=os.path.join(HERE, 'xnu-redwood.img'))
 ap.add_argument('--mode', default='RELEASE')
 args = ap.parse_args()
@@ -51,11 +53,28 @@ else:
              'dtb': os.path.join(PREBUILT, 'redwood.dtb'), 'ramdisk': os.path.join(PREBUILT, 'ramdisk'),
              'mkbootimg': os.path.join(PREBUILT, 'mkbootimg.py')}
     if os.environ.get('UEFI_FD'): parts['fd'] = os.environ['UEFI_FD']
-shim = open(parts['shim'], 'rb').read()
-fd = open(parts['fd'], 'rb').read()
+shim_path = os.environ.get('SHIM') or parts['shim']
+mkbootimg_path = os.environ.get('MKBOOTIMG') or parts['mkbootimg']
+ramdisk_path = args.ramdisk or os.environ.get('RAMDISK') or parts.get('ramdisk') or '/dev/null'
+dtb_path = os.environ.get('DTB') or parts['dtb']
+
+shim = open(shim_path, 'rb').read()
+fd = bytearray(open(parts['fd'], 'rb').read())
 assert len(fd) == FD_SIZE, hex(len(fd))
 
-blob = shim + fd
+if args.fd_payload:
+    data = open(args.fd_payload, 'rb').read()
+    at = env_int('FD_PAYLOAD_AT', FD_SIZE // 2)
+    limit = FD_SIZE - at
+    assert 0 <= at and limit > 0, hex(at)
+    # The FD tail is erased (0xff) in a normal build. Put the small
+    # loader.efi container there for the UEFI XnuLoader hook.
+    assert data[:4] == b'XNUP' and len(data) <= limit, 'bad or oversized FD payload'
+    fd[at:at + limit] = b'\xff' * limit
+    fd[at:at + len(data)] = data
+    print(f'fd payload: {len(data)} bytes at FD+{at:#x}, bytesum={sum(data) & 0xffffffff:08x}')
+
+blob = shim + bytes(fd)
 if args.payload:
     data = open(args.payload, 'rb').read()
     # the payload file is a complete "XNUP" container (see xnuloader/mkpayload.py)
@@ -64,22 +83,22 @@ if args.payload:
     blob += b'\0' * (-len(blob) % 16)
     print(f'payload: {len(data)} bytes, bytesum={sum(data) & 0xffffffff:08x}')
 
-if os.environ.get('DTB'): parts['dtb'] = os.environ['DTB']
-dtb = open(parts['dtb'], 'rb').read()
+dtb = open(dtb_path, 'rb').read()
 # Samsung's bootloader (unlike fastboot on Qualcomm) wants an uncompressed kernel and header v2,
 # with the dtb in the header -- that is what the prebuilt Mu-x1s.img that boots on the S20 does.
 no_gzip = os.environ.get('NOGZIP') == '1'
 hdr = int(os.environ.get('HEADER_VERSION', '1'))
 kernel = args.output + '.kernel~'
-kdata = blob if no_gzip else gzip.compress(blob, 6)
+# mtime=0 keeps the image byte-identical across builds (and CI artifacts).
+kdata = blob if no_gzip else gzip.compress(blob, 6, mtime=0)
 extra = []
 if hdr >= 2:
-    extra = ['--dtb', parts['dtb']]
+    extra = ['--dtb', dtb_path]
 else:
     kdata += dtb
 open(kernel, 'wb').write(kdata)
 try:
-    subprocess.check_call([sys.executable, parts['mkbootimg'], '--kernel', kernel, '--ramdisk', parts['ramdisk'],
+    subprocess.check_call([sys.executable, mkbootimg_path, '--kernel', kernel, '--ramdisk', ramdisk_path,
                            '--header_version', str(hdr), *extra, '-o', args.output])
 finally:
     os.unlink(kernel)

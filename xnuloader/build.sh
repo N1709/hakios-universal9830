@@ -61,8 +61,21 @@ if [ -n "${CELLULAR_CP_BOOT_PREFLIGHT:-}" ] && { [ -z "${CELLULAR_MMIO_PREFLIGHT
 	exit 1
 fi
 
+# A board may move the XNUP payload out of the FD tail (z3s: 0xF0000000,
+# 15 MB below the display reservation). Values are C integer literals; pass
+# them without a ULL suffix, for example PAYLOAD_BASE=0xF0000000.
+PAYLOAD_DEFINE=
+for name in PAYLOAD_BASE PAYLOAD_MAX_SIZE PANIC_LOG_BASE; do
+	eval "value=\${$name:-}"
+	[ -n "$value" ] || continue
+	case "$value" in
+	0[xX]*[!0-9a-fA-F]|*[!0-9a-fA-FxX]*) echo "$name=$value is not a hex or decimal integer" >&2; exit 1 ;;
+	esac
+	PAYLOAD_DEFINE="$PAYLOAD_DEFINE -D$name=${value}ULL"
+done
+
 "$CC" $PCIE_MAP_DEFINE --target=aarch64-unknown-windows -ffreestanding -fno-builtin -fno-stack-protector -fshort-wchar \
-  -mgeneral-regs-only -O1 -Wall -Wextra -Wno-unused-parameter ${CELLULAR_CP_BOOT_PREFLIGHT:+-DCELLULAR_CP_BOOT_PREFLIGHT=1} ${CELLULAR_CP_GPIO_PREFLIGHT:+-DCELLULAR_CP_GPIO_PREFLIGHT=1} ${CELLULAR_SPI_LOOPBACK:+-DCELLULAR_SPI_LOOPBACK=1} ${CELLULAR_MMIO_PREFLIGHT:+-DCELLULAR_MMIO_PREFLIGHT=1} ${CELLULAR_RESERVE_CP:+-DCELLULAR_RESERVE_CP=1} ${CELLULAR_PREFLIGHT_ONLY:+-DCELLULAR_PREFLIGHT_ONLY=1} ${GIC_V2:+-DGIC_V2=1} ${LOG_IN_RECOVERY:+-DLOG_IN_RECOVERY=1} ${SUPER_TAIL_START:+-DSUPER_TAIL_START=${SUPER_TAIL_START}ULL} ${SUPER_ROOT_LEN:+-DSUPER_ROOT_LEN=${SUPER_ROOT_LEN}ULL} ${USERDATA_WIN_OFF:+-DUSERDATA_WIN_OFF=${USERDATA_WIN_OFF}ULL -DUSERDATA_WIN_LEN=${USERDATA_WIN_LEN}ULL} -c loader.c -o loader.obj
+  -mgeneral-regs-only -O1 -Wall -Wextra -Wno-unused-parameter $PAYLOAD_DEFINE ${CELLULAR_CP_BOOT_PREFLIGHT:+-DCELLULAR_CP_BOOT_PREFLIGHT=1} ${CELLULAR_CP_GPIO_PREFLIGHT:+-DCELLULAR_CP_GPIO_PREFLIGHT=1} ${CELLULAR_SPI_LOOPBACK:+-DCELLULAR_SPI_LOOPBACK=1} ${CELLULAR_MMIO_PREFLIGHT:+-DCELLULAR_MMIO_PREFLIGHT=1} ${CELLULAR_RESERVE_CP:+-DCELLULAR_RESERVE_CP=1} ${CELLULAR_PREFLIGHT_ONLY:+-DCELLULAR_PREFLIGHT_ONLY=1} ${GIC_V2:+-DGIC_V2=1} ${LOG_IN_RECOVERY:+-DLOG_IN_RECOVERY=1} ${SUPER_TAIL_START:+-DSUPER_TAIL_START=${SUPER_TAIL_START}ULL} ${SUPER_ROOT_LEN:+-DSUPER_ROOT_LEN=${SUPER_ROOT_LEN}ULL} ${USERDATA_WIN_OFF:+-DUSERDATA_WIN_OFF=${USERDATA_WIN_OFF}ULL -DUSERDATA_WIN_LEN=${USERDATA_WIN_LEN}ULL} -c loader.c -o loader.obj
 # /base: UEFI loads an image at its preferred address when that is free. The PE default (0x140000000)
 # is in the middle of the phone's largest block of RAM, which XNU needs in one piece.
 # The preflight image must leave the original loader's preferred base free.

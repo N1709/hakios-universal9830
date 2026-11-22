@@ -13,7 +13,7 @@ on hardware yet**, and its partition table has not been measured.
 | XNU kernel | builds from the shared Exynos 990 sources (GICv2) |
 | xnuloader | builds; selects `platform_exynos990` by the `0xF1000000` display window (verify on z3s) |
 | z3s UEFI | FD builds from `uefi-z3s/` (2 MiB, SHA-256 `e749b567…65fa7`); not run |
-| boot image | not built: no recovery size, GPT not measured |
+| boot image | builds structurally (6,789,120 bytes); not flashed or booted |
 | iOS userland | not built: needs the private Apple inputs |
 | installer | none: the GPT is not measured |
 
@@ -44,7 +44,8 @@ payload:
 ```
 sboot -> recovery (boot.img v2)
           embed@0:        BootShim + z3s UEFI (FD at 0xE8000000)
-          payload:        xnuloader + XNU
+          FD+0x100000:    loader.efi XNUP (UEFI hook)
+          after the FD:   kernel + cmdline XNUP -> 0xF0000000 (BootShim)
        -> UEFI -> xnuloader -> XNU
 ```
 
@@ -106,8 +107,11 @@ SKIP="images boot" common/build.sh z3s
 make unified                # plan only
 make unified-build          # macOS + theos; -> out/unified/
 
-# full boot image, once the GPT is measured
-UEFI_FD=/path/to/SILICIUM_UEFI.fd common/build.sh z3s
+# full boot image (laptop or CI; never the phone)
+PAYLOAD_BASE=0xF0000000 PAYLOAD_MAX_SIZE=0x00F00000 PANIC_LOG_BASE=0xF0F00000 \
+    ./xnuloader/build.sh
+MU=/path/to/Mu-Silicium ./devices/exynos990/z3s/build-boot.sh \
+    /path/to/SILICIUM_UEFI.fd out/z3s-boot
 ```
 
 Without `UEFI_FD` set (and with `BOOT_CHAIN=none`), the boot-image step is
@@ -115,10 +119,15 @@ skipped. The kernel build is the same Exynos 990 kernel used by x1slte and y2s:
 one kernel, one loader, per-device profiles. `out/unified/manifest.json` records
 the status, board config and boot line of every alias.
 
-The z3s payload slot is at FD + `0x100000` (`0xE8100000`). The generic
-`xnu/mkxnuimg.py` path copies the payload to `PAYLOAD_BASE` (`0xF0000000`), so
-do not use it for z3s until that path is fixed; splice the payload into the FD
-tail like `x1slte.sh payload` does. The current FD artifact has no payload.
+The image has two payloads: `loader.efi` in the FD tail at `0xE8100000`
+(1 MiB slot), and the kernel + `cmdline` appended after the FD, which
+`BootShim` copies to `0xF0000000` (15 MiB slot). `build-boot.sh` packs both,
+writes `z3s-recovery.img` plus an Odin `z3s-recovery.tar.md5` containing
+`recovery.img`, and records `build.json` and `SHA256SUMS`.
+`tools/z3s-boot-verify.py` checks the shim constants, both payloads, the
+loader's `PAYLOAD_BASE`/`PANIC_LOG_BASE` immediates and the kernel Mach-O
+header without a phone. The build is deterministic (`gzip` mtime 0 and a fixed
+tar mtime), so the artifact hash is reproducible.
 
 ## Before flashing
 
@@ -130,9 +139,21 @@ tail like `x1slte.sh payload` does. The current FD artifact has no payload.
    makes the loader refuse every write inside `super`, and the log goes to
    `recovery+16 MiB`.
 
+The image is 6.8 MB and fits either partition, but the z3s chain follows
+x1slte and starts from `recovery`; the Odin tar contains `recovery.img`. Do not
+flash it until the GPT confirms the partition name and size. A `boot.img`
+target is a different experiment, not this chain.
+
+The payload window at `0xF0000000` overlaps the stock `cp_rmem`
+(`0xF0000000` + 8 MiB, `exynos,modem_if`). The port does not start the modem,
+matching x1slte, and the UEFI memory map labels the 16 MiB range "XNU
+Download". Do not enable the modem or its IPC until the payload is relocated
+and the CP regions are reserved; the x1slte cellular notes apply here.
+
 ## Known gaps
 
-- The UEFI FD builds, but there is no hardware test log and no display/touch test.
+- The UEFI FD and the boot image build, but there is no flash or hardware boot
+  log, and no display/touch test.
 - Camera profile not written: the Ultra's sensors differ from the S20's.
 - Fingerprint (ultrasonic) and 5G modem are not brought up.
 - 16 GB RAM variant needs its own high-bank and EL2 reservation.

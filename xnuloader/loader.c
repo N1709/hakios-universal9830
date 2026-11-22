@@ -27,9 +27,21 @@
  * The XNUP payload is embedded in the unused tail of the UEFI FD image itself,
  * so the stock boot shim delivers it together with the FD (no custom shim, and
  * no image_size mismatch for the bootloader).
+ *
+ * A board whose kernel does not fit in the FD tail can build the loader with a
+ * second payload window below the display reservation (z3s: 0xF0000000, 15 MB)
+ * and let the boot shim copy the kernel payload there. The FD-tail payload then
+ * carries only loader.efi for the UEFI hook.
  */
+#ifndef PAYLOAD_BASE
 #define PAYLOAD_BASE        0xE8100000ULL         /* FD base 0xE8000000 + 0x100000 */
+#endif
+#ifndef PAYLOAD_MAX_SIZE
 #define PAYLOAD_MAX_SIZE    0x00080000ULL         /* 512 KB, inside the 2 MB FD region */
+#endif
+#ifndef PANIC_LOG_BASE
+#define PANIC_LOG_BASE      (PAYLOAD_BASE + PAYLOAD_MAX_SIZE)
+#endif
 #define PAYLOAD_MAGIC       0x50554E58u /* "XNUP" */
 
 struct payload_header { uint32_t magic; uint32_t size; };
@@ -68,7 +80,6 @@ struct payload_entry { char name[16]; uint32_t size; uint32_t reserved; };
 #define CHECKPOINT_SELFTEST 999
 #define PANIC_LOG_SIZE      0x80000u
 #define NVRAM_BANK_SIZE     0x2000u
-#define PANIC_LOG_BASE      (PAYLOAD_BASE + PAYLOAD_MAX_SIZE)
 /* Allocated staging; 0xf0000000 belongs to the S20 modem IPC, not downloads. */
 static uint64_t download_base;
 #define DOWNLOAD_MAX_SIZE   0x01000000ULL
