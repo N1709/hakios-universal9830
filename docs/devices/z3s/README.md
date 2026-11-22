@@ -133,8 +133,11 @@ writes `z3s-recovery.img` plus an Odin `z3s-recovery.tar.md5` containing
 `recovery.img`, and records `build.json` and `SHA256SUMS`.
 `tools/z3s-boot-verify.py` checks the shim constants, both payloads, the
 loader's `PAYLOAD_BASE`/`PANIC_LOG_BASE` immediates and the kernel Mach-O
-header without a phone. The build is deterministic (`gzip` mtime 0 and a fixed
-tar mtime), so the artifact hash is reproducible.
+header without a phone. The packer is deterministic (`gzip` mtime 0 and a
+fixed tar mtime). The UEFI FD and the PE header timestamp still differ between
+build machines, so compare the payload hashes and the verifier result rather
+than only the whole-image hash. The GitHub Actions `z3s-boot` artifact was
+downloaded and re-verified this way.
 
 ## Before flashing
 
