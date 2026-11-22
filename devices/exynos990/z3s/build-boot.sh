@@ -123,6 +123,10 @@ python3 tools/z3s-boot-verify.py --image "$OUT/$IMAGE" \
 # later boot still verifies after the loader has written its log.
 AVBTOOL=${AVBTOOL:-inputs/tools/avbtool.py}
 AVB_TEST_KEY=${AVB_TEST_KEY:-inputs/tools/testkey_rsa4096.pem}
+# avbtool's default salt is random, which would change the image hash on
+# every build. Pin it: the test key and this salt are public, and the AVB
+# signature (RSA PKCS#1 v1.5) is deterministic.
+AVB_SALT=${AVB_SALT:-000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f}
 if [ ! -f "$AVBTOOL" ] || [ ! -f "$AVB_TEST_KEY" ]; then
 	tools/get-avb.sh inputs/tools
 fi
@@ -133,10 +137,10 @@ cp "$OUT/$IMAGE" "$OUT/recovery.img"
 cp "$OUT/$IMAGE" "$OUT/boot.img"
 python3 -I "$AVBTOOL" add_hash_footer --image "$OUT/recovery.img" \
 	--partition_size "$RECOVERY_SIZE" --partition_name recovery \
-	--algorithm SHA256_RSA4096 --key "$AVB_TEST_KEY" --rollback_index 1
+	--algorithm SHA256_RSA4096 --key "$AVB_TEST_KEY" --salt "$AVB_SALT" --rollback_index 1
 python3 -I "$AVBTOOL" add_hash_footer --image "$OUT/boot.img" \
 	--partition_size "$BOOT_SIZE" --partition_name boot \
-	--algorithm SHA256_RSA4096 --key "$AVB_TEST_KEY" --rollback_index 1
+	--algorithm SHA256_RSA4096 --key "$AVB_TEST_KEY" --salt "$AVB_SALT" --rollback_index 1
 python3 - "$OUT/recovery.img" "$OUT/boot.img" <<'PY'
 import struct, sys
 from pathlib import Path
@@ -159,6 +163,14 @@ cp "$OUT/z3s-recovery.tar" "$OUT/z3s-recovery.tar.md5"
 md5sum "$OUT/z3s-recovery.tar" | cut -d' ' -f1 | tr -d '\n' >> "$OUT/z3s-recovery.tar.md5"
 echo >> "$OUT/z3s-recovery.tar.md5"
 
+# The boot-partition alternative gets its own Odin tar, so both test paths
+# are flashed the same way. Never flash both at once.
+tar -C "$OUT" --mtime=@0 --owner=0 --group=0 --numeric-owner \
+	-cf "$OUT/z3s-boot.tar" boot.img
+cp "$OUT/z3s-boot.tar" "$OUT/z3s-boot.tar.md5"
+md5sum "$OUT/z3s-boot.tar" | cut -d' ' -f1 | tr -d '\n' >> "$OUT/z3s-boot.tar.md5"
+echo >> "$OUT/z3s-boot.tar.md5"
+
 SHIM_ABS=$(realpath "$SHIM")
 LOADER_ABS=$(realpath "$LOADER")
 KERNEL_ABS=$(realpath "$KERNEL")
@@ -166,7 +178,7 @@ AVB_KEY_ABS=$(realpath "$AVB_TEST_KEY")
 (
 	cd "$OUT"
 	sha256sum "$IMAGE" recovery.img boot.img z3s-recovery.tar z3s-recovery.tar.md5 \
-		fd-payload.bin kernel-payload.bin > SHA256SUMS
+		z3s-boot.tar z3s-boot.tar.md5 fd-payload.bin kernel-payload.bin > SHA256SUMS
 	python3 - "$IMAGE" "$SHIM_ABS" "$LOADER_ABS" "$KERNEL_ABS" "$RECOVERY_SIZE" "$BOOT_SIZE" "$AVB_KEY_ABS" <<'PY'
 import hashlib, json, struct, sys
 from pathlib import Path
@@ -196,10 +208,13 @@ print(json.dumps({
     "boot_partition_bytes": int(boot_size),
     "avb_algorithm": "SHA256_RSA4096",
     "avb_key_sha256": digest(avb_key),
+    "avb_salt": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     "recovery_avb_hashed_head": avb_head("recovery.img"),
     "boot_avb_hashed_head": avb_head("boot.img"),
     "odin_tar": "z3s-recovery.tar",
     "odin_tar_md5": Path("z3s-recovery.tar.md5").read_bytes()[-33:-1].decode("ascii"),
+    "boot_tar": "z3s-boot.tar",
+    "boot_tar_md5": Path("z3s-boot.tar.md5").read_bytes()[-33:-1].decode("ascii"),
     "log_partition": "recovery",
     "log_offset": "0x1000000",
     "log_length": "0x800000",
@@ -217,4 +232,6 @@ PY
 
 echo "build-boot.sh: $OUT/$IMAGE"
 echo "build-boot.sh: $OUT/recovery.img ($RECOVERY_SIZE bytes)"
+echo "build-boot.sh: $OUT/boot.img ($BOOT_SIZE bytes)"
 echo "build-boot.sh: $OUT/z3s-recovery.tar.md5"
+echo "build-boot.sh: $OUT/z3s-boot.tar.md5"
