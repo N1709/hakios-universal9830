@@ -208,26 +208,16 @@ Android never writes `recovery`, so a normal Android boot keeps it.
 
 3. If Android is not rooted, do **not** flash TWRP to `recovery`: a 57 MB
    TWRP image overwrites the log window. First try `adb root` (userdebug
-   builds). If that fails, boot TWRP from `boot` instead, which never writes
-   `recovery`:
+   builds). Booting TWRP from `boot` also works once the ExtremeXT `twrp_z3s`
+   build exists: its `recovery.img` can be packed as `boot.img` and flashed to
+   `boot`, which never writes `recovery`. The old
+   `~/Downloads/twrp-boot-z3s.tar.md5` (MD5 `7f1d2bb9…`) is built from TWRP
+   3.7.0 and is expected to reboot at the Samsung logo on `G988BXXSNHYB1`; do
+   not rely on it.
 
-   ```sh
-   # Download Mode -> Odin AP:
-   #   ~/Downloads/twrp-boot-z3s.tar.md5
-   #   MD5 7f1d2bb9e42ee9bd13310bc2c4d28f94
-   ```
-
-   The tar contains the same 57,454,592-byte TWRP image renamed to `boot.img`,
-   so it fits the 61,865,984-byte `boot` partition. Boot TWRP, then pull the
-   window (`adbd` is root in TWRP):
-
-   ```sh
-   tools/z3s-log.py --adb --output z3s-log-$(date +%Y%m%d-%H%M).bin
-   ```
-
-   Restore Android afterwards with Odin AP =
-   `~/Downloads/stock-boot-G988BXXUBDUI5.tar.md5`.
-4. If the phone booted TWRP (only possible if TWRP is still on `recovery`),
+   After a TWRP-on-`boot` test, restore Android with Odin AP =
+   `lineage-boot-z3s.tar.md5` (public pre-release `z3s-rollback-20261122`).
+4. If the phone booted TWRP (only possible if a working TWRP is on `recovery`),
    `adbd` is already root:
 
    ```sh
@@ -256,80 +246,60 @@ window at `recovery+16 MiB` is free). Do **not** run this with TWRP on
    Do not touch `recovery`.
 2. Reboot normally. The phone boots the `boot` partition.
 3. Wait 90 seconds and record the screen.
-4. Restore Android with the stock boot tar in Odin **AP**:
-   `~/Downloads/stock-boot-G988BXXUBDUI5.tar.md5` (MD5
-   `f31d2f6f1c76088c9f0826714fcc38dd`; built from the phone's own stock
-   `boot.img`, SHA-256 `49b2a637…69a2`). If fastbootd is still up, the raw
-   stock image works too:
+4. Restore Android with the LineageOS boot tar in Odin **AP**:
+   `lineage-boot-z3s.tar.md5` (public pre-release `z3s-rollback-20261122`;
+   MD5 `a9cee29f4f162b4b669b35d2c8779e7d`; built from the phone's own `boot`
+   dump, SHA-256 `49b2a637…69a2`). If fastbootd is still up, the raw image
+   works too:
 
    ```sh
-   fastboot flash boot stock-boot.img
+   fastboot flash boot boot.img
    ```
 
-   Do **not** flash the stock recovery. This leaves the log in
+   Do **not** flash a stock recovery. This leaves the log in
    `recovery+16 MiB` intact.
 5. Boot Android and extract the log as in Phase 3.
 
-The boot path has no Android to fall back to until stock `boot` is restored,
-so treat the screen as the primary evidence.
+The boot path has no Android to fall back to until the LineageOS `boot` is
+restored, so treat the screen as the primary evidence.
 
-## Phase 5 — return to TWRP and rollback
+## Phase 5 — rollback
 
-Flashing HakiOS to `recovery` replaces TWRP: the partition holds one Android
-boot image, so the HakiOS UEFI and loader are gone from the phone. Keep the
-TWRP tar on the laptop before starting.
-
-Ready-made TWRP tar on the laptop:
+HakiOS on `recovery` replaces whatever recovery was there. Keep the rollback
+tars on the laptop before starting. They are published in the public
+pre-release
+[`z3s-rollback-20261122`](https://github.com/N1709/hakios-universal9830/releases/tag/z3s-rollback-20261122):
 
 ```text
-~/Downloads/twrp-3.7.0_11-0-z3s.img.tar.md5
-57,456,673 bytes, MD5 de7504566e58746767b4b583c66e9f09
+lineage-recovery-vbmeta-z3s.tar.md5  69,027,873 B  MD5 dac275a2fb190259626d97bda82836bf
+lineage-boot-z3s.tar.md5             61,870,113 B  MD5 a9cee29f4f162b4b669b35d2c8779e7d
 ```
 
-It is built from the 57,454,592-byte raw TWRP image (`ANDROID!` v2, page 2048,
-DT table `d7b7ab1e`, `dtb_addr=0x11f00000`). The old 6,826-byte
-`twrp-3.7.0_11-0-z3s.img.tar` was an HTML error page; do not use it.
-
-1. **Extract the log first** (Phase 3). Flashing TWRP overwrites
+1. **Extract the log first** (Phase 3). Any recovery image overwrites
    `recovery+16 MiB`.
 2. Power off. Hold **Volume Down + Side key**, then **Volume Up** for Download
    Mode.
-3. Odin: AP = `twrp-3.7.0_11-0-z3s.img.tar.md5`. Do not tick Repartition and
-   do not add BL, CP or CSC. Start and wait for **PASS**.
-4. Boot TWRP: power off, hold **Volume Up + Side key**, or from Android
-   `adb reboot recovery`.
-5. Restore the Phase 1 backup of `boot` and `recovery`.
-6. Reboot Android and verify:
+3. Odin: AP = `lineage-recovery-vbmeta-z3s.tar.md5` (restores LineageOS
+   `recovery` + `vbmeta`). Do not tick Repartition and do not add BL, CP or CSC.
+   Start and wait for **PASS**.
+4. If `boot` was also changed, flash AP = `lineage-boot-z3s.tar.md5`.
+5. Reboot and verify:
 
    ```sh
    adb shell getprop ro.product.model
    adb shell getprop ro.bootloader
    ```
 
-If TWRP is still bootable and fastbootd is available (only before HakiOS is
-written to `recovery`), the raw TWRP image can be flashed instead of Odin:
+Do **not** use the official TWRP 3.7.0 z3s tar for rollback. It carries the old
+340,908-byte DT table at `dtb_addr=0x11f00000` and reboots at the Samsung logo
+on `G988BXXSNHYB1`. The replacement is the ExtremeXT `twrp_z3s` build from
+`.github/workflows/build-z3s-twrp.yml`; use it only after its `recovery.img`
+has booted on the phone.
 
-```sh
-fastboot flash recovery twrp-3.7.0_11-0-z3s.img
-```
-
-It is 57,454,592 bytes and overwrites `recovery+16 MiB`, so extract the log
-first. After HakiOS is on `recovery`, fastbootd is gone; use Download Mode and
-the TWRP tar.
-
-If sboot rejects the raw TWRP image (no AVB footer in that file), add one
-before flashing:
-
-```sh
-python3 -I inputs/tools/avbtool.py add_hash_footer \
-  --image twrp-3.7.0_11-0-z3s.img --partition_size 69009408 \
-  --partition_name recovery --algorithm SHA256_RSA4096 \
-  --key inputs/tools/testkey_rsa4096.pem --rollback_index 1
-```
-
-Then make a new `.tar.md5`. Only if TWRP cannot be booted at all, use the
-stock AP's `boot.img`; the stock `recovery.img` is the last resort, not the
-normal rollback (the user's rule is TWRP for backup/rollback).
+If TWRP is running and fastbootd is available (only before HakiOS is written to
+`recovery`), raw partitions can be flashed with `fastboot flash recovery ...`
+instead of Odin. It overwrites `recovery+16 MiB`, so extract the log first.
+After HakiOS is on `recovery`, fastbootd is gone; use Download Mode and Odin.
 
 ## Why not a menu inside recovery?
 
