@@ -22,6 +22,8 @@ FD_PAYLOAD_MAX = FD_SIZE - FD_PAYLOAD_AT
 PAYLOAD_MAX = 0x00F00000
 FD_BASE = 0xE8000000
 PAYLOAD_BASE = 0xF0000000
+DT_TABLE_MAGIC = b"\xd7\xb7\xab\x1e"
+DTB_ADDR = 0x10000000
 
 
 def fail(message):
@@ -135,6 +137,31 @@ def main():
         fail(f"page size {page_size}, expected 2048")
     if kernel_size == 0:
         fail("empty kernel blob")
+
+    # Samsung sboot wants a DT table (magic d7b7ab1e), not a raw FDT, and the
+    # stock z3s boot.img loads it at 0x10000000.
+    second_size = struct.unpack_from("<I", image, 24)[0]
+    recovery_dtbo_size = struct.unpack_from("<I", image, 1632)[0]
+    dtb_size = struct.unpack_from("<I", image, 1648)[0]
+    dtb_addr = struct.unpack_from("<Q", image, 1652)[0]
+    align = lambda n: (n + page_size - 1) // page_size * page_size
+    dtb_off = page_size + align(kernel_size) + align(ramdisk_size) + \
+        align(second_size) + align(recovery_dtbo_size)
+    if dtb_size < 0x40 or dtb_off + dtb_size > len(image):
+        fail(f"DT table {dtb_size} bytes at {dtb_off:#x} does not fit the image")
+    table = image[dtb_off:dtb_off + dtb_size]
+    if table[:4] != DT_TABLE_MAGIC:
+        fail(f"DTB section is not a Samsung DT table: {table[:4].hex()} (raw FDT would fail sboot)")
+    total, count, fdt_size, fdt_at = (
+        struct.unpack_from(">I", table, at)[0] for at in (0x04, 0x10, 0x20, 0x24)
+    )
+    if count != 1 or fdt_at != 0x40 or total != 0x40 + fdt_size:
+        fail(f"DT table geometry total={total:#x} count={count} fdt={fdt_size:#x}@{fdt_at:#x}")
+    if fdt_at + fdt_size > len(table) or table[fdt_at:fdt_at + 4] != b"\xd0\x0d\xfe\xed":
+        fail("DT table does not contain a raw FDT at 0x40")
+    if dtb_addr != DTB_ADDR:
+        fail(f"dtb_addr {dtb_addr:#x}, expected {DTB_ADDR:#x} (stock boot.img/TWRP)")
+
     kernel = image[page_size:page_size + kernel_size]
     if len(kernel) != kernel_size:
         fail("truncated kernel blob")
@@ -192,6 +219,7 @@ def main():
         fail(f"cmdline is not printable ASCII: {cmdline!r}")
 
     print(f"image: {len(image)} bytes, header v{header_version}, page {page_size}")
+    print(f"DT table: {dtb_size} bytes at +{dtb_off:#x}, FDT {fdt_size} bytes, dtb_addr {dtb_addr:#x}")
     print(f"ramdisk: {ramdisk_size} bytes")
     print(f"blob: {len(blob)} bytes, FD at +{fd_off:#x}, FvLength {fv_length:#x}")
     print(f"shim: {len(shim) if shim else 'not supplied'} bytes, "

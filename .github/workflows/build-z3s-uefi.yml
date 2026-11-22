@@ -12,6 +12,8 @@ on:
       - 'xnuloader/**'
       - 'xnu/mkxnuimg.py'
       - 'tools/z3s-boot-verify.py'
+      - 'tools/z3s-dtb-table.py'
+      - 'tools/get-avb.sh'
       - '.github/workflows/build-z3s-uefi.yml'
 
 permissions:
@@ -139,6 +141,15 @@ jobs:
           cd ..
           test -f xnuloader/loader.efi
           sha256sum xnuloader/loader.efi
+
+      - name: Fetch the AOSP AVB tool and test key
+        run: |
+          set -e
+          # Both files are pinned by commit and SHA-256 in tools/get-avb.sh.
+          # sboot wants an AVB hash footer on recovery/boot (x1slte needed one
+          # too); the public test key is enough.
+          tools/get-avb.sh inputs/tools
+          sha256sum inputs/tools/avbtool.py inputs/tools/testkey_rsa4096.pem
 
       - name: Build the boot shim and the z3s recovery image
         run: |
