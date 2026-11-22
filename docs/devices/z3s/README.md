@@ -26,6 +26,16 @@ partition layout are measured, TWRP boots, but the HakiOS kernel has not
 booted. The kernel is still buildable through the bring-up path. The release
 tools skip the target for installers because `installer_validated` is false.
 
+## Releases
+
+- HakiOS z3s kernel bring-up 0.1.2 — **local only**, not published. The Odin
+  tars live in `~/Downloads/Jesvi-iOS_0.1.2_20261122_z3s-dt-avb/` on the
+  laptop.
+- [TWRP 3.7.1_12 for z3s](https://github.com/N1709/hakios-universal9830/releases/tag/twrp-z3s-3.7.1_12-20261122)
+  — boots on `G988BXXSNHYB1`; backup/restore not validated.
+- [LineageOS rollback](https://github.com/N1709/hakios-universal9830/releases/tag/z3s-rollback-20261122)
+  — `recovery` + `vbmeta` and `boot` tars.
+
 ## Identity
 
 - models: `SM-G988B` (Europe/global, Exynos)
