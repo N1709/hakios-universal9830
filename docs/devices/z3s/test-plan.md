@@ -21,9 +21,16 @@ Release folder:
 | `boot.img` | 61,865,984 | full `boot` partition, AVB, alternative |
 | `z3s-recovery.tar.md5` | 69,017,633 | Odin AP tar with `recovery.img` |
 | `z3s-boot.tar.md5` | 61,870,113 | Odin AP tar with `boot.img` |
-| `z3s-recovery.img` | 6,789,120 | sparse image, verifier input |
+| `z3s-recovery.img` | 6,789,120 | boot-image head only, verifier input — **never flash** |
 | `z3s-dtb-table.img` | 342,016 | Samsung DT table, magic `d7b7ab1e` |
 | `build.json`, `SHA256SUMS`, `README.txt` | | hashes and record |
+
+Rollback files on the laptop:
+
+| file | size | use |
+|---|---:|---|
+| `~/Downloads/twrp-3.7.0_11-0-z3s.img.tar.md5` | 57,456,673 | Odin AP, restore TWRP |
+| `~/Downloads/stock-boot-G988BXXUBDUI5.tar.md5` | 61,870,113 | Odin AP, restore stock `boot` |
 
 The old `Jesvi-iOS_0.1.2_20261122_z3s/` folder is the raw-FDT build and is
 marked **DO-NOT-FLASH-RAW-FDT.txt**. Do not flash it.
@@ -124,6 +131,54 @@ Expected: model `SM-G988B`, bootloader `G988BXXUBDUI5`, sizes
    | Android boots normally | recovery was not selected; use `adb reboot recovery` |
    | HakiOS/UEFI menu | the chain reached the loader; record it |
 
+## Phase 2b — fastbootd variant
+
+TWRP's fastbootd writes raw partitions, so it can replace Odin for the flash
+itself. It does **not** replace the TWRP backup: do Phase 1 first.
+
+1. Boot TWRP, then **Reboot -> Fastboot** (or `adb reboot fastboot`).
+2. Check the device and the partition sizes:
+
+   ```sh
+   fastboot devices
+   fastboot getvar partition-size:recovery   # 0x41d0000 = 69,009,408
+   fastboot getvar partition-size:boot       # 0x3b00000 = 61,865,984
+   ```
+
+3. Flash the **full** image only:
+
+   ```sh
+   cd ~/Downloads/Jesvi-iOS_0.1.2_20261122_z3s-dt-avb
+   sha256sum -c SHA256SUMS
+   fastboot flash recovery recovery.img
+   ```
+
+   `recovery.img` is 69,009,408 bytes and ends with the AVB footer. Never
+   flash `z3s-recovery.img` (6,789,120 bytes): it is the boot-image head only,
+   with no footer, and S-Boot will reject it.
+
+4. Reboot to recovery and wait 90 seconds:
+
+   ```sh
+   fastboot reboot recovery
+   ```
+
+   If this fastbootd does not support `reboot recovery`, use
+   `fastboot reboot` and hold **Volume Up + Side key**.
+
+5. Once adb is available (TWRP or rooted Android), check the AVB footer:
+
+   ```sh
+   adb exec-out "tail -c 64 /dev/block/by-name/recovery" | od -An -tx1
+   ```
+
+   The last 64 bytes must contain `41 56 42 66` (`AVBf`).
+
+**Fastbootd only exists while TWRP is running.** After the HakiOS image is on
+`recovery`, there is no fastbootd to return to: rollback goes through Download
+Mode + Odin (`twrp-3.7.0_11-0-z3s.img.tar.md5`). Extract the log before
+flashing TWRP; a 57 MB TWRP image overwrites `recovery+16 MiB`.
+
 ## Phase 3 — extract the log
 
 The loader writes the log to `recovery+16 MiB` before the watchdog reset.
@@ -159,13 +214,27 @@ the recovery test has left the small HakiOS image on `recovery` (so the log
 window at `recovery+16 MiB` is free). Do **not** run this with TWRP on
 `recovery`: the log write would corrupt TWRP.
 
-1. Flash `z3s-boot.tar.md5` in Odin **AP** (or `boot.img` with TWRP
-   **Install Image -> Boot**). Do not touch `recovery`.
+1. Flash `z3s-boot.tar.md5` in Odin **AP**, or `boot.img` from fastbootd:
+
+   ```sh
+   fastboot flash boot boot.img
+   ```
+
+   Do not touch `recovery`.
 2. Reboot normally. The phone boots the `boot` partition.
 3. Wait 90 seconds and record the screen.
-4. Restore Android by flashing the stock `boot.img` from the AP
-   (`G988BXXUBDUI5`) to the `boot` partition. Do **not** flash the stock
-   recovery. This leaves the log in `recovery+16 MiB` intact.
+4. Restore Android with the stock boot tar in Odin **AP**:
+   `~/Downloads/stock-boot-G988BXXUBDUI5.tar.md5` (MD5
+   `f31d2f6f1c76088c9f0826714fcc38dd`; built from the phone's own stock
+   `boot.img`, SHA-256 `49b2a637…69a2`). If fastbootd is still up, the raw
+   stock image works too:
+
+   ```sh
+   fastboot flash boot stock-boot.img
+   ```
+
+   Do **not** flash the stock recovery. This leaves the log in
+   `recovery+16 MiB` intact.
 5. Boot Android and extract the log as in Phase 3.
 
 The boot path has no Android to fall back to until stock `boot` is restored,
@@ -203,6 +272,17 @@ DT table `d7b7ab1e`, `dtb_addr=0x11f00000`). The old 6,826-byte
    adb shell getprop ro.product.model
    adb shell getprop ro.bootloader
    ```
+
+If TWRP is still bootable and fastbootd is available (only before HakiOS is
+written to `recovery`), the raw TWRP image can be flashed instead of Odin:
+
+```sh
+fastboot flash recovery twrp-3.7.0_11-0-z3s.img
+```
+
+It is 57,454,592 bytes and overwrites `recovery+16 MiB`, so extract the log
+first. After HakiOS is on `recovery`, fastbootd is gone; use Download Mode and
+the TWRP tar.
 
 If sboot rejects the raw TWRP image (no AVB footer in that file), add one
 before flashing:
