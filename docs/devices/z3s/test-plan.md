@@ -29,7 +29,8 @@ Rollback files on the laptop:
 
 | file | size | use |
 |---|---:|---|
-| `~/Downloads/twrp-3.7.0_11-0-z3s.img.tar.md5` | 57,456,673 | Odin AP, restore TWRP |
+| `~/Downloads/twrp-3.7.0_11-0-z3s.img.tar.md5` | 57,456,673 | Odin AP, restore TWRP on `recovery` |
+| `~/Downloads/twrp-boot-z3s.tar.md5` | 57,456,673 | Odin AP, TWRP on `boot` — reads the log without touching `recovery` |
 | `~/Downloads/stock-boot-G988BXXUBDUI5.tar.md5` | 61,870,113 | Odin AP, restore stock `boot` |
 
 The old `Jesvi-iOS_0.1.2_20261122_z3s/` folder is the raw-FDT build and is
@@ -191,9 +192,27 @@ Android never writes `recovery`, so a normal Android boot keeps it.
    tools/z3s-log.py --adb --su --output z3s-log-$(date +%Y%m%d-%H%M).bin
    ```
 
-3. If Android is not rooted, do **not** flash TWRP yet: that overwrites the
-   log. First try `adb root` (userdebug builds). If that fails, take a photo
-   of the screen and record that the log could not be extracted.
+3. If Android is not rooted, do **not** flash TWRP to `recovery`: a 57 MB
+   TWRP image overwrites the log window. First try `adb root` (userdebug
+   builds). If that fails, boot TWRP from `boot` instead, which never writes
+   `recovery`:
+
+   ```sh
+   # Download Mode -> Odin AP:
+   #   ~/Downloads/twrp-boot-z3s.tar.md5
+   #   MD5 7f1d2bb9e42ee9bd13310bc2c4d28f94
+   ```
+
+   The tar contains the same 57,454,592-byte TWRP image renamed to `boot.img`,
+   so it fits the 61,865,984-byte `boot` partition. Boot TWRP, then pull the
+   window (`adbd` is root in TWRP):
+
+   ```sh
+   tools/z3s-log.py --adb --output z3s-log-$(date +%Y%m%d-%H%M).bin
+   ```
+
+   Restore Android afterwards with Odin AP =
+   `~/Downloads/stock-boot-G988BXXUBDUI5.tar.md5`.
 4. If the phone booted TWRP (only possible if TWRP is still on `recovery`),
    `adbd` is already root:
 
