@@ -72,7 +72,7 @@ jobs:
           cp recovery.img twrp-z3s.tar SHA256SUMS "$GITHUB_WORKSPACE/out/"
           printf 'TWRP %s\nRecovery source %s\nDevice source %s\nJesvi source %s\n' \
             "$TWRP_VERSION" "$TWRP_RECOVERY_REV" "$TWRP_DEVICE_REV" "$GITHUB_SHA" > "$GITHUB_WORKSPACE/out/BUILD-SOURCES.txt"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: twrp-z3s
           path: out/
