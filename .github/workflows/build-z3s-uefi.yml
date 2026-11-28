@@ -115,7 +115,7 @@ jobs:
           ls -l
 
       - name: Upload the FD
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: z3s-uefi
           path: dist/z3s-uefi/
@@ -165,7 +165,7 @@ jobs:
           ls -l dist/z3s-boot
 
       - name: Upload the boot image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: z3s-boot
           path: dist/z3s-boot/
@@ -173,7 +173,7 @@ jobs:
 
       - name: Upload the build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: z3s-uefi-build-log
           path: z3s-uefi-build.log
